@@ -16,3 +16,8 @@ use Illuminate\Support\Facades\Route;
 Route::get('/', function () {
    return view('welcome');
 });
+
+Route::group(['prefix' => 'agbc'], function () {
+   Route::post('/notificacion/{codigoSeguimiento}', 'NotificacioneController@procesarNotificacion');
+   Route::post('/emitir-factura', 'PosFacturacionController@emitirFactura');
+});

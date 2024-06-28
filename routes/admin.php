@@ -21,14 +21,9 @@ Route::apiResource('/clientes', 'ClienteController');
 Route::apiResource('/servicios', 'ServicioController');
 Route::apiResource('/ventas', 'VentaController');
 Route::apiResource('/notificaciones', 'NotificacioneController');
-
-
 Route::post('login', 'CajeroController@login');
 
 
-Route::post('/notificacion/{codigoSeguimiento}', 'NotificacioneController@procesarNotificacion');
-Route::post('/emitir-factura', 'PosFacturacionController@emitirFactura');
-
-
-
-Route::get('test','PrinterController@test');
+// Route::post('/notificacion/{codigoSeguimiento}', 'NotificacioneController@procesarNotificacion');
+// Route::post('/emitir-factura', 'PosFacturacionController@emitirFactura');
+// Route::get('test', 'PrinterController@test');
