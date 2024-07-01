@@ -2,7 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 
-
+use App\Http\Controllers\CajeroController;
 /*
 |--------------------------------------------------------------------------
 | Admin Routes
@@ -23,7 +23,7 @@ Route::apiResource('/ventas', 'VentaController');
 Route::apiResource('/notificaciones', 'NotificacioneController');
 Route::post('login', 'CajeroController@login');
 
-
+Route::post('/cajeros/confirmar/{token}', [CajeroController::class, 'confirmar'])->name('cajeros.confirmar');
 // Route::post('/notificacion/{codigoSeguimiento}', 'NotificacioneController@procesarNotificacion');
 // Route::post('/emitir-factura', 'PosFacturacionController@emitirFactura');
 // Route::get('test', 'PrinterController@test');
