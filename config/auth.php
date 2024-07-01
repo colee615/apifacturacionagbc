@@ -2,7 +2,7 @@
 
 return [
 
-    /*
+   /*
     |--------------------------------------------------------------------------
     | Authentication Defaults
     |--------------------------------------------------------------------------
@@ -12,12 +12,12 @@ return [
     | as required, but they're a perfect start for most applications.
     |
     */
-    'defaults' => [
-        'guard' => 'user',
-        'passwords' => 'users',
-    ],
-    
-    /*
+   'defaults' => [
+      'guard' => 'cajero', // Cambiado de 'user' a 'cajero'
+      'passwords' => 'cajeros', // Cambiado de 'users' a 'cajeros'
+   ],
+
+   /*
     |--------------------------------------------------------------------------
     | Authentication Guards
     |--------------------------------------------------------------------------
@@ -30,19 +30,22 @@ return [
     | users are actually retrieved out of your database or other storage
     | mechanisms used by this application to persist your user's data.
     |
-    | Supported: "session"
+    | Supported: "session", "token"
     |
     */
 
-    'guards' => [
-        'cajero' => [
-            'driver' => 'session',
-            'provider' => 'cajeros',
-        ],
-    ],
-    
+   'guards' => [
+      'cajero' => [
+         'driver' => 'session',
+         'provider' => 'cajeros',
+      ],
+      'api' => [
+         'driver' => 'jwt',
+         'provider' => 'cajeros',
+      ],
+   ],
 
-    /*
+   /*
     |--------------------------------------------------------------------------
     | User Providers
     |--------------------------------------------------------------------------
@@ -59,16 +62,14 @@ return [
     |
     */
 
-    'providers' => [
-        'cajeros' => [
-            'driver' => 'eloquent',
-            'model' => App\Models\Cajero::class,
-        ],
+   'providers' => [
+      'cajeros' => [
+         'driver' => 'eloquent',
+         'model' => App\Models\Cajero::class,
+      ],
+   ],
 
-    
-    ],
-
-    /*
+   /*
     |--------------------------------------------------------------------------
     | Resetting Passwords
     |--------------------------------------------------------------------------
@@ -83,17 +84,16 @@ return [
     |
     */
 
-    'passwords' => [
+   'passwords' => [
+      'cajeros' => [
+         'provider' => 'cajeros',
+         'table' => 'password_resets',
+         'expire' => 60,
+         'throttle' => 60,
+      ],
+   ],
 
-        'cajeros' => [
-            'provider' => 'cajeros',
-            'table' => 'password_resets',
-            'expire' => 60,
-            'throttle' => 60,
-        ],
-    ],
-
-    /*
+   /*
     |--------------------------------------------------------------------------
     | Password Confirmation Timeout
     |--------------------------------------------------------------------------
@@ -103,9 +103,7 @@ return [
     | confirmation screen. By default, the timeout lasts for three hours.
     |
     */
- 
- 
 
-    'password_timeout' => 10800,
+   'password_timeout' => 10800,
 
 ];

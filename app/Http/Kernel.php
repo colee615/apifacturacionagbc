@@ -65,6 +65,8 @@ class Kernel extends HttpKernel
     * @var array<string, class-string|string>
     */
    protected $routeMiddleware = [
+      'jwt.refresh' => \Tymon\JWTAuth\Http\Middleware\RefreshToken::class,
+      'jwt.auth' => \Tymon\JWTAuth\Http\Middleware\Authenticate::class,
       'auth' => \App\Http\Middleware\Authenticate::class,
       'cors' => \App\Http\Middleware\Cors::class,
       'auth.basic' => \Illuminate\Auth\Middleware\AuthenticateWithBasicAuth::class,

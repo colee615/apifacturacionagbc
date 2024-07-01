@@ -9,7 +9,8 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\ConfirmationMail;
-
+use Tymon\JWTAuth\Facades\JWTAuth;
+use Tymon\JWTAuth\Exceptions\JWTException;
 
 class CajeroController extends Controller
 {
@@ -101,7 +102,7 @@ class CajeroController extends Controller
 
       // Si no existe, devolver un mensaje de error específico
       if (!$cajero) {
-         return response()->json(['error' => 'El correo electronico que ingreso no esta registrado en el sistema']);
+         return response()->json(['error' => 'El correo electrónico que ingresó no está registrado en el sistema'], 400);
       }
 
       // Intentar autenticar al cajero con las credenciales proporcionadas
@@ -112,19 +113,30 @@ class CajeroController extends Controller
          // Verificar el estado de la cuenta
          if ($cajero->estado == 0) {
             // Cuenta no verificada
-            return response()->json(['error' => 'Falta verificar su cuenta']);
+            return response()->json(['error' => 'Falta verificar su cuenta'], 400);
          } elseif ($cajero->estado == 2) {
             // Cuenta inhabilitada
-            return response()->json(['error' => 'Cuenta inhabilitada']);
+            return response()->json(['error' => 'Cuenta inhabilitada'], 400);
          }
 
-         // Devuelve un mensaje de éxito junto con los datos del cajero y su sucursal
-         return response()->json(['message' => 'Inicio de sesión correcto', 'cajero' => $cajero]);
+         // Generar token JWT
+         try {
+            if (!$token = JWTAuth::fromUser($cajero)) {
+               return response()->json(['error' => 'No se pudo crear el token'], 500);
+            }
+         } catch (JWTException $e) {
+            return response()->json(['error' => 'No se pudo crear el token'], 500);
+         }
+
+         // Devuelve un mensaje de éxito junto con el token, los datos del cajero y su sucursal
+         return response()->json(['message' => 'Inicio de sesión correcto', 'token' => $token, 'cajero' => $cajero]);
       }
 
       // Si la autenticación falla, devuelve un mensaje de error
-      return response()->json(['error' => 'Credenciales incorrectas']);
+      return response()->json(['error' => 'Credenciales incorrectas'], 400);
    }
+
+
    public function confirmar($token)
    {
       $cajero = Cajero::where('confirmation_token', $token)->first();
