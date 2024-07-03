@@ -106,10 +106,17 @@ class CajeroController extends Controller
       if (!$cajero) {
          return response()->json(['error' => 'El correo electrónico que ingresó no está registrado en el sistema'], 400);
       }
+
+      if (!Auth::guard('cajero')->attempt(['email' => $request->email, 'password' => $request->password])) {
+         return response()->json(['error' => 'Credenciales incorrectas'], 400);
+      }
+
       $codigoConfirmacion = rand(100000, 999999);
       $cajero->codigo_confirmacion = $codigoConfirmacion;
       $cajero->save();
+
       Mail::to($cajero->email)->send(new CodigoConfirmationMail($codigoConfirmacion));
+
       $agent = new Agent();
       $log = new LoginLog();
       $log->cajero_id = $cajero->id;
