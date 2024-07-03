@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
@@ -7,18 +8,18 @@ use Illuminate\Queue\SerializesModels;
 
 class ResetMail extends Mailable
 {
-    use Queueable, SerializesModels;
+   use Queueable, SerializesModels;
 
-    protected $fundacione;
+   protected $cajero;
 
-    public function __construct($fundacione)
-    {
-        $this->fundacione = $fundacione;
-    }
+   public function __construct($cajero)
+   {
+      $this->cajero = $cajero;
+   }
 
-    public function build()
-    {
-        return $this->view('emails.reset')
-            ->with(['fundacione' => $this->fundacione]);
-    }
+   public function build()
+   {
+      return $this->view('emails.reset')
+         ->with(['cajero' => $this->cajero]);
+   }
 }
