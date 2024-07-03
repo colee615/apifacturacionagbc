@@ -9,6 +9,7 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\ConfirmationMail;
+use App\Mail\CodigoConfirmationMail;
 use Tymon\JWTAuth\Facades\JWTAuth;
 use Tymon\JWTAuth\Exceptions\JWTException;
 
@@ -103,6 +104,30 @@ class CajeroController extends Controller
       // Si no existe, devolver un mensaje de error específico
       if (!$cajero) {
          return response()->json(['error' => 'El correo electrónico que ingresó no está registrado en el sistema'], 400);
+      }
+
+      // Generar un código de confirmación y guardarlo en la base de datos
+      $codigoConfirmacion = rand(100000, 999999);
+      $cajero->codigo_confirmacion = $codigoConfirmacion;
+      $cajero->save();
+
+      // Enviar el código de confirmación al correo del cajero
+      Mail::to($cajero->email)->send(new CodigoConfirmationMail($codigoConfirmacion));
+
+      // Devolver mensaje indicando que se ha enviado el código
+      return response()->json(['message' => 'Código de confirmación enviado a su correo electrónico']);
+   }
+
+   public function verificarCodigoConfirmacion(Request $request)
+   {
+      // Verificar si el email y el código de confirmación existen en la base de datos
+      $cajero = Cajero::where('email', $request->email)
+         ->where('codigo_confirmacion', $request->codigo_confirmacion)
+         ->first();
+
+      // Si no existen, devolver un mensaje de error
+      if (!$cajero) {
+         return response()->json(['error' => 'Código de confirmación incorrecto'], 400);
       }
 
       // Intentar autenticar al cajero con las credenciales proporcionadas

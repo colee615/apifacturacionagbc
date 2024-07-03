@@ -21,9 +21,9 @@ class Cajero extends Authenticatable implements JWTSubject
    protected $table = 'cajeros'; // Nombre de la tabla de maestros si es personalizada
 
    protected $fillable = [
-      'name',
       'email',
       'password',
+      'codigo_confirmacion',
    ];
 
    protected $hidden = [

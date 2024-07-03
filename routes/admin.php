@@ -26,5 +26,6 @@ Route::middleware(['jwt.auth'])->group(function () {
 
 
 Route::post('login', 'CajeroController@login');
+Route::post('verificar-codigo-confirmacion', 'CajeroController@verificarCodigoConfirmacion');
 
 Route::post('/cajeros/confirmar/{token}', [CajeroController::class, 'confirmar'])->name('cajeros.confirmar');
