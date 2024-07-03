@@ -12,6 +12,8 @@ use App\Mail\ConfirmationMail;
 use App\Mail\CodigoConfirmationMail;
 use Tymon\JWTAuth\Facades\JWTAuth;
 use Tymon\JWTAuth\Exceptions\JWTException;
+use Jenssegers\Agent\Agent;
+use App\Models\LoginLog;
 
 class CajeroController extends Controller
 {
@@ -101,7 +103,6 @@ class CajeroController extends Controller
       // Verificar si el email existe en la base de datos
       $cajero = Cajero::where('email', $request->email)->first();
 
-      // Si no existe, devolver un mensaje de error específico
       if (!$cajero) {
          return response()->json(['error' => 'El correo electrónico que ingresó no está registrado en el sistema'], 400);
       }
@@ -114,10 +115,17 @@ class CajeroController extends Controller
       // Enviar el código de confirmación al correo del cajero
       Mail::to($cajero->email)->send(new CodigoConfirmationMail($codigoConfirmacion));
 
-      // Devolver mensaje indicando que se ha enviado el código
+      // Registrar información de inicio de sesión
+      $agent = new Agent();
+      $log = new LoginLog();
+      $log->cajero_id = $cajero->id;
+      $log->ip_address = $request->ip(); // Laravel debería obtener la IP correcta aquí
+      $log->user_agent = $agent->platform() . ' - ' . $agent->browser();
+      $log->login_time = now();
+      $log->save();
+
       return response()->json(['message' => 'Código de confirmación enviado a su correo electrónico']);
    }
-
    public function verificarCodigoConfirmacion(Request $request)
    {
       // Verificar si el email y el código de confirmación existen en la base de datos
@@ -125,26 +133,20 @@ class CajeroController extends Controller
          ->where('codigo_confirmacion', $request->codigo_confirmacion)
          ->first();
 
-      // Si no existen, devolver un mensaje de error
       if (!$cajero) {
          return response()->json(['error' => 'Código de confirmación incorrecto'], 400);
       }
 
       // Intentar autenticar al cajero con las credenciales proporcionadas
       if (Auth::guard('cajero')->attempt(['email' => $request->email, 'password' => $request->password])) {
-         // Autenticación exitosa, recupera la información del cajero con la relación sucursale cargada
          $cajero = Cajero::with('sucursale')->find(Auth::guard('cajero')->id());
 
-         // Verificar el estado de la cuenta
          if ($cajero->estado == 0) {
-            // Cuenta no verificada
             return response()->json(['error' => 'Falta verificar su cuenta'], 400);
          } elseif ($cajero->estado == 2) {
-            // Cuenta inhabilitada
             return response()->json(['error' => 'Cuenta inhabilitada'], 400);
          }
 
-         // Generar token JWT
          try {
             if (!$token = JWTAuth::fromUser($cajero)) {
                return response()->json(['error' => 'No se pudo crear el token'], 500);
@@ -153,11 +155,9 @@ class CajeroController extends Controller
             return response()->json(['error' => 'No se pudo crear el token'], 500);
          }
 
-         // Devuelve un mensaje de éxito junto con el token, los datos del cajero y su sucursal
          return response()->json(['message' => 'Inicio de sesión correcto', 'token' => $token, 'cajero' => $cajero]);
       }
 
-      // Si la autenticación falla, devuelve un mensaje de error
       return response()->json(['error' => 'Credenciales incorrectas'], 400);
    }
 
