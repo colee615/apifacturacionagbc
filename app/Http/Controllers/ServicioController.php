@@ -25,6 +25,14 @@ class ServicioController extends Controller
     */
    public function store(Request $request)
    {
+      $request->validate([
+         'nombre' => 'required',
+         'codigo' => 'required',
+         'descripcion' => 'required',
+         'precioUnitario' => 'required|numeric|min:0',
+         'unidadMedida' => 'required',
+         'codigoSin' => 'required',
+      ]);
       $servicio = new Servicio();
       $servicio->nombre = $request->nombre;
       $servicio->codigo = $request->codigo;
@@ -55,6 +63,14 @@ class ServicioController extends Controller
     */
    public function update(Request $request, Servicio $servicio)
    {
+      $request->validate([
+         'nombre' => 'required',
+         'codigo' => 'required',
+         'descripcion' => 'required',
+         'precioUnitario' => 'required|numeric|min:0',
+         'unidadMedida' => 'required',
+         'codigoSin' => 'required',
+      ]);
       $servicio->nombre = $request->nombre;
       $servicio->codigo = $request->codigo;
       $servicio->descripcion = $request->descripcion;

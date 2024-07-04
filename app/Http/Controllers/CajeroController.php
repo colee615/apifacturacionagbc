@@ -38,9 +38,10 @@ class CajeroController extends Controller
    {
       // Validar los campos
       $request->validate([
-         'name' => 'required|string|max:255',
-         'email' => 'required|string|email|max:255|unique:cajeros',
+         'name' => 'required|string',
+         'email' => 'required|string|email|unique:cajeros',
          'sucursale_id' => 'required|integer|exists:sucursales,id',
+         'password' => 'required',
       ]);
       $cajero = new Cajero();
       $cajero->name = $request->name;
@@ -82,9 +83,9 @@ class CajeroController extends Controller
    {
       // Validar los campos
       $request->validate([
-         'name' => 'required|string|max:255',
-         'email' => 'required|string|email|max:255|unique:cajeros,email,' . $cajero->id,
-         'password' => 'nullable|string|min:8|confirmed',
+         'name' => 'required|string',
+         'email' => 'required|string|email|unique:cajeros,email,' . $cajero->id,
+         'password' => 'nullable|string|confirmed',
          'sucursale_id' => 'required|integer|exists:sucursales,id',
       ]);
 
