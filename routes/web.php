@@ -17,5 +17,3 @@ Route::get('/', function () {
    return view('welcome');
 });
 Route::post('/notificacion/{codigoSeguimiento}', 'NotificacioneController@procesarNotificacion');
-Route::post('/emitir-factura', 'PosFacturacionController@emitirFactura');
-Route::get('test', 'PrinterController@test');
