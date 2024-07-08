@@ -184,7 +184,7 @@ class CajeroController extends Controller
       $cajero->confirmation_token = null; // Elimina el token de confirmación
       $cajero->save();
 
-      return redirect('http://localhost:3000/auth/register');
+      return redirect('http://172.65.10.36/auth/register');
    }
 
 
