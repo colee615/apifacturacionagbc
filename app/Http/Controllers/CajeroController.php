@@ -15,6 +15,7 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 use Tymon\JWTAuth\Exceptions\JWTException;
 use Jenssegers\Agent\Agent;
 use App\Models\LoginLog;
+use PDF;
 
 class CajeroController extends Controller
 {

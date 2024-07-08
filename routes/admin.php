@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\CajeroController;
+use App\Http\Controllers\Reportes\ReporteCajeroController;
 /*
 |--------------------------------------------------------------------------
 | Admin Routes
