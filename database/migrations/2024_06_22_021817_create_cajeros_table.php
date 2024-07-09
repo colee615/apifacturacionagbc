@@ -20,7 +20,7 @@ return new class extends Migration
          $table->string('confirmation_token')->nullable(); // Campo para el token de confirmación
          $table->foreignId('sucursale_id')->nullable()->constrained('sucursales');
          $table->integer('estado')->default(1);
-         $table->string('role');
+         $table->string('role')->default('cajero'); // Valor por defecto para el campo role
          $table->timestamps();
       });
    }
