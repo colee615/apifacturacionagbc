@@ -11,6 +11,7 @@ class PosFacturacionController extends Controller
 {
    public function emitirFactura(Request $request)
    {
+
       $ventaId = $request->venta_id; // Asegúrate de ajustar esto según cómo se maneje en tu front-end
 
       $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";

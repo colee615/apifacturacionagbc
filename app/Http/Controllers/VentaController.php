@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\Log;
 use Dompdf\Options;
 use Illuminate\Support\Facades\Storage;
 
+use Illuminate\Support\Facades\Http;
+
 class VentaController extends Controller
 {
    /**
@@ -128,21 +130,26 @@ class VentaController extends Controller
    }
    public function store(Request $request)
    {
-      Log::info('Datos recibidos:', $request->all());
-
       // Crear nueva venta
       $venta = new Venta();
+      // Asignar datos de la venta desde $request
       $venta->cliente_id = $request->cliente_id;
       $venta->cajero_id = $request->cajero_id;
+      $venta->codigoSucursal = $request->codigoSucursal;
+      $venta->puntoVenta = $request->puntoVenta;
+      $venta->documentoSector = $request->documentoSector;
+      $venta->municipio = $request->municipio;
+      $venta->departamento = $request->departamento;
+      $venta->telefono = $request->telefono;
+      $venta->metodoPago = $request->metodoPago;
+      $venta->formatoFactura  = $request->formatoFactura;
+      $venta->monto_descuento_adicional = $request->monto_descuento_adicional;
       $venta->motivo = $request->motivo;
       $venta->total = $request->total;
-      $venta->pago = $request->pago;
-      $venta->cambio = $request->cambio;
-      $venta->tipo = $request->tipo;
-      $venta->monto_descuento_adicional = $request->monto_descuento_adicional; // Guardar el descuento adicional
       $venta->save();
 
       // Guardar detalles de la venta
+      $detalleVentaList = [];
       foreach ($request->carrito as $item) {
          $detalleVenta = new DetalleVenta();
          $detalleVenta->venta_id = $venta->id;
@@ -150,8 +157,51 @@ class VentaController extends Controller
          $detalleVenta->cantidad = $item['cantidad'];
          $detalleVenta->precio = $item['precio'];
          $detalleVenta->save();
+
+         // Convertir precioUnitario a número
+         $precioUnitario = floatval($item['precio']);
+
+         // Preparar los detalles de venta para emitir factura
+         $detalleVentaList[] = [
+            'actividadEconomica' => $item['actividadEconomica'],
+            'codigoSin' => $item['codigoSin'],
+            'codigo' => $item['codigo'],
+            'descripcion' => $item['descripcion'],
+            'precioUnitario' => $precioUnitario,  // Corregir precioUnitario a número
+            'cantidad' => $item['cantidad'],
+            'unidadMedida' => $item['unidadMedida']
+         ];
       }
+
+      // Preparar datos para emitir factura
+      $facturaData = [
+         'codigoOrden' => (string) $venta->id, // Convertir a cadena
+         'codigoSucursal' => $request->codigoSucursal,
+         'puntoVenta' => $request->puntoVenta,
+         'documentoSector' => $request->documentoSector,
+         'municipio' => $request->municipio,
+         'departamento' => $request->departamento,
+         'telefono' => $request->telefono,
+         'razonSocial' => $venta->cliente->razonSocial,
+         'documentoIdentidad' => $venta->cliente->documentoIdentidad,
+         'tipoDocumentoIdentidad' => $venta->cliente->tipoDocumentoIdentidad,
+         'correo' => $venta->cliente->correo,
+         'codigoCliente' => $venta->cliente->codigoCliente,
+         'metodoPago' => $request->metodoPago,
+         'montoTotal' => $request->total,
+         'formatoFactura' => $request->formatoFactura,
+         'detalle' => $detalleVentaList
+      ];
+
+      // Registrar datos enviados en el log
+      Log::info('Datos enviados para emitir factura:', $facturaData);
+
+      // Llamar a la función para emitir la factura
+      $this->emitirFactura($facturaData);
+
+      return response()->json(['message' => 'Venta guardada y factura emitida correctamente']);
    }
+
 
 
 
@@ -207,5 +257,41 @@ class VentaController extends Controller
       $venta->estado = 0;
       $venta->save();
       return response()->json(['message' => 'Venta eliminada correctamente']);
+   }
+
+
+
+
+
+
+
+   public function emitirFactura($data)
+   {
+      $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+
+      $response = Http::withHeaders([
+         'Authorization' => 'Bearer ' . $token,
+         'Content-Type' => 'application/json'
+      ])->post($url, [
+         'codigoOrden' => $data['codigoOrden'], // Utilizar el código de orden proporcionado
+         'codigoSucursal' => $data['codigoSucursal'],
+         'puntoVenta' => $data['puntoVenta'],
+         'documentoSector' => $data['documentoSector'],
+         'municipio' => $data['municipio'],
+         'departamento' => $data['departamento'],
+         'telefono' => $data['telefono'],
+         'razonSocial' => $data['razonSocial'],
+         'documentoIdentidad' => $data['documentoIdentidad'],
+         'tipoDocumentoIdentidad' => $data['tipoDocumentoIdentidad'],
+         'correo' => $data['correo'],
+         'codigoCliente' => $data['codigoCliente'],
+         'metodoPago' => $data['metodoPago'],
+         'montoTotal' => $data['montoTotal'],
+         'formatoFactura' => $data['formatoFactura'],
+         'detalle' => $data['detalle']
+      ]);
+
+      return $response->json();
    }
 }

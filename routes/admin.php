@@ -16,8 +16,7 @@ use App\Http\Controllers\Reportes\ReporteCajeroController;
 
 Route::middleware(['jwt.auth'])->group(function () {
    Route::apiResource('/empresa', 'EmpresaController');
-   Route::apiResource('/sucursales', 'SucursaleController');
-   Route::apiResource('/cajeros', 'CajeroController');
+
    Route::apiResource('/clientes', 'ClienteController');
    Route::apiResource('/servicios', 'ServicioController');
    Route::apiResource('/ventas', 'VentaController');
@@ -28,3 +27,5 @@ Route::post('verificar-codigo-confirmacion', 'CajeroController@verificarCodigoCo
 Route::post('request-password-reset', [CajeroController::class, 'requestPasswordReset']);
 Route::post('reset-password/{token}', [CajeroController::class, 'resetPassword']);
 Route::post('/cajeros/confirmar/{token}', [CajeroController::class, 'confirmar'])->name('cajeros.confirmar');
+Route::apiResource('/sucursales', 'SucursaleController');
+Route::apiResource('/cajeros', 'CajeroController');
