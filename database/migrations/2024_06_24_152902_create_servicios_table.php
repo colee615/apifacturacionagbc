@@ -15,10 +15,11 @@ return new class extends Migration
          $table->id();
          $table->string('nombre', 250);
          $table->string('codigo', 50);
+         $table->string('actividadEconomica', 50);
          $table->string('descripcion', 250);
          $table->decimal('precioUnitario', 10, 2);
-         $table->string('unidadMedida');
-         $table->string('codigoSin', 7);
+         $table->integer('unidadMedida');
+         $table->string('codigoSin', 15);
          $table->timestamps();
       });
    }

@@ -26,14 +26,24 @@ class SucursaleController extends Controller
    public function store(Request $request)
    {
       $request->validate([
-         'ubicacion' => 'required',
+         'nombre' => 'required',
+         'municipio' => 'required',
+         'departamento' => 'required',
          'codigosucursal' => 'required',
+         'direcccion' => 'required',
+         'telefono' => 'required',
       ]);
+
       $sucursale = new Sucursale();
-      $sucursale->ubicacion = $request->ubicacion;
+      $sucursale->nombre = $request->nombre;
+      $sucursale->municipio = $request->municipio;
+      $sucursale->departamento = $request->departamento;
       $sucursale->codigosucursal = $request->codigosucursal;
+      $sucursale->direcccion = $request->direcccion;
+      $sucursale->telefono = $request->telefono;
       $sucursale->save();
-      return $sucursale;
+
+      return response()->json($sucursale, 201);
    }
 
    /**
@@ -57,11 +67,19 @@ class SucursaleController extends Controller
    public function update(Request $request, Sucursale $sucursale)
    {
       $request->validate([
-         'ubicacion' => 'required',
+         'nombre' => 'required',
+         'municipio' => 'required',
+         'departamento' => 'required',
          'codigosucursal' => 'required',
+         'direcccion' => 'required',
+         'telefono' => 'required',
       ]);
-      $sucursale->ubicacion = $request->ubicacion;
+      $sucursale->nombre = $request->nombre;
+      $sucursale->municipio = $request->municipio;
+      $sucursale->departamento = $request->departamento;
       $sucursale->codigosucursal = $request->codigosucursal;
+      $sucursale->direcccion = $request->direcccion;
+      $sucursale->telefono = $request->telefono;
       $sucursale->save();
       return $sucursale;
    }

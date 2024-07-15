@@ -128,6 +128,8 @@ class VentaController extends Controller
    }
    public function store(Request $request)
    {
+      Log::info('Datos recibidos:', $request->all());
+
       // Crear nueva venta
       $venta = new Venta();
       $venta->cliente_id = $request->cliente_id;
@@ -137,7 +139,10 @@ class VentaController extends Controller
       $venta->pago = $request->pago;
       $venta->cambio = $request->cambio;
       $venta->tipo = $request->tipo;
+      $venta->monto_descuento_adicional = $request->monto_descuento_adicional; // Guardar el descuento adicional
       $venta->save();
+
+      // Guardar detalles de la venta
       foreach ($request->carrito as $item) {
          $detalleVenta = new DetalleVenta();
          $detalleVenta->venta_id = $venta->id;
@@ -147,6 +152,7 @@ class VentaController extends Controller
          $detalleVenta->save();
       }
    }
+
 
 
 
