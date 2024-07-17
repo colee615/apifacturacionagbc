@@ -4,18 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Models\Venta;
 use App\Models\DetalleVenta;
-use App\Models\Cliente;
 use Illuminate\Http\Request;
-use App\Models\Reporte;
-use Dompdf\Dompdf;
-use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
-use Mike42\Escpos\Printer;
 use Illuminate\Support\Facades\Log;
-use Dompdf\Options;
-use Illuminate\Support\Facades\Storage;
-
 use Illuminate\Support\Facades\Http;
-
+use Illuminate\Support\Facades\DB; // Importar DB facade
 class VentaController extends Controller
 {
    /**
@@ -128,6 +120,7 @@ class VentaController extends Controller
 
       return 'Número fuera de rango';
    }
+
    public function store(Request $request)
    {
       // Crear nueva venta
@@ -185,6 +178,7 @@ class VentaController extends Controller
          'razonSocial' => $venta->cliente->razonSocial,
          'documentoIdentidad' => $venta->cliente->documentoIdentidad,
          'tipoDocumentoIdentidad' => $venta->cliente->tipoDocumentoIdentidad,
+         'complemento' => $venta->cliente->complemento,
          'correo' => $venta->cliente->correo,
          'codigoCliente' => $venta->cliente->codigoCliente,
          'metodoPago' => $request->metodoPago,
@@ -259,22 +253,14 @@ class VentaController extends Controller
       return response()->json(['message' => 'Venta eliminada correctamente']);
    }
 
-
-
-
-
-
-
    public function emitirFactura($data)
    {
       $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
       $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
 
-      $response = Http::withHeaders([
-         'Authorization' => 'Bearer ' . $token,
-         'Content-Type' => 'application/json'
-      ])->post($url, [
-         'codigoOrden' => $data['codigoOrden'], // Utilizar el código de orden proporcionado
+      // Construir el arreglo de datos para la solicitud
+      $requestData = [
+         'codigoOrden' => $data['codigoOrden'],
          'codigoSucursal' => $data['codigoSucursal'],
          'puntoVenta' => $data['puntoVenta'],
          'documentoSector' => $data['documentoSector'],
@@ -290,8 +276,55 @@ class VentaController extends Controller
          'montoTotal' => $data['montoTotal'],
          'formatoFactura' => $data['formatoFactura'],
          'detalle' => $data['detalle']
-      ]);
+      ];
 
-      return $response->json();
+      // Solo agregar el campo 'complemento' si tiene un valor
+      if (!empty($data['complemento'])) {
+         $requestData['complemento'] = $data['complemento'];
+      }
+
+      // Registrar los datos enviados en el log
+      Log::info('Datos enviados para emitir factura:', $requestData);
+
+      // Enviar la solicitud POST
+      $response = Http::withHeaders([
+         'Authorization' => 'Bearer ' . $token,
+         'Content-Type' => 'application/json'
+      ])->post($url, $requestData);
+
+      // Registrar la respuesta en el log
+      Log::info('Respuesta de la API:', $response->json());
+      $responseData = $response->json();
+
+      if ($responseData['finalizado']) {
+         $codigoSeguimiento = $responseData['datos']['codigoSeguimiento'];
+
+         // Registrar el código de seguimiento
+         Log::info('Código de seguimiento recibido:', ['codigoSeguimiento' => $codigoSeguimiento]);
+
+         try {
+            // Buscar el registro en la base de datos
+            $notificacion = DB::table('notificaciones')->where('codigo_seguimiento', $codigoSeguimiento)->first();
+
+            if ($notificacion) {
+               // Decodificar el campo 'detalle' que está en formato JSON
+               $detalle = json_decode($notificacion->detalle, true);
+
+               // Registrar el detalle
+               Log::info('Detalle de la notificación:', $detalle);
+
+               // Abrir el URL del PDF
+               return redirect($detalle['urlPdf']);
+            } else {
+               Log::error('No se encontró ninguna notificación con el código de seguimiento proporcionado.');
+               return response()->json(['error' => 'No se encontró ninguna notificación con el código de seguimiento proporcionado.'], 404);
+            }
+         } catch (\Exception $e) {
+            Log::error('Error en la consulta a la base de datos: ' . $e->getMessage());
+            return response()->json(['error' => 'Error en la consulta a la base de datos'], 500);
+         }
+      }
+
+      return $response;
    }
 }
