@@ -16,11 +16,12 @@ return [
     */
 
    'paths' => ['api/*', 'login', 'logout'],
-   'allowed_methods' => ['*'],
-   'allowed_origins' => ['http://your-frontend-domain.com'],
+   'allowed_methods' => ['*'], // Permitir todos los métodos
+   'allowed_origins' => ['*'], // Permitir todos los orígenes
+   'allowed_origins_patterns' => [],
    'allowed_headers' => ['*'],
    'exposed_headers' => [],
    'max_age' => 0,
-   'supports_credentials' => true,
+   'supports_credentials' => false,
 
 ];

@@ -4,10 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Models\Venta;
 use App\Models\DetalleVenta;
+use App\Models\Notificacione;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\DB; // Importar DB facade
+use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
+use Mike42\Escpos\Printer;
+
 class VentaController extends Controller
 {
    /**
@@ -168,7 +171,7 @@ class VentaController extends Controller
 
       // Preparar datos para emitir factura
       $facturaData = [
-         'codigoOrden' => (string) $venta->id, // Convertir a cadena
+         'codigoOrden' => $venta->codigoOrden, // Obtener el código de la venta recién creada
          'codigoSucursal' => $request->codigoSucursal,
          'puntoVenta' => $request->puntoVenta,
          'documentoSector' => $request->documentoSector,
@@ -189,11 +192,14 @@ class VentaController extends Controller
 
       // Registrar datos enviados en el log
       Log::info('Datos enviados para emitir factura:', $facturaData);
+      $response = $this->emitirFactura($facturaData);
+      $venta->codigoSeguimiento = $response['datos']['codigoSeguimiento'];
+      $venta->save();
 
-      // Llamar a la función para emitir la factura
-      $this->emitirFactura($facturaData);
-
-      return response()->json(['message' => 'Venta guardada y factura emitida correctamente']);
+      return response()->json([
+         'message' => 'Venta guardada y factura emitida correctamente',
+         'codigoSeguimiento' => $response['datos']['codigoSeguimiento']
+      ]);
    }
 
 
@@ -294,37 +300,100 @@ class VentaController extends Controller
 
       // Registrar la respuesta en el log
       Log::info('Respuesta de la API:', $response->json());
-      $responseData = $response->json();
-
-      if ($responseData['finalizado']) {
-         $codigoSeguimiento = $responseData['datos']['codigoSeguimiento'];
-
-         // Registrar el código de seguimiento
-         Log::info('Código de seguimiento recibido:', ['codigoSeguimiento' => $codigoSeguimiento]);
-
-         try {
-            // Buscar el registro en la base de datos
-            $notificacion = DB::table('notificaciones')->where('codigo_seguimiento', $codigoSeguimiento)->first();
-
-            if ($notificacion) {
-               // Decodificar el campo 'detalle' que está en formato JSON
-               $detalle = json_decode($notificacion->detalle, true);
-
-               // Registrar el detalle
-               Log::info('Detalle de la notificación:', $detalle);
-
-               // Abrir el URL del PDF
-               return redirect($detalle['urlPdf']);
-            } else {
-               Log::error('No se encontró ninguna notificación con el código de seguimiento proporcionado.');
-               return response()->json(['error' => 'No se encontró ninguna notificación con el código de seguimiento proporcionado.'], 404);
-            }
-         } catch (\Exception $e) {
-            Log::error('Error en la consulta a la base de datos: ' . $e->getMessage());
-            return response()->json(['error' => 'Error en la consulta a la base de datos'], 500);
-         }
-      }
 
       return $response;
+   }
+   public function getPdfUrl($codigoSeguimiento)
+   {
+      $notificacion = Notificacione::where('codigo_seguimiento', $codigoSeguimiento)->first();
+
+      if ($notificacion) {
+         $detalle = json_decode($notificacion->detalle, true);
+         $urlPdf = $detalle['urlPdf'] ?? null;
+         if ($urlPdf) {
+            return response()->json(['pdf_url' => $urlPdf], 200, [
+               'Content-Disposition' => 'inline; filename="factura.pdf"'
+            ]);
+         } else {
+            return response()->json(['error' => 'PDF URL not found'], 404);
+         }
+      } else {
+         return response()->json(['error' => 'Notification not found'], 404);
+      }
+   }
+
+   public function consultarVenta($codigoSeguimiento)
+   {
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+      $url = "https://sefe.demo.agetic.gob.bo/consulta/{$codigoSeguimiento}";
+
+      Log::info("Código de Seguimiento: {$codigoSeguimiento}");
+      Log::info("URL de Consulta: {$url}");
+
+      try {
+         $response = Http::withHeaders([
+            'Authorization' => 'Bearer ' . $token,
+            'Content-Type' => 'application/json'
+         ])->get($url);
+
+         if ($response->successful()) {
+            Log::info('Respuesta de la API:', $response->json());
+            return response()->json($response->json(), 200);
+         } else {
+            Log::error("Error al consultar venta: " . $response->body());
+            return response()->json([
+               'error' => 'Error al consultar la venta',
+               'details' => $response->body()
+            ], $response->status());
+         }
+      } catch (\Exception $e) {
+         Log::error("Excepción al consultar venta: " . $e->getMessage());
+         return response()->json([
+            'error' => 'Error al consultar la venta',
+            'exception' => $e->getMessage()
+         ], 500);
+      }
+   }
+   public function anularFactura(Request $request, $cuf)
+   {
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+      $url = "https://sefe.demo.agetic.gob.bo/anulacion/{$cuf}";
+
+      // Preparar datos para la solicitud de anulación
+      $requestData = [
+         'motivo' => $request->motivo,
+         'tipoAnulacion' => $request->tipoAnulacion
+      ];
+      // Registrar los datos enviados en el log
+      Log::info('Datos enviados para anulación de factura:', $requestData);
+
+      try {
+         // Enviar la solicitud PATCH
+         $response = Http::withHeaders([
+            'Authorization' => 'Bearer ' . $token,
+            'Content-Type' => 'application/json'
+         ])->patch($url, $requestData);
+
+         // Registrar la respuesta en el log
+         Log::info('Respuesta de la API de anulación:', $response->json());
+
+         if ($response->successful()) {
+            return response()->json([
+               'message' => 'Factura anulada correctamente',
+               'response' => $response->json()
+            ], 200);
+         } else {
+            return response()->json([
+               'error' => 'Error al anular la factura',
+               'details' => $response->json()
+            ], $response->status());
+         }
+      } catch (\Exception $e) {
+         Log::error('Excepción al anular factura: ' . $e->getMessage());
+         return response()->json([
+            'error' => 'Error al anular la factura',
+            'exception' => $e->getMessage()
+         ], 500);
+      }
    }
 }

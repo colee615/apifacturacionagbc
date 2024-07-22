@@ -20,4 +20,15 @@ class Venta extends Model
    {
       return $this->belongsTo(Cajero::class);
    }
+   protected static function boot()
+   {
+      parent::boot();
+
+      static::creating(function ($model) {
+         $latestOrder = static::latest('id')->first();
+         $latestCode = $latestOrder ? $latestOrder->codigoOrden : 'cod-00000000';
+         $nextCode = 'cod-' . str_pad((int)str_replace('cod-', '', $latestCode) + 1, 8, '0', STR_PAD_LEFT);
+         $model->codigoOrden = $nextCode;
+      });
+   }
 }
