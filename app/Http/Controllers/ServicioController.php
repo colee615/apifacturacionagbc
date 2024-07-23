@@ -33,6 +33,7 @@ class ServicioController extends Controller
          'actividadEconomica' => 'required',
          'unidadMedida' => 'required',
          'codigoSin' => 'required',
+         'tipo' => 'required',
       ]);
       $servicio = new Servicio();
       $servicio->nombre = $request->nombre;
@@ -43,6 +44,8 @@ class ServicioController extends Controller
       $servicio->actividadEconomica = $request->actividadEconomica;
       $servicio->unidadMedida = $request->unidadMedida;
       $servicio->codigoSin = $request->codigoSin;
+      $servicio->tipo = $request->tipo;
+
       $servicio->save();
    }
 
@@ -74,6 +77,7 @@ class ServicioController extends Controller
          'actividadEconomica' => 'required',
          'unidadMedida' => 'required',
          'codigoSin' => 'required',
+         'tipo' => 'required',
       ]);
       $servicio->nombre = $request->nombre;
       $servicio->codigo = $request->codigo;
@@ -82,6 +86,7 @@ class ServicioController extends Controller
       $servicio->actividadEconomica = $request->actividadEconomica;
       $servicio->unidadMedida = $request->unidadMedida;
       $servicio->codigoSin = $request->codigoSin;
+      $servicio->tipo = $request->tipo;
       $servicio->save();
    }
 

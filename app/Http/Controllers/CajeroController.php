@@ -86,7 +86,7 @@ class CajeroController extends Controller
       $request->validate([
          'name' => 'required|string',
          'email' => 'required|string|email|unique:cajeros,email,' . $cajero->id,
-         'password' => 'nullable|string|confirmed',
+
          'sucursale_id' => 'required|integer|exists:sucursales,id',
       ]);
 

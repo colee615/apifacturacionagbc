@@ -201,10 +201,78 @@ class VentaController extends Controller
          'codigoSeguimiento' => $response['datos']['codigoSeguimiento']
       ]);
    }
+   public function venta2(Request $request)
+   {
+      // Crear nueva venta
+      $venta = new Venta();
+      // Asignar datos de la venta desde $request
+      $venta->cliente_id = $request->cliente_id;
+      $venta->cajero_id = $request->cajero_id;
+      $venta->codigoSucursal = $request->codigoSucursal;
+      $venta->puntoVenta = $request->puntoVenta;
+      $venta->documentoSector = $request->documentoSector;
+      $venta->municipio = $request->municipio;
+      $venta->departamento = $request->departamento;
+      $venta->telefono = $request->telefono;
+      $venta->metodoPago = $request->metodoPago;
+      $venta->formatoFactura  = $request->formatoFactura;
+      $venta->monto_descuento_adicional = $request->monto_descuento_adicional;
+      $venta->motivo = $request->motivo;
+      $venta->total = $request->total;
+      $venta->save();
 
+      // Guardar detalles de la venta
+      $detalleVentaList = [];
+      foreach ($request->carrito as $item) {
+         $detalleVenta = new DetalleVenta();
+         $detalleVenta->venta_id = $venta->id;
+         $detalleVenta->servicio_id = $item['servicio_id'];
+         $detalleVenta->cantidad = $item['cantidad'];
+         $detalleVenta->precio = $item['precio'];
+         $detalleVenta->save();
 
+         // Convertir precioUnitario a número
+         $precioUnitario = floatval($item['precio']);
 
+         // Preparar los detalles de venta para emitir factura
+         $detalleVentaList[] = [
+            'actividadEconomica' => $item['actividadEconomica'],
+            'codigoSin' => $item['codigoSin'],
+            'codigo' => $item['codigo'],
+            'descripcion' => $item['descripcion'],
+            'precioUnitario' => $precioUnitario,  // Corregir precioUnitario a número
+            'cantidad' => $item['cantidad'],
+            'unidadMedida' => $item['unidadMedida']
+         ];
+      }
 
+      // Preparar datos para emitir factura
+      $facturaData = [
+         'codigoOrden' => $venta->codigoOrden, // Obtener el código de la venta recién creada
+         'correo' => $request->input('correo', 'correo-generico@example.com'), // Usar 'input' para obtener el valor del request
+         'telefono' => $request->telefono,
+         'municipio' => $request->municipio,
+         'metodoPago' => $request->metodoPago,
+         'montoTotal' => $request->total,
+         'puntoVenta' => $request->puntoVenta,
+         'codigoSucursal' => $request->codigoSucursal,
+         'departamento' => $request->departamento,
+         'formatoFactura' => $request->formatoFactura,
+         'documentoSector' => $request->documentoSector,
+         'detalle' => $detalleVentaList
+      ];
+
+      // Registrar datos enviados en el log
+      Log::info('Datos enviados para emitir factura:', $facturaData);
+      $response = $this->emitirFactura2($facturaData);
+      $venta->codigoSeguimiento = $response['datos']['codigoSeguimiento'];
+      $venta->save();
+
+      return response()->json([
+         'message' => 'Venta guardada y factura emitida correctamente',
+         'codigoSeguimiento' => $response['datos']['codigoSeguimiento']
+      ]);
+   }
 
    /**
     * Display the specified resource.
@@ -283,6 +351,55 @@ class VentaController extends Controller
          'formatoFactura' => $data['formatoFactura'],
          'detalle' => $data['detalle']
       ];
+
+      // Solo agregar el campo 'anchoFactura' si el formato es 'rollo'
+      if ($data['formatoFactura'] === 'rollo') {
+         $requestData['anchoFactura'] = 75;
+      }
+
+      // Solo agregar el campo 'complemento' si tiene un valor
+      if (!empty($data['complemento'])) {
+         $requestData['complemento'] = $data['complemento'];
+      }
+
+      // Registrar los datos enviados en el log
+      Log::info('Datos enviados para emitir factura:', $requestData);
+
+      // Enviar la solicitud POST
+      $response = Http::withHeaders([
+         'Authorization' => 'Bearer ' . $token,
+         'Content-Type' => 'application/json'
+      ])->post($url, $requestData);
+
+      // Registrar la respuesta en el log
+      Log::info('Respuesta de la API:', $response->json());
+
+      return $response;
+   }
+   public function emitirFactura2($data)
+   {
+      $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+
+      $requestData = [
+         'codigoOrden' => $data['codigoOrden'],
+         'correo' => $data['correo'],
+         'telefono' => $data['telefono'],
+         'municipio' => $data['municipio'],
+         'metodoPago' => $data['metodoPago'],
+         'montoTotal' => $data['montoTotal'],
+         'puntoVenta' => $data['puntoVenta'],
+         'codigoSucursal' => $data['codigoSucursal'],
+         'departamento' => $data['departamento'],
+         'formatoFactura' => $data['formatoFactura'],
+         'documentoSector' => $data['documentoSector'],
+         'detalle' => $data['detalle']
+      ];
+
+      // Solo agregar el campo 'anchoFactura' si el formato es 'rollo'
+      if ($data['formatoFactura'] === 'rollo') {
+         $requestData['anchoFactura'] = 75;
+      }
 
       // Solo agregar el campo 'complemento' si tiene un valor
       if (!empty($data['complemento'])) {

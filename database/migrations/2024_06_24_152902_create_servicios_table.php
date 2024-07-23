@@ -20,6 +20,7 @@ return new class extends Migration
          $table->decimal('precioUnitario', 10, 2);
          $table->integer('unidadMedida');
          $table->string('codigoSin', 15);
+         $table->string('tipo', 50);
          $table->timestamps();
       });
    }
