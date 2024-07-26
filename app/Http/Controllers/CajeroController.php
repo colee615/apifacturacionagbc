@@ -26,7 +26,7 @@ class CajeroController extends Controller
     */
    public function index()
    {
-      return Cajero::with(['sucursale'])->where('estado', 1)->get();
+      return Cajero::with(['sucursale'])->get();
    }
 
    /**
@@ -108,12 +108,6 @@ class CajeroController extends Controller
     * @param  \App\Models\Cajero  $cajero
     * @return \Illuminate\Http\Response
     */
-   public function destroy(Cajero $cajero)
-   {
-      $cajero->estado = 0;
-      $cajero->save();
-      return $cajero;
-   }
 
    public function login(Request $request)
    {
@@ -224,5 +218,28 @@ class CajeroController extends Controller
       $cajero->save();
 
       return response()->json(['message' => 'Su contraseña ha sido restablecida exitosamente']);
+   }
+
+
+
+
+   public function destroy(Cajero $cajero)
+   {
+      $cajero->estado = 2;
+      $cajero->save();
+      return $cajero;
+   }
+   public function activar(Request $request, $id)
+   {
+      $cajero = Cajero::find($id);
+
+      if (!$cajero) {
+         return response()->json(['error' => 'Cajero no encontrado'], 404);
+      }
+
+      $cajero->estado = 1; // Activa la cuenta
+      $cajero->save();
+
+      return response()->json(['message' => 'Cajero activado exitosamente', 'cajero' => $cajero]);
    }
 }

@@ -26,8 +26,8 @@ class Venta extends Model
 
       static::creating(function ($model) {
          $latestOrder = static::latest('id')->first();
-         $latestCode = $latestOrder ? $latestOrder->codigoOrden : 'cod-00000000';
-         $nextCode = 'cod-' . str_pad((int)str_replace('cod-', '', $latestCode) + 1, 8, '0', STR_PAD_LEFT);
+         $latestCode = $latestOrder ? $latestOrder->codigoOrden : 'vent-00000000';
+         $nextCode = 'vent-' . str_pad((int)str_replace('vent-', '', $latestCode) + 1, 8, '0', STR_PAD_LEFT);
          $model->codigoOrden = $nextCode;
       });
    }

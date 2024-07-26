@@ -16,13 +16,11 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::get('ventas/consultar/{codigoSeguimiento}', 'VentaController@consultarVenta');
    Route::patch('ventas/anular/{cuf}', 'VentaController@anularFactura');
    Route::post('venta2', 'VentaController@venta2');
+
+   Route::put('cajeros/activar/{id}', [CajeroController::class, 'activar']);
 });
 Route::post('login', 'CajeroController@login');
 Route::post('verificar-codigo-confirmacion', 'CajeroController@verificarCodigoConfirmacion');
 Route::post('request-password-reset', [CajeroController::class, 'requestPasswordReset']);
 Route::post('reset-password/{token}', [CajeroController::class, 'resetPassword']);
 Route::post('/cajeros/confirmar/{token}', [CajeroController::class, 'confirmar'])->name('cajeros.confirmar');
-
-Route::get('test', 'VentaController@test');
-
-Route::post('marko', 'MarkoController@prueba');

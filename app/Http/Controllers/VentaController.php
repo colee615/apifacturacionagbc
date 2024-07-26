@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
 use Mike42\Escpos\Printer;
+use Illuminate\Support\Facades\DB; // Asegúrate de importar esta línea
 
 class VentaController extends Controller
 {
@@ -126,152 +127,209 @@ class VentaController extends Controller
 
    public function store(Request $request)
    {
-      // Crear nueva venta
-      $venta = new Venta();
-      // Asignar datos de la venta desde $request
-      $venta->cliente_id = $request->cliente_id;
-      $venta->cajero_id = $request->cajero_id;
-      $venta->codigoSucursal = $request->codigoSucursal;
-      $venta->puntoVenta = $request->puntoVenta;
-      $venta->documentoSector = $request->documentoSector;
-      $venta->municipio = $request->municipio;
-      $venta->departamento = $request->departamento;
-      $venta->telefono = $request->telefono;
-      $venta->metodoPago = $request->metodoPago;
-      $venta->formatoFactura  = $request->formatoFactura;
-      $venta->monto_descuento_adicional = $request->monto_descuento_adicional;
-      $venta->motivo = $request->motivo;
-      $venta->total = $request->total;
-      $venta->save();
+      // Iniciar una transacción para asegurar atomicidad
+      DB::beginTransaction();
 
-      // Guardar detalles de la venta
-      $detalleVentaList = [];
-      foreach ($request->carrito as $item) {
-         $detalleVenta = new DetalleVenta();
-         $detalleVenta->venta_id = $venta->id;
-         $detalleVenta->servicio_id = $item['servicio_id'];
-         $detalleVenta->cantidad = $item['cantidad'];
-         $detalleVenta->precio = $item['precio'];
-         $detalleVenta->save();
+      try {
+         // Crear nueva venta
+         $venta = new Venta();
+         // Asignar datos de la venta desde $request
+         $venta->cliente_id = $request->cliente_id;
+         $venta->cajero_id = $request->cajero_id;
+         $venta->codigoSucursal = $request->codigoSucursal;
+         $venta->puntoVenta = $request->puntoVenta;
+         $venta->documentoSector = $request->documentoSector;
+         $venta->municipio = $request->municipio;
+         $venta->departamento = $request->departamento;
+         $venta->telefono = $request->telefono;
+         $venta->metodoPago = $request->metodoPago;
+         $venta->formatoFactura  = $request->formatoFactura;
+         $venta->monto_descuento_adicional = $request->monto_descuento_adicional;
+         $venta->motivo = $request->motivo;
+         $venta->total = $request->total;
+         $venta->save();
 
-         // Convertir precioUnitario a número
-         $precioUnitario = floatval($item['precio']);
+         // Guardar detalles de la venta
+         $detalleVentaList = [];
+         foreach ($request->carrito as $item) {
+            $detalleVenta = new DetalleVenta();
+            $detalleVenta->venta_id = $venta->id;
+            $detalleVenta->servicio_id = $item['servicio_id'];
+            $detalleVenta->cantidad = $item['cantidad'];
+            $detalleVenta->precio = $item['precio'];
+            $detalleVenta->save();
 
-         // Preparar los detalles de venta para emitir factura
-         $detalleVentaList[] = [
-            'actividadEconomica' => $item['actividadEconomica'],
-            'codigoSin' => $item['codigoSin'],
-            'codigo' => $item['codigo'],
-            'descripcion' => $item['descripcion'],
-            'precioUnitario' => $precioUnitario,  // Corregir precioUnitario a número
-            'cantidad' => $item['cantidad'],
-            'unidadMedida' => $item['unidadMedida']
+            // Convertir precioUnitario a número
+            $precioUnitario = floatval($item['precio']);
+
+            // Preparar los detalles de venta para emitir factura
+            $detalleVentaList[] = [
+               'actividadEconomica' => $item['actividadEconomica'],
+               'codigoSin' => $item['codigoSin'],
+               'codigo' => $item['codigo'],
+               'descripcion' => $item['descripcion'],
+               'precioUnitario' => $precioUnitario,  // Corregir precioUnitario a número
+               'cantidad' => $item['cantidad'],
+               'unidadMedida' => $item['unidadMedida']
+            ];
+         }
+
+         // Preparar datos para emitir factura
+         $facturaData = [
+            'codigoOrden' => $venta->codigoOrden, // Obtener el código de la venta recién creada
+            'codigoSucursal' => $request->codigoSucursal,
+            'puntoVenta' => $request->puntoVenta,
+            'documentoSector' => $request->documentoSector,
+            'municipio' => $request->municipio,
+            'departamento' => $request->departamento,
+            'telefono' => $request->telefono,
+            'razonSocial' => $venta->cliente->razonSocial,
+            'documentoIdentidad' => $venta->cliente->documentoIdentidad,
+            'tipoDocumentoIdentidad' => $venta->cliente->tipoDocumentoIdentidad,
+            'complemento' => $venta->cliente->complemento,
+            'correo' => $venta->cliente->correo,
+            'codigoCliente' => $venta->cliente->codigoCliente,
+            'metodoPago' => $request->metodoPago,
+            'montoTotal' => $request->total,
+            'formatoFactura' => $request->formatoFactura,
+            'detalle' => $detalleVentaList
          ];
+
+         // Registrar datos enviados en el log
+         Log::info('Datos enviados para emitir factura:', $facturaData);
+
+         // Emitir factura
+         $response = $this->emitirFactura($facturaData);
+
+
+         // Verificar respuesta de la emisión de factura
+         if ($response['finalizado'] === false) {
+            // Si la emisión de la factura no se completó, lanzar una excepción
+            throw new \Exception('Error al emitir factura: ' . $response['mensaje']);
+         }
+
+         // Actualizar la venta con el código de seguimiento
+         $venta->codigoSeguimiento = $response['datos']['codigoSeguimiento'];
+         $venta->save();
+
+         // Confirmar la transacción
+         DB::commit();
+
+         return response()->json([
+            'message' => 'Venta guardada y factura emitida correctamente',
+            'codigoSeguimiento' => $response['datos']['codigoSeguimiento']
+         ]);
+      } catch (\Exception $e) {
+         // Revertir la transacción si ocurre cualquier error
+         DB::rollBack();
+
+         // Registrar el error en el log
+         Log::error('Error al guardar venta o emitir factura:', ['message' => $e->getMessage()]);
+
+         return response()->json([
+            'message' => 'Error al guardar venta o emitir factura',
+            'details' => $e->getMessage()
+         ], 400);
       }
-
-      // Preparar datos para emitir factura
-      $facturaData = [
-         'codigoOrden' => $venta->codigoOrden, // Obtener el código de la venta recién creada
-         'codigoSucursal' => $request->codigoSucursal,
-         'puntoVenta' => $request->puntoVenta,
-         'documentoSector' => $request->documentoSector,
-         'municipio' => $request->municipio,
-         'departamento' => $request->departamento,
-         'telefono' => $request->telefono,
-         'razonSocial' => $venta->cliente->razonSocial,
-         'documentoIdentidad' => $venta->cliente->documentoIdentidad,
-         'tipoDocumentoIdentidad' => $venta->cliente->tipoDocumentoIdentidad,
-         'complemento' => $venta->cliente->complemento,
-         'correo' => $venta->cliente->correo,
-         'codigoCliente' => $venta->cliente->codigoCliente,
-         'metodoPago' => $request->metodoPago,
-         'montoTotal' => $request->total,
-         'formatoFactura' => $request->formatoFactura,
-         'detalle' => $detalleVentaList
-      ];
-
-      // Registrar datos enviados en el log
-      Log::info('Datos enviados para emitir factura:', $facturaData);
-      $response = $this->emitirFactura($facturaData);
-      $venta->codigoSeguimiento = $response['datos']['codigoSeguimiento'];
-      $venta->save();
-
-      return response()->json([
-         'message' => 'Venta guardada y factura emitida correctamente',
-         'codigoSeguimiento' => $response['datos']['codigoSeguimiento']
-      ]);
    }
    public function venta2(Request $request)
    {
-      // Crear nueva venta
-      $venta = new Venta();
-      // Asignar datos de la venta desde $request
-      $venta->cliente_id = $request->cliente_id;
-      $venta->cajero_id = $request->cajero_id;
-      $venta->codigoSucursal = $request->codigoSucursal;
-      $venta->puntoVenta = $request->puntoVenta;
-      $venta->documentoSector = $request->documentoSector;
-      $venta->municipio = $request->municipio;
-      $venta->departamento = $request->departamento;
-      $venta->telefono = $request->telefono;
-      $venta->metodoPago = $request->metodoPago;
-      $venta->formatoFactura  = $request->formatoFactura;
-      $venta->monto_descuento_adicional = $request->monto_descuento_adicional;
-      $venta->motivo = $request->motivo;
-      $venta->total = $request->total;
-      $venta->save();
+      // Iniciar una transacción para asegurar atomicidad
+      DB::beginTransaction();
 
-      // Guardar detalles de la venta
-      $detalleVentaList = [];
-      foreach ($request->carrito as $item) {
-         $detalleVenta = new DetalleVenta();
-         $detalleVenta->venta_id = $venta->id;
-         $detalleVenta->servicio_id = $item['servicio_id'];
-         $detalleVenta->cantidad = $item['cantidad'];
-         $detalleVenta->precio = $item['precio'];
-         $detalleVenta->save();
+      try {
+         // Crear nueva venta
+         $venta = new Venta();
+         // Asignar datos de la venta desde $request
+         $venta->cliente_id = $request->cliente_id;
+         $venta->cajero_id = $request->cajero_id;
+         $venta->codigoSucursal = $request->codigoSucursal;
+         $venta->puntoVenta = $request->puntoVenta;
+         $venta->documentoSector = $request->documentoSector;
+         $venta->municipio = $request->municipio;
+         $venta->departamento = $request->departamento;
+         $venta->telefono = $request->telefono;
+         $venta->metodoPago = $request->metodoPago;
+         $venta->formatoFactura  = $request->formatoFactura;
+         $venta->monto_descuento_adicional = $request->monto_descuento_adicional;
+         $venta->motivo = $request->motivo;
+         $venta->total = $request->total;
+         $venta->save();
 
-         // Convertir precioUnitario a número
-         $precioUnitario = floatval($item['precio']);
+         // Guardar detalles de la venta
+         $detalleVentaList = [];
+         foreach ($request->carrito as $item) {
+            $detalleVenta = new DetalleVenta();
+            $detalleVenta->venta_id = $venta->id;
+            $detalleVenta->servicio_id = $item['servicio_id'];
+            $detalleVenta->cantidad = $item['cantidad'];
+            $detalleVenta->precio = $item['precio'];
+            $detalleVenta->save();
 
-         // Preparar los detalles de venta para emitir factura
-         $detalleVentaList[] = [
-            'actividadEconomica' => $item['actividadEconomica'],
-            'codigoSin' => $item['codigoSin'],
-            'codigo' => $item['codigo'],
-            'descripcion' => $item['descripcion'],
-            'precioUnitario' => $precioUnitario,  // Corregir precioUnitario a número
-            'cantidad' => $item['cantidad'],
-            'unidadMedida' => $item['unidadMedida']
+            // Convertir precioUnitario a número
+            $precioUnitario = floatval($item['precio']);
+
+            // Preparar los detalles de venta para emitir factura
+            $detalleVentaList[] = [
+               'actividadEconomica' => $item['actividadEconomica'],
+               'codigoSin' => $item['codigoSin'],
+               'codigo' => $item['codigo'],
+               'descripcion' => $item['descripcion'],
+               'precioUnitario' => $precioUnitario,  // Corregir precioUnitario a número
+               'cantidad' => $item['cantidad'],
+               'unidadMedida' => $item['unidadMedida']
+            ];
+         }
+
+
+         // Preparar datos para emitir factura
+         $facturaData = [
+            'codigoOrden' => $venta->codigoOrden, // Obtener el código de la venta recién creada
+            'correo' => $request->input('correo', 'correo-generico@example.com'), // Usar 'input' para obtener el valor del request
+            'telefono' => $request->telefono,
+            'municipio' => $request->municipio,
+            'metodoPago' => $request->metodoPago,
+            'montoTotal' => $request->total,
+            'puntoVenta' => $request->puntoVenta,
+            'codigoSucursal' => $request->codigoSucursal,
+            'departamento' => $request->departamento,
+            'formatoFactura' => $request->formatoFactura,
+            'documentoSector' => $request->documentoSector,
+            'detalle' => $detalleVentaList
          ];
+
+         // Registrar datos enviados en el log
+         Log::info('Datos enviados para emitir factura:', $facturaData);
+         $response = $this->emitirFactura2($facturaData);
+         if ($response['finalizado'] === false) {
+            // Si la emisión de la factura no se completó, eliminar la venta y retornar el error
+            $venta->delete();
+            return response()->json([
+               'message' => 'Error al emitir factura',
+               'details' => $response['mensaje'],
+               'errores' => $response['datos']['errores']
+            ], 400);
+         }
+         $venta->codigoSeguimiento = $response['datos']['codigoSeguimiento'];
+         $venta->save();
+         // Confirmar la transacción
+         DB::commit();
+         return response()->json([
+            'message' => 'Venta guardada y factura emitida correctamente',
+            'codigoSeguimiento' => $response['datos']['codigoSeguimiento']
+         ]);
+      } catch (\Exception $e) {
+         // Revertir la transacción si ocurre cualquier error
+         DB::rollBack();
+
+         // Registrar el error en el log
+         Log::error('Error al guardar venta o emitir factura:', ['message' => $e->getMessage()]);
+
+         return response()->json([
+            'message' => 'Error al guardar venta o emitir factura',
+            'details' => $e->getMessage()
+         ], 400);
       }
-
-      // Preparar datos para emitir factura
-      $facturaData = [
-         'codigoOrden' => $venta->codigoOrden, // Obtener el código de la venta recién creada
-         'correo' => $request->input('correo', 'correo-generico@example.com'), // Usar 'input' para obtener el valor del request
-         'telefono' => $request->telefono,
-         'municipio' => $request->municipio,
-         'metodoPago' => $request->metodoPago,
-         'montoTotal' => $request->total,
-         'puntoVenta' => $request->puntoVenta,
-         'codigoSucursal' => $request->codigoSucursal,
-         'departamento' => $request->departamento,
-         'formatoFactura' => $request->formatoFactura,
-         'documentoSector' => $request->documentoSector,
-         'detalle' => $detalleVentaList
-      ];
-
-      // Registrar datos enviados en el log
-      Log::info('Datos enviados para emitir factura:', $facturaData);
-      $response = $this->emitirFactura2($facturaData);
-      $venta->codigoSeguimiento = $response['datos']['codigoSeguimiento'];
-      $venta->save();
-
-      return response()->json([
-         'message' => 'Venta guardada y factura emitida correctamente',
-         'codigoSeguimiento' => $response['datos']['codigoSeguimiento']
-      ]);
    }
 
    /**
