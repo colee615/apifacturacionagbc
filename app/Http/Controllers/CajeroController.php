@@ -15,7 +15,7 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 use Tymon\JWTAuth\Exceptions\JWTException;
 use Jenssegers\Agent\Agent;
 use App\Models\LoginLog;
-use PDF;
+use App\Models\SpecialAccessLog;
 
 class CajeroController extends Controller
 {
@@ -86,8 +86,9 @@ class CajeroController extends Controller
       $request->validate([
          'name' => 'required|string',
          'email' => 'required|string|email|unique:cajeros,email,' . $cajero->id,
-
+         'special_access' => 'boolean',
          'sucursale_id' => 'required|integer|exists:sucursales,id',
+         'motivo' => 'required|string',
       ]);
 
       $cajero->name = $request->name;
@@ -97,8 +98,21 @@ class CajeroController extends Controller
             $cajero->password = Hash::make($request->password);
          }
       }
+
+      // Registrar el cambio de special_access
+      if ($cajero->special_access !== $request->special_access) {
+         SpecialAccessLog::create([
+            'cajero_id' => $cajero->id,
+            'modified_by' => Auth::id(),
+            'special_access' => $request->special_access,
+            'motivo' => $request->motivo,
+         ]);
+      }
+
+      $cajero->special_access = $request->special_access;
       $cajero->sucursale_id = $request->sucursale_id;
       $cajero->save();
+
       return $cajero;
    }
 
@@ -118,7 +132,17 @@ class CajeroController extends Controller
       }
 
       if (!Auth::guard('cajero')->attempt(['email' => $request->email, 'password' => $request->password])) {
-         return response()->json(['error' => 'Credenciales incorrectas'], 400);
+         return response()->json(['error' => 'Credenciales incorrectas'], 401);
+      }
+
+      // Verificación de horario
+      $currentHour = now()->format('H');
+      $startHour = 8; // Hora de inicio (8 AM)
+      $endHour = 14; // Hora de fin (7 PM)
+
+      // Verifica si el usuario tiene acceso especial o está dentro del horario permitido
+      if (!$cajero->special_access && ($currentHour < $startHour || $currentHour >= $endHour)) {
+         return response()->json(['error' => 'Fuera del horario laboral permitido.'], 403);
       }
 
       $codigoConfirmacion = rand(100000, 999999);
@@ -137,6 +161,9 @@ class CajeroController extends Controller
 
       return response()->json(['message' => 'Código de confirmación enviado a su correo electrónico']);
    }
+
+
+
    public function verificarCodigoConfirmacion(Request $request)
    {
       $cajero = Cajero::where('email', $request->email)
@@ -146,6 +173,17 @@ class CajeroController extends Controller
       if (!$cajero) {
          return response()->json(['error' => 'Código de confirmación incorrecto'], 400);
       }
+
+      // Verificación de horario
+      $currentHour = now()->format('H');
+      $startHour = 8; // Hora de inicio (8 AM)
+      $endHour = 19; // Hora de fin (7 PM)
+
+      // Verifica si el usuario tiene acceso especial o está dentro del horario permitido
+      if (!$cajero->special_access && ($currentHour < $startHour || $currentHour >= $endHour)) {
+         return response()->json(['error' => 'Fuera del horario laboral permitido.'], 403);
+      }
+
       if (Auth::guard('cajero')->attempt(['email' => $request->email, 'password' => $request->password])) {
          $cajero = Cajero::with('sucursale')->find(Auth::guard('cajero')->id());
          if ($cajero->estado == 0) {
@@ -153,6 +191,7 @@ class CajeroController extends Controller
          } elseif ($cajero->estado == 2) {
             return response()->json(['error' => 'Cuenta inhabilitada'], 400);
          }
+
          try {
             if (!$token = JWTAuth::fromUser($cajero)) {
                return response()->json(['error' => 'No se pudo crear el token'], 500);
@@ -160,10 +199,13 @@ class CajeroController extends Controller
          } catch (JWTException $e) {
             return response()->json(['error' => 'No se pudo crear el token'], 500);
          }
+
          return response()->json(['message' => 'Inicio de sesión correcto', 'token' => $token, 'cajero' => $cajero]);
       }
+
       return response()->json(['error' => 'Credenciales incorrectas'], 400);
    }
+
 
 
    public function confirmar($token)
@@ -241,5 +283,10 @@ class CajeroController extends Controller
       $cajero->save();
 
       return response()->json(['message' => 'Cajero activado exitosamente', 'cajero' => $cajero]);
+   }
+   public function listSpecialAccessLogs()
+   {
+      $logs = SpecialAccessLog::with(['cajero', 'modifiedBy'])->get();
+      return response()->json($logs);
    }
 }

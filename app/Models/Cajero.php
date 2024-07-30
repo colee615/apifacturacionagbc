@@ -12,7 +12,10 @@ use Tymon\JWTAuth\Contracts\JWTSubject;
 class Cajero extends Authenticatable implements JWTSubject
 {
    use HasApiTokens, HasFactory, Notifiable;
-
+   public function specialAccessLogs()
+   {
+      return $this->hasMany(SpecialAccessLog::class);
+   }
    public function Sucursale()
    {
       return $this->belongsTo(Sucursale::class);

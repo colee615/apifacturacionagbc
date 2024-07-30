@@ -65,6 +65,7 @@ class Kernel extends HttpKernel
     * @var array<string, class-string|string>
     */
    protected $routeMiddleware = [
+      'working_hours' => \App\Http\Middleware\CheckWorkingHours::class,
       'jwt.refresh' => \Tymon\JWTAuth\Http\Middleware\RefreshToken::class,
       'jwt.auth' => \Tymon\JWTAuth\Http\Middleware\Authenticate::class,
       'auth' => \App\Http\Middleware\Authenticate::class,
