@@ -56,7 +56,7 @@ class VentaController extends Controller
          $venta->departamento = $request->departamento;
          $venta->telefono = $request->telefono;
          $venta->metodoPago = $request->metodoPago;
-         $venta->formatoFactura  = $request->formatoFactura;
+         $venta->formatoFactura = $request->formatoFactura;
          $venta->monto_descuento_adicional = $request->monto_descuento_adicional;
          $venta->motivo = $request->motivo;
          $venta->total = $request->total;
@@ -70,6 +70,8 @@ class VentaController extends Controller
             $detalleVenta->servicio_id = $item['servicio_id'];
             $detalleVenta->cantidad = $item['cantidad'];
             $detalleVenta->precio = $item['precio'];
+            $detalleVenta->codigosEspeciales = $item['codigoEspecial']; // Guardar código especial
+            $detalleVenta->informacionesAdicionales = $item['informacionAdicional']; // Guardar información adicional
             $detalleVenta->save();
 
             // Convertir precioUnitario a número
@@ -114,7 +116,6 @@ class VentaController extends Controller
          // Emitir factura
          $response = $this->emitirFactura($facturaData);
 
-
          // Verificar respuesta de la emisión de factura
          if ($response['finalizado'] === false) {
             // Si la emisión de la factura no se completó, lanzar una excepción
@@ -145,6 +146,7 @@ class VentaController extends Controller
          ], 400);
       }
    }
+
    public function venta2(Request $request)
    {
       // Iniciar una transacción para asegurar atomicidad
@@ -177,6 +179,8 @@ class VentaController extends Controller
             $detalleVenta->servicio_id = $item['servicio_id'];
             $detalleVenta->cantidad = $item['cantidad'];
             $detalleVenta->precio = $item['precio'];
+            $detalleVenta->codigosEspeciales = $item['codigoEspecial']; // Guardar código especial
+            $detalleVenta->informacionesAdicionales = $item['informacionAdicional']; // Guardar información adicional
             $detalleVenta->save();
 
             // Convertir precioUnitario a número
