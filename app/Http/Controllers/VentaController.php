@@ -8,8 +8,7 @@ use App\Models\Notificacione;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
-use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
-use Mike42\Escpos\Printer;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB; // Asegúrate de importar esta línea
 
 class VentaController extends Controller
@@ -124,6 +123,7 @@ class VentaController extends Controller
 
          // Actualizar la venta con el código de seguimiento
          $venta->codigoSeguimiento = $response['datos']['codigoSeguimiento'];
+
          $venta->save();
 
          // Confirmar la transacción
@@ -329,7 +329,7 @@ class VentaController extends Controller
 
       // Solo agregar el campo 'anchoFactura' si el formato es 'rollo'
       if ($data['formatoFactura'] === 'rollo') {
-         $requestData['anchoFactura'] = 75;
+         $requestData['anchoFactura'] = 90;
       }
 
       // Solo agregar el campo 'complemento' si tiene un valor
@@ -402,17 +402,29 @@ class VentaController extends Controller
       if ($notificacion) {
          $detalle = json_decode($notificacion->detalle, true);
          $urlPdf = $detalle['urlPdf'] ?? null;
+         $cuf = $detalle['cuf'] ?? null;
+
          if ($urlPdf) {
-            return response()->json(['pdf_url' => $urlPdf], 200, [
+            return response()->json([
+               'pdf_url' => $urlPdf,
+               'cuf' => $cuf
+            ], 200, [
                'Content-Disposition' => 'inline; filename="factura.pdf"'
             ]);
+         } elseif ($cuf) {
+            return response()->json([
+               'cuf' => $cuf,
+               'message' => 'PDF URL not yet available'
+            ], 200);
          } else {
-            return response()->json(['error' => 'PDF URL not found'], 404);
+            return response()->json(['error' => 'No PDF URL and no CUF found'], 404);
          }
       } else {
          return response()->json(['error' => 'Notification not found'], 404);
       }
    }
+
+
 
    public function consultarVenta($codigoSeguimiento)
    {
@@ -487,5 +499,89 @@ class VentaController extends Controller
             'exception' => $e->getMessage()
          ], 500);
       }
+   }
+   public function ventasDelDia($cajeroId)
+   {
+      $ventas = Venta::where('cajero_id', $cajeroId)
+         ->whereDate('created_at', Carbon::today())
+         ->with(['detalleVentas', 'cliente', 'cajero'])
+         ->get();
+
+      $total = $ventas->sum('total');
+
+      $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
+         ->whereHas('venta', function ($query) use ($cajeroId) {
+            $query->where('cajero_id', $cajeroId)
+               ->whereDate('created_at', Carbon::today());
+         })
+         ->groupBy('servicio_id')
+         ->orderBy('total', 'desc')
+         ->get();
+
+      return response()->json([
+         'ventas' => $ventas,
+         'total' => $total,
+         'servicios' => $servicios
+      ]);
+   }
+
+   /**
+    * Listar las ventas del mes por cajero.
+    */
+   public function ventasDelMes($cajeroId)
+   {
+      $ventas = Venta::where('cajero_id', $cajeroId)
+         ->whereMonth('created_at', Carbon::now()->month)
+         ->whereYear('created_at', Carbon::now()->year)
+         ->with(['detalleVentas', 'cliente', 'cajero'])
+         ->get();
+
+      $total = $ventas->sum('total');
+
+      $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
+         ->whereHas('venta', function ($query) use ($cajeroId) {
+            $query->where('cajero_id', $cajeroId)
+               ->whereMonth('created_at', Carbon::now()->month)
+               ->whereYear('created_at', Carbon::now()->year);
+         })
+         ->groupBy('servicio_id')
+         ->orderBy('total', 'desc')
+         ->get();
+
+      return response()->json([
+         'ventas' => $ventas,
+         'total' => $total,
+         'servicios' => $servicios
+      ]);
+   }
+
+   /**
+    * Listar las ventas de una fecha específica por cajero.
+    */
+   public function ventasPorFecha($cajeroId, Request $request)
+   {
+      $fecha = $request->input('fecha');
+
+      $ventas = Venta::where('cajero_id', $cajeroId)
+         ->whereDate('created_at', $fecha)
+         ->with(['detalleVentas', 'cliente', 'cajero'])
+         ->get();
+
+      $total = $ventas->sum('total');
+
+      $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
+         ->whereHas('venta', function ($query) use ($cajeroId, $fecha) {
+            $query->where('cajero_id', $cajeroId)
+               ->whereDate('created_at', $fecha);
+         })
+         ->groupBy('servicio_id')
+         ->orderBy('total', 'desc')
+         ->get();
+
+      return response()->json([
+         'ventas' => $ventas,
+         'total' => $total,
+         'servicios' => $servicios
+      ]);
    }
 }

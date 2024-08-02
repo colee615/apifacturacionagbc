@@ -12,7 +12,7 @@ class CheckWorkingHours
    {
       $currentHour = now()->format('H');
       $startHour = 8; // Hora de inicio (8 AM)
-      $endHour = 14; // Hora de fin (7 PM)
+      $endHour = 23; // Hora de fin (7 PM)
 
       // Verifica si el usuario tiene acceso especial o está dentro del horario permitido
       if (Auth::check() && (Auth::user()->special_access || ($currentHour >= $startHour && $currentHour < $endHour))) {
