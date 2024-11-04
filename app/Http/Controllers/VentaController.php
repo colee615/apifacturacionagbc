@@ -502,15 +502,12 @@ class VentaController extends Controller
    }
    public function ventasDelDia($cajeroId)
    {
-      // Obtener todas las ventas del día
       $ventas = Venta::where('cajero_id', $cajeroId)
          ->whereDate('created_at', Carbon::today())
          ->with(['detalleVentas', 'cliente', 'cajero'])
-         ->orderBy('id') // Ordenar por id
          ->get();
 
-      // Calcular el total excluyendo las ventas con estado 0
-      $total = $ventas->where('estado', '!=', 0)->sum('total');
+      $total = $ventas->sum('total');
 
       $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
          ->whereHas('venta', function ($query) use ($cajeroId) {
@@ -518,127 +515,73 @@ class VentaController extends Controller
                ->whereDate('created_at', Carbon::today());
          })
          ->groupBy('servicio_id')
-         ->orderBy('servicio_id') // Ordenar por id del servicio
+         ->orderBy('total', 'desc')
          ->get();
 
       return response()->json([
          'ventas' => $ventas,
          'total' => $total,
          'servicios' => $servicios
-      ]);
-   }
-
-   public function ventasPorRangoFechas($cajeroId, Request $request)
-   {
-      $fechaInicio = $request->input('fecha_inicio');
-      $fechaFin = $request->input('fecha_fin');
-
-      // Obtener todas las ventas en el rango de fechas
-      $ventas = Venta::where('cajero_id', $cajeroId)
-         ->whereBetween('created_at', [$fechaInicio, $fechaFin])
-         ->with(['detalleVentas', 'cliente', 'cajero'])
-         ->orderBy('id') // Ordenar por id
-         ->get();
-
-      // Calcular el total excluyendo las ventas con estado 0
-      $total = $ventas->where('estado', '!=', 0)->sum('total');
-
-      $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
-         ->whereHas('venta', function ($query) use ($cajeroId, $fechaInicio, $fechaFin) {
-            $query->where('cajero_id', $cajeroId)
-               ->whereBetween('created_at', [$fechaInicio, $fechaFin]);
-         })
-         ->groupBy('servicio_id')
-         ->orderBy('servicio_id') // Ordenar por id del servicio
-         ->get();
-
-      return response()->json([
-         'ventas' => $ventas,
-         'total' => $total,
-         'servicios' => $servicios
-      ]);
-   }
-
-   public function ventasPorSucursalDia($codigoSucursal, Request $request)
-   {
-      $fecha = $request->input('fecha', Carbon::today()->toDateString());
-
-      // Obtener las ventas por sucursal en el día específico
-      $ventas = Venta::where('codigoSucursal', $codigoSucursal)
-         ->whereDate('created_at', $fecha)
-         ->with(['detalleVentas.servicio', 'cliente', 'cajero'])
-         ->get();
-
-      if ($ventas->isEmpty()) {
-         return response()->json([
-            'message' => 'No se encontraron ventas para la sucursal en el día especificado.'
-         ], 404);
-      }
-
-      // Agrupar las ventas por cajero y calcular el total por cajero y el total general
-      $ventasPorCajero = $ventas->groupBy('cajero_id')->map(function ($ventasCajero) {
-         return [
-            'total' => $ventasCajero->where('estado', '!=', 0)->sum('total'),
-            'ventas' => $ventasCajero->map(function ($venta) {
-               return $venta->load(['detalleVentas.servicio', 'cliente', 'cajero']);
-            })
-         ];
-      });
-
-      $totalGeneral = $ventas->where('estado', '!=', 0)->sum('total');
-
-      return response()->json([
-         'ventas_por_cajero' => $ventasPorCajero,
-         'total_general' => $totalGeneral
       ]);
    }
 
    /**
-    * Obtener las ventas por sucursal y cajero en un rango de fechas.
-    *
-    * @param  string  $codigoSucursal
-    * @param  Request  $request
-    * @return \Illuminate\Http\Response
+    * Listar las ventas del mes por cajero.
     */
-   public function ventasPorSucursalRangoFechas($codigoSucursal, Request $request)
+   public function ventasDelMes($cajeroId)
    {
-      $fechaInicio = $request->input('fecha_inicio', Carbon::today()->toDateString());
-      $fechaFin = $request->input('fecha_fin', Carbon::today()->toDateString());
-
-      // Validar que la fecha de inicio sea anterior o igual a la fecha de fin
-      if (Carbon::parse($fechaInicio)->gt(Carbon::parse($fechaFin))) {
-         return response()->json([
-            'message' => 'La fecha de inicio no puede ser posterior a la fecha de fin.'
-         ], 422);
-      }
-
-      // Obtener las ventas por sucursal y por cajero en el rango de fechas
-      $ventas = Venta::where('codigoSucursal', $codigoSucursal)
-         ->whereBetween('created_at', [$fechaInicio, $fechaFin])
-         ->with(['detalleVentas.servicio', 'cliente', 'cajero'])
+      $ventas = Venta::where('cajero_id', $cajeroId)
+         ->whereMonth('created_at', Carbon::now()->month)
+         ->whereYear('created_at', Carbon::now()->year)
+         ->with(['detalleVentas', 'cliente', 'cajero'])
          ->get();
 
-      if ($ventas->isEmpty()) {
-         return response()->json([
-            'message' => 'No se encontraron ventas para la sucursal en el rango de fechas especificado.'
-         ], 404);
-      }
+      $total = $ventas->sum('total');
 
-      // Agrupar las ventas por cajero y calcular el total por cajero y el total general
-      $ventasPorCajero = $ventas->groupBy('cajero_id')->map(function ($ventasCajero) {
-         return [
-            'total' => $ventasCajero->where('estado', '!=', 0)->sum('total'),
-            'ventas' => $ventasCajero->map(function ($venta) {
-               return $venta->load(['detalleVentas.servicio', 'cliente', 'cajero']);
-            })
-         ];
-      });
-
-      $totalGeneral = $ventas->where('estado', '!=', 0)->sum('total');
+      $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
+         ->whereHas('venta', function ($query) use ($cajeroId) {
+            $query->where('cajero_id', $cajeroId)
+               ->whereMonth('created_at', Carbon::now()->month)
+               ->whereYear('created_at', Carbon::now()->year);
+         })
+         ->groupBy('servicio_id')
+         ->orderBy('total', 'desc')
+         ->get();
 
       return response()->json([
-         'ventas_por_cajero' => $ventasPorCajero,
-         'total_general' => $totalGeneral
+         'ventas' => $ventas,
+         'total' => $total,
+         'servicios' => $servicios
+      ]);
+   }
+
+   /**
+    * Listar las ventas de una fecha específica por cajero.
+    */
+   public function ventasPorFecha($cajeroId, Request $request)
+   {
+      $fecha = $request->input('fecha');
+
+      $ventas = Venta::where('cajero_id', $cajeroId)
+         ->whereDate('created_at', $fecha)
+         ->with(['detalleVentas', 'cliente', 'cajero'])
+         ->get();
+
+      $total = $ventas->sum('total');
+
+      $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
+         ->whereHas('venta', function ($query) use ($cajeroId, $fecha) {
+            $query->where('cajero_id', $cajeroId)
+               ->whereDate('created_at', $fecha);
+         })
+         ->groupBy('servicio_id')
+         ->orderBy('total', 'desc')
+         ->get();
+
+      return response()->json([
+         'ventas' => $ventas,
+         'total' => $total,
+         'servicios' => $servicios
       ]);
    }
 }
