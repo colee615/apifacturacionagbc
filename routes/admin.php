@@ -27,6 +27,12 @@ Route::post('/cajeros/confirmar/{token}', [CajeroController::class, 'confirmar']
 use App\Http\Controllers\VentaController;
 
 Route::get('/ventas/dia/{cajeroId}', [VentaController::class, 'ventasDelDia']);
-Route::get('/ventas/mes/{cajeroId}', [VentaController::class, 'ventasDelMes']);
-Route::post('/ventas/fecha/{cajeroId}', [VentaController::class, 'ventasPorFecha']);
+Route::post('/ventas/fecha/{cajeroId}', [VentaController::class, 'ventasPorRangoFechas']);
 Route::get('venta/pdf/{codigoSeguimiento}', 'VentaController@getPdfUrl');
+
+
+
+Route::get('/ventas/sucursal/dia/{codigoSucursal}', [VentaController::class, 'ventasPorSucursalDia']);
+
+// Ruta para obtener las ventas por rango de fechas por sucursal
+Route::post('/ventas/sucursal/fecha/{codigoSucursal}', [VentaController::class, 'ventasPorSucursalRangoFechas']);
