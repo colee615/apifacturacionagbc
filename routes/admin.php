@@ -15,8 +15,6 @@ Route::middleware(['jwt.auth', 'working_hours'])->group(function () {
    Route::get('ventas/consultar/{codigoSeguimiento}', 'VentaController@consultarVenta');
    Route::patch('ventas/anular/{cuf}', 'VentaController@anularFactura');
    Route::post('venta2', 'VentaController@venta2');
-
-   Route::get('/special-access-logs', 'CajeroController@listSpecialAccessLogs');
 });
 Route::post('login', 'CajeroController@login');
 Route::post('verificar-codigo-confirmacion', 'CajeroController@verificarCodigoConfirmacion');
@@ -30,3 +28,5 @@ Route::get('/ventas/dia/{cajeroId}', [VentaController::class, 'ventasDelDia']);
 Route::get('/ventas/mes/{cajeroId}', [VentaController::class, 'ventasDelMes']);
 Route::post('/ventas/fecha/{cajeroId}', [VentaController::class, 'ventasPorFecha']);
 Route::get('venta/pdf/{codigoSeguimiento}', 'VentaController@getPdfUrl');
+
+Route::get('/special-access-logs', 'CajeroController@listSpecialAccessLogs');
