@@ -305,7 +305,7 @@ class VentaController extends Controller
    public function emitirFactura($data)
    {
       $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
-      $token = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ2ZXJvbmljYS5taXJhbmRhQGNvcnJlb3MuZ29iLmJvIiwiY29kaWdvU2lzdGVtYSI6Ijc3MDVBM0U2REIwNTBEMzdCMjI5QkJGIiwibml0IjoiSDRzSUFBQUFBQUFBQURNMk5UVTNNRFF3TWdjQTdEdXNSd2tBQUFBPSIsImlkIjo1MDIyMjkyLCJleHAiOjE3ODUzMzU5ODgsImlhdCI6MTc1MzgxNDM1OCwibml0RGVsZWdhZG8iOjMwNTA3MDAyNSwic3Vic2lzdGVtYSI6IlNGRSJ9.lCaUsF0D4gQ52COPkCYgOiceZXzSMl0Jq9E_TUOjohdK3YVeQdmYMItp0GgJfLMYiiddBdzQAUNmW7dD_q-1tg.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
 
       // Construir el arreglo de datos para la solicitud
       $requestData = [
@@ -354,7 +354,7 @@ class VentaController extends Controller
    public function emitirFactura2($data)
    {
       $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
-      $token = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ2ZXJvbmljYS5taXJhbmRhQGNvcnJlb3MuZ29iLmJvIiwiY29kaWdvU2lzdGVtYSI6Ijc3MDVBM0U2REIwNTBEMzdCMjI5QkJGIiwibml0IjoiSDRzSUFBQUFBQUFBQURNMk5UVTNNRFF3TWdjQTdEdXNSd2tBQUFBPSIsImlkIjo1MDIyMjkyLCJleHAiOjE3ODUzMzU5ODgsImlhdCI6MTc1MzgxNDM1OCwibml0RGVsZWdhZG8iOjMwNTA3MDAyNSwic3Vic2lzdGVtYSI6IlNGRSJ9.lCaUsF0D4gQ52COPkCYgOiceZXzSMl0Jq9E_TUOjohdK3YVeQdmYMItp0GgJfLMYiiddBdzQAUNmW7dD_q-1tg.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
 
       $requestData = [
          'codigoOrden' => $data['codigoOrden'],
@@ -428,7 +428,7 @@ class VentaController extends Controller
 
    public function consultarVenta($codigoSeguimiento)
    {
-      $token = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ2ZXJvbmljYS5taXJhbmRhQGNvcnJlb3MuZ29iLmJvIiwiY29kaWdvU2lzdGVtYSI6Ijc3MDVBM0U2REIwNTBEMzdCMjI5QkJGIiwibml0IjoiSDRzSUFBQUFBQUFBQURNMk5UVTNNRFF3TWdjQTdEdXNSd2tBQUFBPSIsImlkIjo1MDIyMjkyLCJleHAiOjE3ODUzMzU5ODgsImlhdCI6MTc1MzgxNDM1OCwibml0RGVsZWdhZG8iOjMwNTA3MDAyNSwic3Vic2lzdGVtYSI6IlNGRSJ9.lCaUsF0D4gQ52COPkCYgOiceZXzSMl0Jq9E_TUOjohdK3YVeQdmYMItp0GgJfLMYiiddBdzQAUNmW7dD_q-1tg.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
       $url = "https://sefe.demo.agetic.gob.bo/consulta/{$codigoSeguimiento}";
 
       Log::info("Código de Seguimiento: {$codigoSeguimiento}");
@@ -460,7 +460,7 @@ class VentaController extends Controller
    }
    public function anularFactura(Request $request, $cuf)
    {
-      $token = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ2ZXJvbmljYS5taXJhbmRhQGNvcnJlb3MuZ29iLmJvIiwiY29kaWdvU2lzdGVtYSI6Ijc3MDVBM0U2REIwNTBEMzdCMjI5QkJGIiwibml0IjoiSDRzSUFBQUFBQUFBQURNMk5UVTNNRFF3TWdjQTdEdXNSd2tBQUFBPSIsImlkIjo1MDIyMjkyLCJleHAiOjE3ODUzMzU5ODgsImlhdCI6MTc1MzgxNDM1OCwibml0RGVsZWdhZG8iOjMwNTA3MDAyNSwic3Vic2lzdGVtYSI6IlNGRSJ9.lCaUsF0D4gQ52COPkCYgOiceZXzSMl0Jq9E_TUOjohdK3YVeQdmYMItp0GgJfLMYiiddBdzQAUNmW7dD_q-1tg.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
       $url = "https://sefe.demo.agetic.gob.bo/anulacion/{$cuf}";
 
       // Preparar datos para la solicitud de anulación
