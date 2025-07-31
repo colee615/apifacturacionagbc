@@ -9,46 +9,49 @@ use Illuminate\Support\Facades\Http;
 
 class PosFacturacionController extends Controller
 {
-   public function emitirFactura(Request $request)
-   {
+    public function emitirFactura(Request $request)
+    {
+        $url   = 'https://sefe.demo.agetic.gob.bo/facturacion/emision/individual';
+        $token = 'eyJhbGciOiJIUzI1NiIsInR…NNuA';   // ⚠️  muévelo a .env o config/services.php
 
-      $ventaId = $request->venta_id; // Asegúrate de ajustar esto según cómo se maneje en tu front-end
+        // 1. Opciones Guzzle/cURL
+        $guzzleOpts = [
+            'verify' => false,                 // desactiva validación del certificado
+            'timeout' => 60,                   // aumenta o desactiva con 0 (no recomendado)
+            'curl' => [
+                CURLOPT_SSLVERSION   => CURL_SSLVERSION_TLSv1_2,
+                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+                CURLOPT_IPRESOLVE    => CURL_IPRESOLVE_V4,
+            ],
+        ];
 
-      $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
-      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+        // 2. Encabezados y payload
+        $payload = [
+            'codigoOrden'              => $request->venta_id,
+            'codigoSucursal'           => $request->codigoSucursal,
+            'puntoVenta'               => $request->puntoVenta,
+            'documentoSector'          => $request->documentoSector,
+            'municipio'                => $request->municipio,
+            'departamento'             => $request->departamento,
+            'telefono'                 => $request->telefono,
+            'razonSocial'              => $request->razonSocial,
+            'documentoIdentidad'       => $request->documentoIdentidad,
+            'tipoDocumentoIdentidad'   => $request->tipoDocumentoIdentidad,
+            'correo'                   => $request->correo,
+            'codigoCliente'            => $request->codigoCliente,
+            'metodoPago'               => $request->metodoPago,
+            'montoTotal'               => $request->montoTotal,
+            'montoDescuentoAdicional'  => $request->montoDescuentoAdicional,
+            'formatoFactura'           => $request->formatoFactura,
+            'detalle'                  => $request->detalle,
+        ];
 
-      $response = Http::withHeaders([
-         'Authorization' => 'Bearer ' . $token,
-         'Content-Type' => 'application/json'
-      ])->post($url, [
-         'codigoOrden' => $ventaId,  //Código de orden de la solicitud,necesario para identificar deforma única la emisión de factura.
-         'codigoSucursal' => $request->codigoSucursal, // codigo sucursal del cajero logueado
-         'puntoVenta' => $request->puntoVenta,         // codigo sucursal del cajero logueado
-         'documentoSector' => $request->documentoSector, // siempre debe ser 1 por ahora
-         'municipio' => $request->municipio,            // municipio de la sucursal del cajero logueado
-         'departamento' => $request->departamento,      // departamento de la sucursal del cajero logueado
-         'telefono' => $request->telefono,              // telefono de la sucursal del cajero logueado
-         'razonSocial' => $request->razonSocial,        // jalar el nombre del cliente (razon social)
-         'documentoIdentidad' => $request->documentoIdentidad, //jalar el documentoIdentidad del cliente
-         'tipoDocumentoIdentidad' => $request->tipoDocumentoIdentidad, //jalar el tipodocumentoidentidad del cliente
-         'correo' => $request->correo,                               //jalar  el correo del cliente
-         'codigoCliente' => $request->codigoCliente,                 //jalar el codigo cliente 
-         'metodoPago' => $request->metodoPago,                       // menejar el valor 1
-         'montoTotal' => $request->montoTotal,                 //monto total de la venta
-         'montoDescuentoAdicional' => $request->montoDescuentoAdicional,  //monto descuento adicional de la venta
-         'formatoFactura' => $request->formatoFactura,            //valor rollo
-         'detalle' => $request->detalle                           //detalle venta
+        // 3. Petición
+        $response = Http::withOptions($guzzleOpts)
+            ->withToken($token)               // o ->withHeaders(['Authorization' => "Bearer $token"])
+            ->acceptJson()
+            ->post($url, $payload);
 
-         // detallle[]. actividadEconomica = actividad economica del servicio      
-         // detalle[].codigoSin = CODIGO SIN DEL SERVICIO
-         // detalle[].codigo  = ID DEL SERVICIO
-         // detalle[].descripcion = Descripcion del servicio
-         // detalle[].precioUnitario = El precio del servicio
-         // detalle[].cantidad= cantidad 
-         // detalle[].unidadMedida = unidad de medida del servicio 
-
-      ]);
-
-      return $response->json();
-   }
+        return $response->json();             // devuelve la respuesta al front-end
+    }
 }
