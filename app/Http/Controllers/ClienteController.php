@@ -33,17 +33,14 @@ class ClienteController extends Controller
       // Obtener el valor de correo o asignar un valor por defecto
       $correo = $request->input('correo') ?? 'correo-generico@example.com';
 
-      // Obtener el último código de cliente existente
-      $ultimoCodigoCliente = Cliente::where('estado', 1)->max('codigoCliente');
+    // Obtener el mayor número existente de código de cliente
+$ultimo = Cliente::selectRaw('MAX(CAST(SUBSTRING("codigoCliente", 7) AS INTEGER)) as max')
+                 ->first()
+                 ->max ?? 0;
 
-      // Extraer el número del último código de cliente
-      $ultimoNumeroCliente = (int) Str::replace('CLIENT', '', $ultimoCodigoCliente);
+$nuevoCodigoCliente = 'CLIENT' . str_pad(($ultimo + 1), 2, '0', STR_PAD_LEFT);
 
-      // Incrementar el número para el nuevo código de cliente
-      $nuevoNumeroCliente = $ultimoNumeroCliente + 1;
 
-      // Formatear el nuevo número de cliente con ceros a la izquierda
-      $nuevoCodigoCliente = 'CLIENT' . str_pad($nuevoNumeroCliente, 2, '0', STR_PAD_LEFT);
 
       // Crear el cliente con el nuevo código
       $cliente = new Cliente();

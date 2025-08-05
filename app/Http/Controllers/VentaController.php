@@ -18,8 +18,6 @@ class VentaController extends Controller
     *
     * @return \Illuminate\Http\Response
     */
-
-   
    public function index()
    {
       $ventas = Venta::where('estado', 1)->get();
@@ -304,88 +302,99 @@ class VentaController extends Controller
       return response()->json(['message' => 'Venta eliminada correctamente']);
    }
 
-  public function emitirFactura(array $data)
-{
-    $url   = 'https://sefe.demo.agetic.gob.bo/facturacion/emision/individual';
-    $token = config('services.correos.token');   // pon tu token en .env
+   public function emitirFactura($data)
+   {
+      $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
 
-    $body = [
-        'codigoOrden'            => $data['codigoOrden'],
-        'codigoSucursal'         => $data['codigoSucursal'],
-        'puntoVenta'             => $data['puntoVenta'],
-        'documentoSector'        => $data['documentoSector'],
-        'municipio'              => $data['municipio'],
-        'departamento'           => $data['departamento'],
-        'telefono'               => $data['telefono'],
-        'razonSocial'            => $data['razonSocial'],
-        'documentoIdentidad'     => $data['documentoIdentidad'],
-        'tipoDocumentoIdentidad' => $data['tipoDocumentoIdentidad'],
-        'correo'                 => $data['correo'],
-        'codigoCliente'          => $data['codigoCliente'],
-        'metodoPago'             => $data['metodoPago'],
-        'montoTotal'             => $data['montoTotal'],
-        'formatoFactura'         => $data['formatoFactura'],
-        'detalle'                => $data['detalle'],
-    ];
-    if ($data['formatoFactura'] === 'rollo') $body['anchoFactura'] = 90;
-    if (!empty($data['complemento']))        $body['complemento']  = $data['complemento'];
+      // Construir el arreglo de datos para la solicitud
+      $requestData = [
+         'codigoOrden' => $data['codigoOrden'],
+         'codigoSucursal' => $data['codigoSucursal'],
+         'puntoVenta' => $data['puntoVenta'],
+         'documentoSector' => $data['documentoSector'],
+         'municipio' => $data['municipio'],
+         'departamento' => $data['departamento'],
+         'telefono' => $data['telefono'],
+         'razonSocial' => $data['razonSocial'],
+         'documentoIdentidad' => $data['documentoIdentidad'],
+         'tipoDocumentoIdentidad' => $data['tipoDocumentoIdentidad'],
+         'correo' => $data['correo'],
+         'codigoCliente' => $data['codigoCliente'],
+         'metodoPago' => $data['metodoPago'],
+         'montoTotal' => $data['montoTotal'],
+         'formatoFactura' => $data['formatoFactura'],
+         'detalle' => $data['detalle']
+      ];
 
-    Log::info('Datos enviados para emitir factura:', $body);
+      // Solo agregar el campo 'anchoFactura' si el formato es 'rollo'
+      if ($data['formatoFactura'] === 'rollo') {
+         $requestData['anchoFactura'] = 90;
+      }
 
-    $response = Http::withOptions([
-            'verify' => false, 'timeout' => 60,
-            'curl'   => [
-                CURLOPT_SSLVERSION   => CURL_SSLVERSION_TLSv1_2,
-                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                CURLOPT_IPRESOLVE    => CURL_IPRESOLVE_V4,
-            ],
-        ])
-        ->withToken($token)
-        ->acceptJson()
-        ->post($url, $body);
+      // Solo agregar el campo 'complemento' si tiene un valor
+      if (!empty($data['complemento'])) {
+         $requestData['complemento'] = $data['complemento'];
+      }
 
-    Log::info('Respuesta de la API:', $response->json());
-    return $response->json();
-}
-public function emitirFactura2(array $data)
-{
-    $url   = 'https://sefe.demo.agetic.gob.bo/facturacion/emision/individual';
-    $token = config('services.correos.token');
+      // Registrar los datos enviados en el log
+      Log::info('Datos enviados para emitir factura:', $requestData);
 
-    $body = [
-        'codigoOrden'      => $data['codigoOrden'],
-        'correo'           => $data['correo'],
-        'telefono'         => $data['telefono'],
-        'municipio'        => $data['municipio'],
-        'metodoPago'       => $data['metodoPago'],
-        'montoTotal'       => $data['montoTotal'],
-        'puntoVenta'       => $data['puntoVenta'],
-        'codigoSucursal'   => $data['codigoSucursal'],
-        'departamento'     => $data['departamento'],
-        'formatoFactura'   => $data['formatoFactura'],
-        'documentoSector'  => $data['documentoSector'],
-        'detalle'          => $data['detalle'],
-    ];
-    if ($data['formatoFactura'] === 'rollo') $body['anchoFactura'] = 75;
-    if (!empty($data['complemento']))        $body['complemento']  = $data['complemento'];
+      // Enviar la solicitud POST
+      $response = Http::withHeaders([
+         'Authorization' => 'Bearer ' . $token,
+         'Content-Type' => 'application/json'
+      ])->post($url, $requestData);
 
-    Log::info('Datos enviados para emitir factura:', $body);
+      // Registrar la respuesta en el log
+      Log::info('Respuesta de la API:', $response->json());
 
-    $response = Http::withOptions([
-            'verify' => false, 'timeout' => 60,
-            'curl'   => [
-                CURLOPT_SSLVERSION   => CURL_SSLVERSION_TLSv1_2,
-                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                CURLOPT_IPRESOLVE    => CURL_IPRESOLVE_V4,
-            ],
-        ])
-        ->withToken($token)
-        ->acceptJson()
-        ->post($url, $body);
+      return $response;
+   }
+   public function emitirFactura2($data)
+   {
+      $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
+      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
 
-    Log::info('Respuesta de la API:', $response->json());
-    return $response->json();
-}
+      $requestData = [
+         'codigoOrden' => $data['codigoOrden'],
+         'correo' => $data['correo'],
+         'telefono' => $data['telefono'],
+         'municipio' => $data['municipio'],
+         'metodoPago' => $data['metodoPago'],
+         'montoTotal' => $data['montoTotal'],
+         'puntoVenta' => $data['puntoVenta'],
+         'codigoSucursal' => $data['codigoSucursal'],
+         'departamento' => $data['departamento'],
+         'formatoFactura' => $data['formatoFactura'],
+         'documentoSector' => $data['documentoSector'],
+         'detalle' => $data['detalle']
+      ];
+
+      // Solo agregar el campo 'anchoFactura' si el formato es 'rollo'
+      if ($data['formatoFactura'] === 'rollo') {
+         $requestData['anchoFactura'] = 75;
+      }
+
+      // Solo agregar el campo 'complemento' si tiene un valor
+      if (!empty($data['complemento'])) {
+         $requestData['complemento'] = $data['complemento'];
+      }
+
+      // Registrar los datos enviados en el log
+      Log::info('Datos enviados para emitir factura:', $requestData);
+
+      // Enviar la solicitud POST
+      $response = Http::withHeaders([
+         'Authorization' => 'Bearer ' . $token,
+         'Content-Type' => 'application/json'
+      ])->post($url, $requestData);
+
+      // Registrar la respuesta en el log
+      Log::info('Respuesta de la API:', $response->json());
+
+      return $response;
+   }
    public function getPdfUrl($codigoSeguimiento)
    {
       $notificacion = Notificacione::where('codigo_seguimiento', $codigoSeguimiento)->first();
