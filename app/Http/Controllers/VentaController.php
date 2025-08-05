@@ -10,7 +10,8 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB; // Asegúrate de importar esta línea
-
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 class VentaController extends Controller
 {
    /**
@@ -18,6 +19,25 @@ class VentaController extends Controller
     *
     * @return \Illuminate\Http\Response
     */
+
+   private function ageticClient()
+{
+    $base = config('services.agetic.base_url');
+    $token = config('services.agetic.token');
+
+    return Http::withHeaders([
+        'Authorization' => 'Bearer ' . $token,
+        'Content-Type'  => 'application/json',
+        'Accept'        => 'application/json',
+    ])
+    // endurecemos sin tocar TLS:
+    ->withOptions([
+        'force_ip_resolve' => 'v4', // evita problemas IPv6
+    ])
+    ->timeout(30)
+    ->connectTimeout(10)
+    ->retry(2, 500); // 2 reintentos, 500 ms entre intentos
+}
    public function index()
    {
       $ventas = Venta::where('estado', 1)->get();
@@ -302,98 +322,147 @@ class VentaController extends Controller
       return response()->json(['message' => 'Venta eliminada correctamente']);
    }
 
-   public function emitirFactura($data)
-   {
-      $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
-      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+  public function emitirFactura(array $data): array
+{
+    $url = rtrim(config('services.agetic.base_url'), '/') . '/facturacion/emision/individual';
 
-      // Construir el arreglo de datos para la solicitud
-      $requestData = [
-         'codigoOrden' => $data['codigoOrden'],
-         'codigoSucursal' => $data['codigoSucursal'],
-         'puntoVenta' => $data['puntoVenta'],
-         'documentoSector' => $data['documentoSector'],
-         'municipio' => $data['municipio'],
-         'departamento' => $data['departamento'],
-         'telefono' => $data['telefono'],
-         'razonSocial' => $data['razonSocial'],
-         'documentoIdentidad' => $data['documentoIdentidad'],
-         'tipoDocumentoIdentidad' => $data['tipoDocumentoIdentidad'],
-         'correo' => $data['correo'],
-         'codigoCliente' => $data['codigoCliente'],
-         'metodoPago' => $data['metodoPago'],
-         'montoTotal' => $data['montoTotal'],
-         'formatoFactura' => $data['formatoFactura'],
-         'detalle' => $data['detalle']
-      ];
+    $requestData = [
+        'codigoOrden'            => $data['codigoOrden'],
+        'codigoSucursal'         => $data['codigoSucursal'],
+        'puntoVenta'             => $data['puntoVenta'],
+        'documentoSector'        => $data['documentoSector'],
+        'municipio'              => $data['municipio'],
+        'departamento'           => $data['departamento'],
+        'telefono'               => $data['telefono'],
+        'razonSocial'            => $data['razonSocial'],
+        'documentoIdentidad'     => $data['documentoIdentidad'],
+        'tipoDocumentoIdentidad' => $data['tipoDocumentoIdentidad'],
+        'correo'                 => $data['correo'],
+        'codigoCliente'          => $data['codigoCliente'],
+        'metodoPago'             => $data['metodoPago'],
+        'montoTotal'             => $data['montoTotal'],
+        'formatoFactura'         => $data['formatoFactura'],
+        'detalle'                => $data['detalle'],
+    ];
 
-      // Solo agregar el campo 'anchoFactura' si el formato es 'rollo'
-      if ($data['formatoFactura'] === 'rollo') {
-         $requestData['anchoFactura'] = 90;
-      }
+    if (($data['formatoFactura'] ?? null) === 'rollo') {
+        $requestData['anchoFactura'] = 90;
+    }
+    if (!empty($data['complemento'])) {
+        $requestData['complemento'] = $data['complemento'];
+    }
 
-      // Solo agregar el campo 'complemento' si tiene un valor
-      if (!empty($data['complemento'])) {
-         $requestData['complemento'] = $data['complemento'];
-      }
+    Log::info('AGETIC emitirFactura request', $requestData);
 
-      // Registrar los datos enviados en el log
-      Log::info('Datos enviados para emitir factura:', $requestData);
+    try {
+        $resp = $this->ageticClient()->post($url, $requestData);
 
-      // Enviar la solicitud POST
-      $response = Http::withHeaders([
-         'Authorization' => 'Bearer ' . $token,
-         'Content-Type' => 'application/json'
-      ])->post($url, $requestData);
+        // Lanza excepción en 4xx/5xx y la capturamos abajo
+        $resp->throw();
 
-      // Registrar la respuesta en el log
-      Log::info('Respuesta de la API:', $response->json());
+        $json = $resp->json();
+        Log::info('AGETIC emitirFactura response', $json ?? []);
 
-      return $response;
-   }
-   public function emitirFactura2($data)
-   {
-      $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
-      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+        return [
+            'ok'     => true,
+            'status' => $resp->status(),
+            'body'   => $json,
+            'error'  => null,
+        ];
+    } catch (RequestException $e) {
+        // Respuesta 4xx/5xx con cuerpo
+        $resp = $e->response;
+        return [
+            'ok'     => false,
+            'status' => optional($resp)->status() ?? 0,
+            'body'   => optional($resp)->json(),
+            'error'  => $e->getMessage(),
+        ];
+    } catch (ConnectionException $e) {
+        // timeouts / problemas de conexión (p.ej., cURL 28)
+        Log::error('AGETIC emitirFactura connection error', ['msg' => $e->getMessage()]);
+        return [
+            'ok'     => false,
+            'status' => 0,
+            'body'   => null,
+            'error'  => $e->getMessage(),
+        ];
+    } catch (\Throwable $e) {
+        Log::error('AGETIC emitirFactura unexpected error', ['msg' => $e->getMessage()]);
+        return [
+            'ok'     => false,
+            'status' => 0,
+            'body'   => null,
+            'error'  => $e->getMessage(),
+        ];
+    }
+}
+   public function emitirFactura2(array $data): array
+{
+    $url = rtrim(config('services.agetic.base_url'), '/') . '/facturacion/emision/individual';
 
-      $requestData = [
-         'codigoOrden' => $data['codigoOrden'],
-         'correo' => $data['correo'],
-         'telefono' => $data['telefono'],
-         'municipio' => $data['municipio'],
-         'metodoPago' => $data['metodoPago'],
-         'montoTotal' => $data['montoTotal'],
-         'puntoVenta' => $data['puntoVenta'],
-         'codigoSucursal' => $data['codigoSucursal'],
-         'departamento' => $data['departamento'],
-         'formatoFactura' => $data['formatoFactura'],
-         'documentoSector' => $data['documentoSector'],
-         'detalle' => $data['detalle']
-      ];
+    $requestData = [
+        'codigoOrden'     => $data['codigoOrden'],
+        'correo'          => $data['correo'],
+        'telefono'        => $data['telefono'],
+        'municipio'       => $data['municipio'],
+        'metodoPago'      => $data['metodoPago'],
+        'montoTotal'      => $data['montoTotal'],
+        'puntoVenta'      => $data['puntoVenta'],
+        'codigoSucursal'  => $data['codigoSucursal'],
+        'departamento'    => $data['departamento'],
+        'formatoFactura'  => $data['formatoFactura'],
+        'documentoSector' => $data['documentoSector'],
+        'detalle'         => $data['detalle'],
+    ];
 
-      // Solo agregar el campo 'anchoFactura' si el formato es 'rollo'
-      if ($data['formatoFactura'] === 'rollo') {
-         $requestData['anchoFactura'] = 75;
-      }
+    if (($data['formatoFactura'] ?? null) === 'rollo') {
+        $requestData['anchoFactura'] = 75;
+    }
+    if (!empty($data['complemento'])) {
+        $requestData['complemento'] = $data['complemento'];
+    }
 
-      // Solo agregar el campo 'complemento' si tiene un valor
-      if (!empty($data['complemento'])) {
-         $requestData['complemento'] = $data['complemento'];
-      }
+    Log::info('AGETIC emitirFactura2 request', $requestData);
 
-      // Registrar los datos enviados en el log
-      Log::info('Datos enviados para emitir factura:', $requestData);
+    try {
+        $resp = $this->ageticClient()->post($url, $requestData);
+        $resp->throw();
 
-      // Enviar la solicitud POST
-      $response = Http::withHeaders([
-         'Authorization' => 'Bearer ' . $token,
-         'Content-Type' => 'application/json'
-      ])->post($url, $requestData);
+        $json = $resp->json();
+        Log::info('AGETIC emitirFactura2 response', $json ?? []);
 
-      // Registrar la respuesta en el log
-      Log::info('Respuesta de la API:', $response->json());
-
-      return $response;
+        return [
+            'ok'     => true,
+            'status' => $resp->status(),
+            'body'   => $json,
+            'error'  => null,
+        ];
+    } catch (RequestException $e) {
+        $resp = $e->response;
+        return [
+            'ok'     => false,
+            'status' => optional($resp)->status() ?? 0,
+            'body'   => optional($resp)->json(),
+            'error'  => $e->getMessage(),
+        ];
+    } catch (ConnectionException $e) {
+        Log::error('AGETIC emitirFactura2 connection error', ['msg' => $e->getMessage()]);
+        return [
+            'ok'     => false,
+            'status' => 0,
+            'body'   => null,
+            'error'  => $e->getMessage(),
+        ];
+    } catch (\Throwable $e) {
+        Log::error('AGETIC emitirFactura2 unexpected error', ['msg' => $e->getMessage()]);
+        return [
+            'ok'     => false,
+            'status' => 0,
+            'body'   => null,
+            'error'  => $e->getMessage(),
+        ];
+    }
    }
    public function getPdfUrl($codigoSeguimiento)
    {
