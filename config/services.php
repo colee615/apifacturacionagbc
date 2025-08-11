@@ -29,9 +29,11 @@ return [
         'secret' => env('AWS_SECRET_ACCESS_KEY'),
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
-     'agetic' => [
+    'agetic' => [
         'base_url' => env('AGETIC_BASE_URL', 'https://sefe.demo.agetic.gob.bo'),
         'token'    => env('AGETIC_TOKEN'),
+        'verify'   => env('AGETIC_SSL_VERIFY', true), // true|false
     ],
+
 
 ];
