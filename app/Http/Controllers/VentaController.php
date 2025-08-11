@@ -67,23 +67,33 @@ class VentaController extends Controller
 }
 private function postAgetic(string $url, array $payload)
 {
+    // 1) cURL IPv4
     try {
-        $resp = $this->ageticClient()->post($url, $payload);
+        $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
         $resp->throw();
         return $resp;
-    } catch (\Illuminate\Http\Client\ConnectionException $e) {
-        // cae al stream handler
-    } catch (\Throwable $e) {
-        if (stripos($e->getMessage(), 'cURL error 35') === false) {
-            throw $e; // otros errores, propaga
-        }
-    }
+    } catch (\Throwable $e) {}
 
-    // Fallback por streams (sin cURL)
-    $resp = $this->ageticClientStream()->post($url, $payload);
+    // 2) Streams IPv4
+    try {
+        $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
+        $resp->throw();
+        return $resp;
+    } catch (\Throwable $e) {}
+
+    // 3) cURL IPv6
+    try {
+        $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
+        $resp->throw();
+        return $resp;
+    } catch (\Throwable $e) {}
+
+    // 4) Streams IPv6
+    $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
     $resp->throw();
     return $resp;
 }
+
 private function ageticClient()
 {
     $token  = config('services.agetic.token');
