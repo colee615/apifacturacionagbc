@@ -24,42 +24,46 @@ class VentaController extends Controller
         return rtrim(config('services.agetic.base_url', 'https://sefe.demo.agetic.gob.bo'), '/');
     }
 
-   private function ageticClient()
+  private function ageticClient()
 {
-    $token  = config('services.agetic.token');
+    $base  = config('services.agetic.base_url');
+    $host  = parse_url($base, PHP_URL_HOST) ?: 'sefe.demo.agetic.gob.bo';
+    $ip    = gethostbyname($host);                 // fuerza IPv4 real usado por el server
+    $token = config('services.agetic.token');
     $verify = (bool) config('services.agetic.verify', true);
 
-    // Archivo de depuración (opcional)
     $debugFile = Utils::tryFopen(storage_path('logs/curl_agetic.debug.log'), 'a');
+
+    // Construye la regla de "DNS pinning"
+    $resolve = [$host.':443:'.$ip];                // e.g. ["sefe.demo.agetic.gob.bo:443:190.x.y.z"]
+
+    $curl = [
+        CURLOPT_SSL_VERIFYPEER   => $verify,
+        CURLOPT_SSL_VERIFYHOST   => $verify ? 2 : 0,
+        CURLOPT_SSLVERSION       => CURL_SSLVERSION_TLSv1_2,
+        CURLOPT_HTTP_VERSION     => CURL_HTTP_VERSION_1_1,
+        CURLOPT_SSL_CIPHER_LIST  => 'DEFAULT:@SECLEVEL=1',
+        CURLOPT_RESOLVE          => $resolve,      // 🔒 usa ese IP con Host SNI correcto
+    ];
+
+    // Desactiva ALPN/NPN si tu build lo soporta (muchas veces evita resets en WAFs)
+    if (defined('CURLOPT_SSL_ENABLE_ALPN')) $curl[CURLOPT_SSL_ENABLE_ALPN] = false;
+    if (defined('CURLOPT_SSL_ENABLE_NPN'))  $curl[CURLOPT_SSL_ENABLE_NPN]  = false;
 
     return Http::withHeaders([
             'Authorization' => 'Bearer '.$token,
             'Accept'        => 'application/json',
             'Content-Type'  => 'application/json',
-            // Mimetiza Postman (algunos WAFs se ponen exquisitos con el UA)
             'User-Agent'    => 'PostmanRuntime/7.39.0',
         ])
         ->asJson()
         ->withOptions([
             'verify'           => $verify,
-            'debug'            => $debugFile,   // <-- resource válido
+            'debug'            => $debugFile,
             'force_ip_resolve' => 'v4',
-            'expect'           => false,        // desactiva "Expect: 100-continue"
-            'proxy'            => '',           // evita proxy transparente si lo hay
-            'curl' => [
-                CURLOPT_SSL_VERIFYPEER   => $verify,
-                CURLOPT_SSL_VERIFYHOST   => $verify ? 2 : 0,
-                CURLOPT_SSLVERSION       => CURL_SSLVERSION_TLSv1_2,
-                CURLOPT_HTTP_VERSION     => CURL_HTTP_VERSION_1_1,
-
-                // 🔑 baja el security level para negociar suites compatibles
-                CURLOPT_SSL_CIPHER_LIST  => 'DEFAULT:@SECLEVEL=1',
-
-                // Opcional: algunos endpoints fallan con ALPN/NPN
-                // (si tu build NO tiene estas constantes, coméntalas)
-                // CURLOPT_SSL_ENABLE_ALPN => false,
-                // CURLOPT_SSL_ENABLE_NPN  => false,
-            ],
+            'expect'           => false,
+            'proxy'            => '',              // evita proxy “transparente”
+            'curl'             => $curl,
         ])
         ->connectTimeout(20)
         ->timeout(60)
