@@ -65,34 +65,57 @@ class VentaController extends Controller
         ->connectTimeout(20)
         ->timeout(60);
 }
+private function supportsIPv6(string $host): bool
+{
+    $recs = @dns_get_record($host, DNS_AAAA);
+    return is_array($recs) && count($recs) > 0;
+}
+
 private function postAgetic(string $url, array $payload)
 {
+    $host = parse_url($this->ageticBaseUrl(), PHP_URL_HOST) ?: 'sefe.demo.agetic.gob.bo';
+    $errors = [];
+
     // 1) cURL IPv4
     try {
         $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
         $resp->throw();
         return $resp;
-    } catch (\Throwable $e) {}
+    } catch (\Throwable $e) {
+        $errors[] = 'cURL v4: '.$e->getMessage();
+    }
 
     // 2) Streams IPv4
     try {
         $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
         $resp->throw();
         return $resp;
-    } catch (\Throwable $e) {}
+    } catch (\Throwable $e) {
+        $errors[] = 'streams v4: '.$e->getMessage();
+    }
 
-    // 3) cURL IPv6
-    try {
-        $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
-        $resp->throw();
-        return $resp;
-    } catch (\Throwable $e) {}
+    // 3) Solo si hay AAAA, intenta IPv6
+    if ($this->supportsIPv6($host)) {
+        try {
+            $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
+            $resp->throw();
+            return $resp;
+        } catch (\Throwable $e) {
+            $errors[] = 'cURL v6: '.$e->getMessage();
+        }
 
-    // 4) Streams IPv6
-    $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
-    $resp->throw();
-    return $resp;
+        try {
+            $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
+            $resp->throw();
+            return $resp;
+        } catch (\Throwable $e) {
+            $errors[] = 'streams v6: '.$e->getMessage();
+        }
+    }
+
+    throw new \RuntimeException('No se pudo conectar con AGETIC. Intentos: '.implode(' | ', $errors));
 }
+
 
 private function ageticClient()
 {
