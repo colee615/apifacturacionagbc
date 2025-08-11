@@ -15,7 +15,7 @@ class PosFacturacionController extends Controller
       $ventaId = $request->venta_id; // Asegúrate de ajustar esto según cómo se maneje en tu front-end
 
       $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
-      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+      $token = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ2ZXJvbmljYS5taXJhbmRhQGNvcnJlb3MuZ29iLmJvIiwiY29kaWdvU2lzdGVtYSI6IkU0REYxMUVBN0QzODI3QTc0OEZCRkJBNTc2OTdERiIsIm5pdCI6Ikg0c0lBQUFBQUFBQUFETTJOVFUzTURRd01nY0E3RHVzUndrQUFBQT0iLCJpZCI6NTAyMjI5MiwiZXhwIjoxNzg0OTAzMTg0LCJpYXQiOjE3NTMzODE1NTQsIm5pdERlbGVnYWRvIjoxMDAzNTc5MDI4LCJzdWJzaXN0ZW1hIjoiU0ZFIn0.xvA1UDLH2C3paFkeAPNjPf-JHs0q5YvNIwRd5uFkSRoAj28TYY8C-jTPEEg0sPkTVRywLtgfJO1kJZtvf_c9FA';
 
       $response = Http::withHeaders([
          'Authorization' => 'Bearer ' . $token,
