@@ -23,36 +23,25 @@ class VentaController extends Controller
         return rtrim(config('services.agetic.base_url', 'https://sefe.demo.agetic.gob.bo'), '/');
     }
 
-   private function ageticClient()
-{
-    $token  = config('services.agetic.token');
+    private function ageticClient()
+    {
+        $token = config('services.agetic.token');
 
-    return Http::withHeaders([
-            'Authorization' => 'Bearer '.$token,
-            'Accept'        => 'application/json',
-            'Content-Type'  => 'application/json',
-            'Expect'        => '',          // evita 100-continue
-            'Connection'    => 'close',     // evita keep-alive problemático
-        ])
-        ->withOptions([
-            'force_ip_resolve' => 'v4',
-            'verify'           => '/etc/ssl/certs/roni_2025.crt', // usa CA del sistema
-            'version'          => 1.1, // guzzle: HTTP/1.1
-            'curl' => [
-                CURLOPT_HTTP_VERSION    => CURL_HTTP_VERSION_1_1,     // fuerza HTTP/1.1
-                CURLOPT_SSLVERSION      => CURL_SSLVERSION_TLSv1_2,   // fuerza TLS 1.2
-                // baja nivel de seguridad por si el server usa suites antiguas (temporal):
-                CURLOPT_SSL_CIPHER_LIST => 'DEFAULT@SECLEVEL=1',
-                CURLOPT_TCP_KEEPALIVE   => 1,
-                CURLOPT_TCP_KEEPIDLE    => 30,
-            ],
-        ])
-        ->connectTimeout(15)
-        ->timeout(45)
-        ->retry(2, 700, fn($e) => $e instanceof \Illuminate\Http\Client\ConnectionException);
-}
-
-
+        return Http::withHeaders([
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type'  => 'application/json',
+                'Accept'        => 'application/json',
+            ])
+            ->withOptions([
+                'force_ip_resolve' => 'v4',
+            ])
+            ->connectTimeout(20)
+            ->timeout(60)
+            // Reintenta solo si es problema de conexión (timeouts, etc.)
+            ->retry(3, 800, function ($exception) {
+                return $exception instanceof ConnectionException;
+            });
+    }
 
     // =========================
     //  codigoOrden desde ID
