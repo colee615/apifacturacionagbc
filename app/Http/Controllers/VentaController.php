@@ -68,9 +68,12 @@ class VentaController extends Controller
 private function postAgetic(string $url, array $payload)
 {
 <<<<<<< HEAD
+<<<<<<< HEAD
     // Un solo intento (cURL IPv4). Si falla aquí, es red/WAF.
     $resp = $this->ageticClient()->post($url, $payload);
 =======
+=======
+>>>>>>> parent of 2d98638 (PRUEBA 3.6)
     // 1) cURL IPv4
     try {
         $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
@@ -94,6 +97,9 @@ private function postAgetic(string $url, array $payload)
 
     // 4) Streams IPv6
     $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
+<<<<<<< HEAD
+>>>>>>> parent of 2d98638 (PRUEBA 3.6)
+=======
 >>>>>>> parent of 2d98638 (PRUEBA 3.6)
     $resp->throw();
     return $resp;
