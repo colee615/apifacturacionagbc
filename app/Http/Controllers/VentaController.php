@@ -85,39 +85,32 @@ private function ageticClient()
     $token  = config('services.agetic.token');
     $verify = (bool) config('services.agetic.verify', true);
 
-    $debugFile = \GuzzleHttp\Psr7\Utils::tryFopen(storage_path('logs/curl_agetic.debug.log'), 'a');
-
-    $curl = [
-        CURLOPT_SSL_VERIFYPEER   => $verify,
-        CURLOPT_SSL_VERIFYHOST   => $verify ? 2 : 0,
-        CURLOPT_SSLVERSION       => CURL_SSLVERSION_TLSv1_2,
-        CURLOPT_HTTP_VERSION     => CURL_HTTP_VERSION_1_1,
-        CURLOPT_SSL_CIPHER_LIST  => 'DEFAULT:@SECLEVEL=1',
-        CURLOPT_IPRESOLVE        => CURL_IPRESOLVE_V4, // fuerza IPv4
-        CURLOPT_FRESH_CONNECT    => true,              // evita reuse
-        CURLOPT_FORBID_REUSE     => true,
-    ];
-    if (defined('CURLOPT_SSL_ENABLE_ALPN')) $curl[CURLOPT_SSL_ENABLE_ALPN] = false;
-    if (defined('CURLOPT_SSL_ENABLE_NPN'))  $curl[CURLOPT_SSL_ENABLE_NPN]  = false;
-
-    return \Illuminate\Support\Facades\Http::withHeaders([
+    return Http::withHeaders([
             'Authorization' => 'Bearer '.$token,
             'Accept'        => 'application/json',
             'Content-Type'  => 'application/json',
-            'User-Agent'    => 'PostmanRuntime/7.39.0',
+            'User-Agent'    => 'curl/7.88.1', // algo común
         ])
         ->asJson()
         ->withOptions([
             'verify'           => $verify,
-            'force_ip_resolve' => 'v4',
+            'force_ip_resolve' => 'v4',   // solo esto
             'expect'           => false,
-            'proxy'            => '',
-            'debug'            => $debugFile,   // deja rastro del handshake
-            'curl'             => $curl,
+            'proxy'            => null,   // sin proxies
+            'curl' => [
+                // NO forzar TLS version
+                // NO forzar cipher list
+                CURLOPT_SSL_VERIFYPEER => $verify,
+                CURLOPT_SSL_VERIFYHOST => $verify ? 2 : 0,
+                CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+                CURLOPT_FRESH_CONNECT  => true,
+                CURLOPT_FORBID_REUSE   => true,
+            ],
         ])
         ->connectTimeout(20)
         ->timeout(60);
 }
+
 
 
 
