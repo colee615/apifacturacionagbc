@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
-use GuzzleHttp\Psr7\Utils; // arriba del archivo
+use GuzzleHttp\Psr7\Utils;
 use Carbon\Carbon;
 
 class VentaController extends Controller
@@ -29,29 +29,38 @@ class VentaController extends Controller
     $token  = config('services.agetic.token');
     $verify = (bool) config('services.agetic.verify', true);
 
-    $opts = [
-        'verify' => $verify,
-        'curl' => [
-            CURLOPT_SSL_VERIFYPEER => $verify,
-            CURLOPT_SSL_VERIFYHOST => $verify ? 2 : 0,
-            CURLOPT_SSLVERSION     => CURL_SSLVERSION_TLSv1_2,
-            CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
-        ],
-        'force_ip_resolve' => 'v4',
-        // 'debug' => true, // <- opcional, manda a STDERR (no recomendado en FPM)
-    ];
-
-    // ✅ Si quieres log a archivo:
-    $debugPath = storage_path('logs/curl_agetic.debug.log');
-    $opts['debug'] = Utils::tryFopen($debugPath, 'a'); // <-- resource válido
+    // Archivo de depuración (opcional)
+    $debugFile = Utils::tryFopen(storage_path('logs/curl_agetic.debug.log'), 'a');
 
     return Http::withHeaders([
-            'Authorization' => 'Bearer ' . $token,
+            'Authorization' => 'Bearer '.$token,
             'Accept'        => 'application/json',
             'Content-Type'  => 'application/json',
+            // Mimetiza Postman (algunos WAFs se ponen exquisitos con el UA)
+            'User-Agent'    => 'PostmanRuntime/7.39.0',
         ])
         ->asJson()
-        ->withOptions($opts)
+        ->withOptions([
+            'verify'           => $verify,
+            'debug'            => $debugFile,   // <-- resource válido
+            'force_ip_resolve' => 'v4',
+            'expect'           => false,        // desactiva "Expect: 100-continue"
+            'proxy'            => '',           // evita proxy transparente si lo hay
+            'curl' => [
+                CURLOPT_SSL_VERIFYPEER   => $verify,
+                CURLOPT_SSL_VERIFYHOST   => $verify ? 2 : 0,
+                CURLOPT_SSLVERSION       => CURL_SSLVERSION_TLSv1_2,
+                CURLOPT_HTTP_VERSION     => CURL_HTTP_VERSION_1_1,
+
+                // 🔑 baja el security level para negociar suites compatibles
+                CURLOPT_SSL_CIPHER_LIST  => 'DEFAULT:@SECLEVEL=1',
+
+                // Opcional: algunos endpoints fallan con ALPN/NPN
+                // (si tu build NO tiene estas constantes, coméntalas)
+                // CURLOPT_SSL_ENABLE_ALPN => false,
+                // CURLOPT_SSL_ENABLE_NPN  => false,
+            ],
+        ])
         ->connectTimeout(20)
         ->timeout(60)
         ->retry(3, 800, fn($e) => $e instanceof \Illuminate\Http\Client\ConnectionException);
