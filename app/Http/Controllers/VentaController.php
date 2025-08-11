@@ -24,24 +24,39 @@ class VentaController extends Controller
     }
 
     private function ageticClient()
-    {
-        $token = config('services.agetic.token');
+{
+    $token  = config('services.agetic.token');
+    $verify = (bool) config('services.agetic.verify', true);
 
-        return Http::withHeaders([
-                'Authorization' => 'Bearer ' . $token,
-                'Content-Type'  => 'application/json',
-                'Accept'        => 'application/json',
-            ])
-            ->withOptions([
-                'force_ip_resolve' => 'v4',
-            ])
-            ->connectTimeout(20)
-            ->timeout(60)
-            // Reintenta solo si es problema de conexión (timeouts, etc.)
-            ->retry(3, 800, function ($exception) {
-                return $exception instanceof ConnectionException;
-            });
-    }
+    return Http::withHeaders([
+            'Authorization' => 'Bearer ' . $token,
+            'Accept'        => 'application/json',
+            'Content-Type'  => 'application/json',
+        ])
+        ->asJson()
+        ->withOptions([
+            // Des/activa la verificación según .env
+            'verify' => $verify,
+
+            // Fuerza TLS1.2 y HTTP/1.1 (evita resets en algunos endpoints)
+            'curl' => [
+                CURLOPT_SSL_VERIFYPEER => $verify,
+                CURLOPT_SSL_VERIFYHOST => $verify ? 2 : 0,
+                CURLOPT_SSLVERSION     => CURL_SSLVERSION_TLSv1_2,
+                CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+            ],
+
+            // Preferir IPv4
+            'force_ip_resolve' => 'v4',
+
+            // Log cURL para diagnosticar si hiciera falta
+            'debug' => storage_path('logs/curl_agetic.debug.log'),
+        ])
+        ->connectTimeout(20)
+        ->timeout(60)
+        ->retry(3, 800, fn($e) => $e instanceof \Illuminate\Http\Client\ConnectionException);
+}
+
 
     // =========================
     //  codigoOrden desde ID
