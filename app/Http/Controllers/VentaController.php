@@ -107,11 +107,13 @@ private function ageticClient()
                 CURLOPT_SSLVERSION      => CURL_SSLVERSION_TLSv1_2,
                 CURLOPT_HTTP_VERSION    => CURL_HTTP_VERSION_1_1,
                 CURLOPT_SSL_CIPHER_LIST => 'DEFAULT:@SECLEVEL=1',
+                // ⚠️ NO poner CURLOPT_RESOLVE aquí
             ],
         ])
         ->connectTimeout(20)
         ->timeout(60);
 }
+
 
 
 
