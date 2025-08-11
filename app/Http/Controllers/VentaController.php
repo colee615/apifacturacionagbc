@@ -73,47 +73,10 @@ private function supportsIPv6(string $host): bool
 
 private function postAgetic(string $url, array $payload)
 {
-    $host = parse_url($this->ageticBaseUrl(), PHP_URL_HOST) ?: 'sefe.demo.agetic.gob.bo';
-    $errors = [];
-
-    // 1) cURL IPv4
-    try {
-        $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
-        $resp->throw();
-        return $resp;
-    } catch (\Throwable $e) {
-        $errors[] = 'cURL v4: '.$e->getMessage();
-    }
-
-    // 2) Streams IPv4
-    try {
-        $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
-        $resp->throw();
-        return $resp;
-    } catch (\Throwable $e) {
-        $errors[] = 'streams v4: '.$e->getMessage();
-    }
-
-    // 3) Solo si hay AAAA, intenta IPv6
-    if ($this->supportsIPv6($host)) {
-        try {
-            $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
-            $resp->throw();
-            return $resp;
-        } catch (\Throwable $e) {
-            $errors[] = 'cURL v6: '.$e->getMessage();
-        }
-
-        try {
-            $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
-            $resp->throw();
-            return $resp;
-        } catch (\Throwable $e) {
-            $errors[] = 'streams v6: '.$e->getMessage();
-        }
-    }
-
-    throw new \RuntimeException('No se pudo conectar con AGETIC. Intentos: '.implode(' | ', $errors));
+    // Un solo intento (cURL IPv4). Si falla aquí, es red/WAF.
+    $resp = $this->ageticClient()->post($url, $payload);
+    $resp->throw();
+    return $resp;
 }
 
 
@@ -122,7 +85,22 @@ private function ageticClient()
     $token  = config('services.agetic.token');
     $verify = (bool) config('services.agetic.verify', true);
 
-    return Http::withHeaders([
+    $debugFile = \GuzzleHttp\Psr7\Utils::tryFopen(storage_path('logs/curl_agetic.debug.log'), 'a');
+
+    $curl = [
+        CURLOPT_SSL_VERIFYPEER   => $verify,
+        CURLOPT_SSL_VERIFYHOST   => $verify ? 2 : 0,
+        CURLOPT_SSLVERSION       => CURL_SSLVERSION_TLSv1_2,
+        CURLOPT_HTTP_VERSION     => CURL_HTTP_VERSION_1_1,
+        CURLOPT_SSL_CIPHER_LIST  => 'DEFAULT:@SECLEVEL=1',
+        CURLOPT_IPRESOLVE        => CURL_IPRESOLVE_V4, // fuerza IPv4
+        CURLOPT_FRESH_CONNECT    => true,              // evita reuse
+        CURLOPT_FORBID_REUSE     => true,
+    ];
+    if (defined('CURLOPT_SSL_ENABLE_ALPN')) $curl[CURLOPT_SSL_ENABLE_ALPN] = false;
+    if (defined('CURLOPT_SSL_ENABLE_NPN'))  $curl[CURLOPT_SSL_ENABLE_NPN]  = false;
+
+    return \Illuminate\Support\Facades\Http::withHeaders([
             'Authorization' => 'Bearer '.$token,
             'Accept'        => 'application/json',
             'Content-Type'  => 'application/json',
@@ -134,14 +112,8 @@ private function ageticClient()
             'force_ip_resolve' => 'v4',
             'expect'           => false,
             'proxy'            => '',
-            'curl' => [
-                CURLOPT_SSL_VERIFYPEER  => $verify,
-                CURLOPT_SSL_VERIFYHOST  => $verify ? 2 : 0,
-                CURLOPT_SSLVERSION      => CURL_SSLVERSION_TLSv1_2,
-                CURLOPT_HTTP_VERSION    => CURL_HTTP_VERSION_1_1,
-                CURLOPT_SSL_CIPHER_LIST => 'DEFAULT:@SECLEVEL=1',
-                // ⚠️ NO poner CURLOPT_RESOLVE aquí
-            ],
+            'debug'            => $debugFile,   // deja rastro del handshake
+            'curl'             => $curl,
         ])
         ->connectTimeout(20)
         ->timeout(60);
