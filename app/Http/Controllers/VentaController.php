@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use GuzzleHttp\Psr7\Utils; // arriba del archivo
 use Carbon\Carbon;
 
 class VentaController extends Controller
@@ -23,10 +24,26 @@ class VentaController extends Controller
         return rtrim(config('services.agetic.base_url', 'https://sefe.demo.agetic.gob.bo'), '/');
     }
 
-    private function ageticClient()
+   private function ageticClient()
 {
     $token  = config('services.agetic.token');
     $verify = (bool) config('services.agetic.verify', true);
+
+    $opts = [
+        'verify' => $verify,
+        'curl' => [
+            CURLOPT_SSL_VERIFYPEER => $verify,
+            CURLOPT_SSL_VERIFYHOST => $verify ? 2 : 0,
+            CURLOPT_SSLVERSION     => CURL_SSLVERSION_TLSv1_2,
+            CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+        ],
+        'force_ip_resolve' => 'v4',
+        // 'debug' => true, // <- opcional, manda a STDERR (no recomendado en FPM)
+    ];
+
+    // ✅ Si quieres log a archivo:
+    $debugPath = storage_path('logs/curl_agetic.debug.log');
+    $opts['debug'] = Utils::tryFopen($debugPath, 'a'); // <-- resource válido
 
     return Http::withHeaders([
             'Authorization' => 'Bearer ' . $token,
@@ -34,28 +51,12 @@ class VentaController extends Controller
             'Content-Type'  => 'application/json',
         ])
         ->asJson()
-        ->withOptions([
-            // Des/activa la verificación según .env
-            'verify' => $verify,
-
-            // Fuerza TLS1.2 y HTTP/1.1 (evita resets en algunos endpoints)
-            'curl' => [
-                CURLOPT_SSL_VERIFYPEER => $verify,
-                CURLOPT_SSL_VERIFYHOST => $verify ? 2 : 0,
-                CURLOPT_SSLVERSION     => CURL_SSLVERSION_TLSv1_2,
-                CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
-            ],
-
-            // Preferir IPv4
-            'force_ip_resolve' => 'v4',
-
-            // Log cURL para diagnosticar si hiciera falta
-            'debug' => storage_path('logs/curl_agetic.debug.log'),
-        ])
+        ->withOptions($opts)
         ->connectTimeout(20)
         ->timeout(60)
         ->retry(3, 800, fn($e) => $e instanceof \Illuminate\Http\Client\ConnectionException);
 }
+
 
 
     // =========================
