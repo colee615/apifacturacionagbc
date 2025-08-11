@@ -11,9 +11,6 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
-use GuzzleHttp\Psr7\Utils;
-use GuzzleHttp\HandlerStack;
-use GuzzleHttp\Handler\StreamHandler;
 use Carbon\Carbon;
 
 class VentaController extends Controller
@@ -26,119 +23,25 @@ class VentaController extends Controller
         return rtrim(config('services.agetic.base_url', 'https://sefe.demo.agetic.gob.bo'), '/');
     }
 
-  private function ageticClientStream()
-{
-    $base   = config('services.agetic.base_url');
-    $host   = parse_url($base, PHP_URL_HOST) ?: 'sefe.demo.agetic.gob.bo';
-    $token  = config('services.agetic.token');
-    $verify = (bool) config('services.agetic.verify', true);
+    private function ageticClient()
+    {
+        $token = config('services.agetic.token');
 
-    $stack = HandlerStack::create(new StreamHandler());
-
-    return Http::withHeaders([
-            'Authorization' => 'Bearer '.$token,
-            'Accept'        => 'application/json',
-            'Content-Type'  => 'application/json',
-            'User-Agent'    => 'PostmanRuntime/7.39.0',
-        ])
-        ->asJson()
-        ->withOptions([
-            'handler'          => $stack,
-            'verify'           => $verify,          // respeta tu .env
-            'force_ip_resolve' => 'v4',
-            'expect'           => false,
-            // Passthrough de opciones SSL de PHP streams
-            'stream_context'   => [
-                'ssl' => [
-                    'SNI_enabled'       => true,
-                    'peer_name'         => $host,    // SNI correcto
-                    'verify_peer'       => $verify,
-                    'verify_peer_name'  => $verify,
-                    'allow_self_signed' => !$verify,
-                    // Fuerza TLS1.2 en streams
-                    'crypto_method'     => STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT,
-                    // Baja seclevel por si OpenSSL3 es estricto
-                    'ciphers'           => 'DEFAULT:@SECLEVEL=1',
-                ],
-            ],
-        ])
-        ->connectTimeout(20)
-        ->timeout(60);
-}
-private function postAgetic(string $url, array $payload)
-{
-<<<<<<< HEAD
-<<<<<<< HEAD
-    // Un solo intento (cURL IPv4). Si falla aquí, es red/WAF.
-    $resp = $this->ageticClient()->post($url, $payload);
-=======
-=======
->>>>>>> parent of 2d98638 (PRUEBA 3.6)
-    // 1) cURL IPv4
-    try {
-        $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
-        $resp->throw();
-        return $resp;
-    } catch (\Throwable $e) {}
-
-    // 2) Streams IPv4
-    try {
-        $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
-        $resp->throw();
-        return $resp;
-    } catch (\Throwable $e) {}
-
-    // 3) cURL IPv6
-    try {
-        $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
-        $resp->throw();
-        return $resp;
-    } catch (\Throwable $e) {}
-
-    // 4) Streams IPv6
-    $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
-<<<<<<< HEAD
->>>>>>> parent of 2d98638 (PRUEBA 3.6)
-=======
->>>>>>> parent of 2d98638 (PRUEBA 3.6)
-    $resp->throw();
-    return $resp;
-}
-
-private function ageticClient()
-{
-    $token  = config('services.agetic.token');
-    $verify = (bool) config('services.agetic.verify', true);
-
-    return Http::withHeaders([
-            'Authorization' => 'Bearer '.$token,
-            'Accept'        => 'application/json',
-            'Content-Type'  => 'application/json',
-            'User-Agent'    => 'curl/7.88.1', // algo común
-        ])
-        ->asJson()
-        ->withOptions([
-            'verify'           => $verify,
-            'force_ip_resolve' => 'v4',   // solo esto
-            'expect'           => false,
-            'proxy'            => null,   // sin proxies
-            'curl' => [
-                // NO forzar TLS version
-                // NO forzar cipher list
-                CURLOPT_SSL_VERIFYPEER => $verify,
-                CURLOPT_SSL_VERIFYHOST => $verify ? 2 : 0,
-                CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
-                CURLOPT_FRESH_CONNECT  => true,
-                CURLOPT_FORBID_REUSE   => true,
-            ],
-        ])
-        ->connectTimeout(20)
-        ->timeout(60);
-}
-
-
-
-
+        return Http::withHeaders([
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type'  => 'application/json',
+                'Accept'        => 'application/json',
+            ])
+            ->withOptions([
+                'force_ip_resolve' => 'v4',
+            ])
+            ->connectTimeout(20)
+            ->timeout(60)
+            // Reintenta solo si es problema de conexión (timeouts, etc.)
+            ->retry(3, 800, function ($exception) {
+                return $exception instanceof ConnectionException;
+            });
+    }
 
     // =========================
     //  codigoOrden desde ID
@@ -496,7 +399,7 @@ private function ageticClient()
         Log::info('AGETIC emitirFactura request', $requestData);
 
         try {
-$resp = $this->postAgetic($url, $requestData); // <-- usa el fallback
+            $resp = $this->ageticClient()->post($url, $requestData);
             $resp->throw();
 
             $json = $resp->json();
@@ -564,7 +467,7 @@ $resp = $this->postAgetic($url, $requestData); // <-- usa el fallback
         Log::info('AGETIC emitirFactura2 request', $requestData);
 
         try {
-$resp = $this->postAgetic($url, $requestData); // <-- usa el fallback
+            $resp = $this->ageticClient()->post($url, $requestData);
             $resp->throw();
 
             $json = $resp->json();
