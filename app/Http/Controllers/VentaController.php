@@ -65,20 +65,39 @@ class VentaController extends Controller
         ->connectTimeout(20)
         ->timeout(60);
 }
-private function supportsIPv6(string $host): bool
-{
-    $recs = @dns_get_record($host, DNS_AAAA);
-    return is_array($recs) && count($recs) > 0;
-}
-
 private function postAgetic(string $url, array $payload)
 {
+<<<<<<< HEAD
     // Un solo intento (cURL IPv4). Si falla aquí, es red/WAF.
     $resp = $this->ageticClient()->post($url, $payload);
+=======
+    // 1) cURL IPv4
+    try {
+        $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
+        $resp->throw();
+        return $resp;
+    } catch (\Throwable $e) {}
+
+    // 2) Streams IPv4
+    try {
+        $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v4'])->post($url, $payload);
+        $resp->throw();
+        return $resp;
+    } catch (\Throwable $e) {}
+
+    // 3) cURL IPv6
+    try {
+        $resp = $this->ageticClient()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
+        $resp->throw();
+        return $resp;
+    } catch (\Throwable $e) {}
+
+    // 4) Streams IPv6
+    $resp = $this->ageticClientStream()->withOptions(['force_ip_resolve' => 'v6'])->post($url, $payload);
+>>>>>>> parent of 2d98638 (PRUEBA 3.6)
     $resp->throw();
     return $resp;
 }
-
 
 private function ageticClient()
 {
