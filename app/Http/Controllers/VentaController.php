@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use GuzzleHttp\Psr7\Utils;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Handler\StreamHandler;
 use Carbon\Carbon;
 
 class VentaController extends Controller
@@ -24,31 +26,68 @@ class VentaController extends Controller
         return rtrim(config('services.agetic.base_url', 'https://sefe.demo.agetic.gob.bo'), '/');
     }
 
-  private function ageticClient()
+  private function ageticClientStream()
 {
-    $base  = config('services.agetic.base_url');
-    $host  = parse_url($base, PHP_URL_HOST) ?: 'sefe.demo.agetic.gob.bo';
-    $ip    = gethostbyname($host);                 // fuerza IPv4 real usado por el server
-    $token = config('services.agetic.token');
+    $base   = config('services.agetic.base_url');
+    $host   = parse_url($base, PHP_URL_HOST) ?: 'sefe.demo.agetic.gob.bo';
+    $token  = config('services.agetic.token');
     $verify = (bool) config('services.agetic.verify', true);
 
-    $debugFile = Utils::tryFopen(storage_path('logs/curl_agetic.debug.log'), 'a');
+    $stack = HandlerStack::create(new StreamHandler());
 
-    // Construye la regla de "DNS pinning"
-    $resolve = [$host.':443:'.$ip];                // e.g. ["sefe.demo.agetic.gob.bo:443:190.x.y.z"]
+    return Http::withHeaders([
+            'Authorization' => 'Bearer '.$token,
+            'Accept'        => 'application/json',
+            'Content-Type'  => 'application/json',
+            'User-Agent'    => 'PostmanRuntime/7.39.0',
+        ])
+        ->asJson()
+        ->withOptions([
+            'handler'          => $stack,
+            'verify'           => $verify,          // respeta tu .env
+            'force_ip_resolve' => 'v4',
+            'expect'           => false,
+            // Passthrough de opciones SSL de PHP streams
+            'stream_context'   => [
+                'ssl' => [
+                    'SNI_enabled'       => true,
+                    'peer_name'         => $host,    // SNI correcto
+                    'verify_peer'       => $verify,
+                    'verify_peer_name'  => $verify,
+                    'allow_self_signed' => !$verify,
+                    // Fuerza TLS1.2 en streams
+                    'crypto_method'     => STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT,
+                    // Baja seclevel por si OpenSSL3 es estricto
+                    'ciphers'           => 'DEFAULT:@SECLEVEL=1',
+                ],
+            ],
+        ])
+        ->connectTimeout(20)
+        ->timeout(60);
+}
+private function postAgetic(string $url, array $payload)
+{
+    try {
+        $resp = $this->ageticClient()->post($url, $payload);
+        $resp->throw();
+        return $resp;
+    } catch (\Illuminate\Http\Client\ConnectionException $e) {
+        // cae al stream handler
+    } catch (\Throwable $e) {
+        if (stripos($e->getMessage(), 'cURL error 35') === false) {
+            throw $e; // otros errores, propaga
+        }
+    }
 
-    $curl = [
-        CURLOPT_SSL_VERIFYPEER   => $verify,
-        CURLOPT_SSL_VERIFYHOST   => $verify ? 2 : 0,
-        CURLOPT_SSLVERSION       => CURL_SSLVERSION_TLSv1_2,
-        CURLOPT_HTTP_VERSION     => CURL_HTTP_VERSION_1_1,
-        CURLOPT_SSL_CIPHER_LIST  => 'DEFAULT:@SECLEVEL=1',
-        CURLOPT_RESOLVE          => $resolve,      // 🔒 usa ese IP con Host SNI correcto
-    ];
-
-    // Desactiva ALPN/NPN si tu build lo soporta (muchas veces evita resets en WAFs)
-    if (defined('CURLOPT_SSL_ENABLE_ALPN')) $curl[CURLOPT_SSL_ENABLE_ALPN] = false;
-    if (defined('CURLOPT_SSL_ENABLE_NPN'))  $curl[CURLOPT_SSL_ENABLE_NPN]  = false;
+    // Fallback por streams (sin cURL)
+    $resp = $this->ageticClientStream()->post($url, $payload);
+    $resp->throw();
+    return $resp;
+}
+private function ageticClient()
+{
+    $token  = config('services.agetic.token');
+    $verify = (bool) config('services.agetic.verify', true);
 
     return Http::withHeaders([
             'Authorization' => 'Bearer '.$token,
@@ -59,15 +98,19 @@ class VentaController extends Controller
         ->asJson()
         ->withOptions([
             'verify'           => $verify,
-            'debug'            => $debugFile,
             'force_ip_resolve' => 'v4',
             'expect'           => false,
-            'proxy'            => '',              // evita proxy “transparente”
-            'curl'             => $curl,
+            'proxy'            => '',
+            'curl' => [
+                CURLOPT_SSL_VERIFYPEER  => $verify,
+                CURLOPT_SSL_VERIFYHOST  => $verify ? 2 : 0,
+                CURLOPT_SSLVERSION      => CURL_SSLVERSION_TLSv1_2,
+                CURLOPT_HTTP_VERSION    => CURL_HTTP_VERSION_1_1,
+                CURLOPT_SSL_CIPHER_LIST => 'DEFAULT:@SECLEVEL=1',
+            ],
         ])
         ->connectTimeout(20)
-        ->timeout(60)
-        ->retry(3, 800, fn($e) => $e instanceof \Illuminate\Http\Client\ConnectionException);
+        ->timeout(60);
 }
 
 
@@ -428,7 +471,7 @@ class VentaController extends Controller
         Log::info('AGETIC emitirFactura request', $requestData);
 
         try {
-            $resp = $this->ageticClient()->post($url, $requestData);
+$resp = $this->postAgetic($url, $requestData); // <-- usa el fallback
             $resp->throw();
 
             $json = $resp->json();
@@ -496,7 +539,7 @@ class VentaController extends Controller
         Log::info('AGETIC emitirFactura2 request', $requestData);
 
         try {
-            $resp = $this->ageticClient()->post($url, $requestData);
+$resp = $this->postAgetic($url, $requestData); // <-- usa el fallback
             $resp->throw();
 
             $json = $resp->json();
