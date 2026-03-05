@@ -2,18 +2,18 @@
 
 use Illuminate\Support\Facades\Route;
 
-/*
-|--------------------------------------------------------------------------
-| Web Routes
-|--------------------------------------------------------------------------
-|
-| Here is where you can register web routes for your application. These
-| routes are loaded by the RouteServiceProvider within a group which
-| contains the "web" middleware group. Now create something great!
-|
-*/
-
 Route::get('/', function () {
    return view('welcome');
 });
+
+// GET informativo para evitar 404 cuando alguien lo abre en el navegador
+Route::get('/notificacion', function () {
+    return response()->json([
+        'message' => 'Endpoint solo acepta POST',
+        'method'  => 'POST',
+        'example' => '/notificacion/{codigoSeguimiento}',
+    ], 405); // Method Not Allowed
+});
+
+// Tu endpoint real (POST)
 Route::post('/notificacion/{codigoSeguimiento}', 'NotificacioneController@procesarNotificacion');
