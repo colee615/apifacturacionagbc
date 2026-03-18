@@ -4,9 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Models\Cliente;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
-
-
 
 class ClienteController extends Controller
 {
@@ -26,35 +23,33 @@ class ClienteController extends Controller
       $request->validate([
          'razonSocial' => 'required|string',
          'documentoIdentidad' => 'required|string',
-         'correo' => 'nullable|email', // Permitir correo nulo o vacío
+         'complemento' => 'nullable|string',
+         'tipoDocumentoIdentidad' => 'required',
+         'correo' => 'nullable|email',
       ]);
 
+      $correo = trim((string) $request->input('correo', ''));
+      if ($correo === '') {
+         $correo = 'correo-generico@example.com';
+      }
 
-      // Obtener el valor de correo o asignar un valor por defecto
-      $correo = $request->input('correo') ?? 'correo-generico@example.com';
+      $ultimo = Cliente::selectRaw('MAX(CAST(SUBSTRING("codigoCliente", 7) AS INTEGER)) as max')
+         ->first()
+         ->max ?? 0;
 
-    // Obtener el mayor número existente de código de cliente
-$ultimo = Cliente::selectRaw('MAX(CAST(SUBSTRING("codigoCliente", 7) AS INTEGER)) as max')
-                 ->first()
-                 ->max ?? 0;
+      $nuevoCodigoCliente = 'CLIENT' . str_pad(($ultimo + 1), 2, '0', STR_PAD_LEFT);
 
-$nuevoCodigoCliente = 'CLIENT' . str_pad(($ultimo + 1), 2, '0', STR_PAD_LEFT);
-
-
-
-      // Crear el cliente con el nuevo código
       $cliente = new Cliente();
-      $cliente->razonSocial = $request->razonSocial;
-      $cliente->documentoIdentidad = $request->documentoIdentidad;
-      $cliente->complemento = $request->complemento;
+      $cliente->razonSocial = trim((string) $request->razonSocial);
+      $cliente->documentoIdentidad = trim((string) $request->documentoIdentidad);
+      $cliente->complemento = $request->filled('complemento') ? trim((string) $request->complemento) : null;
       $cliente->tipoDocumentoIdentidad = $request->tipoDocumentoIdentidad;
-      $cliente->correo = $correo; // Usar el correo del request o genér
+      $cliente->correo = $correo;
       $cliente->codigoCliente = $nuevoCodigoCliente;
       $cliente->save();
 
       return $cliente;
    }
-
 
    /**
     * Display the specified resource.
@@ -77,12 +72,13 @@ $nuevoCodigoCliente = 'CLIENT' . str_pad(($ultimo + 1), 2, '0', STR_PAD_LEFT);
          'correo' => 'nullable|email',
       ]);
 
-      $cliente->razonSocial = $request->razonSocial;
-      $cliente->documentoIdentidad = $request->documentoIdentidad;
-      $cliente->complemento = $request->complemento;
+      $cliente->razonSocial = trim((string) $request->razonSocial);
+      $cliente->documentoIdentidad = trim((string) $request->documentoIdentidad);
+      $cliente->complemento = $request->filled('complemento') ? trim((string) $request->complemento) : null;
       $cliente->tipoDocumentoIdentidad = $request->tipoDocumentoIdentidad;
-      $cliente->correo = $request->correo;
+      $cliente->correo = $request->filled('correo') ? trim((string) $request->correo) : 'correo-generico@example.com';
       $cliente->save();
+
       return $cliente;
    }
 
@@ -93,6 +89,7 @@ $nuevoCodigoCliente = 'CLIENT' . str_pad(($ultimo + 1), 2, '0', STR_PAD_LEFT);
    {
       $cliente->estado = 0;
       $cliente->save();
+
       return $cliente;
    }
 }

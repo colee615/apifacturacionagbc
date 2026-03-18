@@ -62,10 +62,9 @@ class Kernel extends HttpKernel
     *
     * These middleware may be assigned to groups or used individually.
     *
-    * @var array<string, class-string|string>
-    */
+   * @var array<string, class-string|string>
+   */
    protected $routeMiddleware = [
-      'working_hours' => \App\Http\Middleware\CheckWorkingHours::class,
       'jwt.refresh' => \Tymon\JWTAuth\Http\Middleware\RefreshToken::class,
       'jwt.auth' => \Tymon\JWTAuth\Http\Middleware\Authenticate::class,
       'permission' => \App\Http\Middleware\EnsureHasPermission::class,

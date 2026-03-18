@@ -3,10 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\Notificacione;
+use App\Support\SufeSectorUnoValidator;
 use Illuminate\Http\Request;
 
 class NotificacioneController extends Controller
 {
+   public function __construct(
+      private readonly SufeSectorUnoValidator $sufeValidator
+   ) {
+   }
+
    /**
     * Display a listing of the resource.
     *
@@ -65,26 +71,29 @@ class NotificacioneController extends Controller
 
    public function procesarNotificacion(Request $request, $codigoSeguimiento)
    {
-      $validated = $request->validate([
-         'finalizado' => 'required|boolean',
-         'fuente' => 'required|string',
-         'estado' => 'required|string',
-         'fecha' => 'required|string',
-         'mensaje' => 'required|string',
-         'detalle' => 'nullable|array'
-     ]);
-     // Crear y guardar la notificación en la base de datos
-     $notificacion = new Notificacione([
+      $payload = array_merge($request->all(), [
+         'codigoSeguimiento' => $request->input('codigoSeguimiento', $codigoSeguimiento),
+      ]);
+
+      $validated = $this->sufeValidator->validateNotification($payload, $codigoSeguimiento);
+
+      $notificacion = new Notificacione([
          'finalizado' => $validated['finalizado'],
          'fuente' => $validated['fuente'],
          'estado' => $validated['estado'],
          'codigo_seguimiento' => $codigoSeguimiento,
          'fecha' => $validated['fecha'],
          'mensaje' => $validated['mensaje'],
-         'detalle' => json_encode($validated['detalle']),
+         'detalle' => json_encode(array_merge(
+            $validated['detalle'],
+            isset($validated['observacion']) ? ['observacion' => $validated['observacion']] : []
+         )),
      ]);
-     $notificacion->save();
-     // Devolver una respuesta para marcar la notificación como confirmada
-     return response()->json(['message' => 'Notificación recibida'], 200);
+      $notificacion->save();
+
+      return response()->json([
+         'message' => 'Notificación recibida',
+         'codigoSeguimiento' => $codigoSeguimiento,
+      ], 200);
    }
 }
