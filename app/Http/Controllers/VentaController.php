@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Carbon\Carbon;
+use Illuminate\Support\Str;
 
 class VentaController extends Controller
 {
@@ -37,7 +38,7 @@ class VentaController extends Controller
             ])
             ->connectTimeout(20)
             ->timeout(60)
-            // Reintenta solo si es problema de conexión (timeouts, etc.)
+            // Reintenta solo si es problema de conexiÃ³n (timeouts, etc.)
             ->retry(3, 800, function ($exception) {
                 return $exception instanceof ConnectionException;
             });
@@ -75,7 +76,7 @@ class VentaController extends Controller
             // 1) Crear y guardar para obtener ID
             $venta = new Venta();
             $venta->cliente_id = $request->cliente_id;
-            $venta->cajero_id = $request->cajero_id;
+            $venta->usuario_id = $request->usuario_id;
             $venta->codigoSucursal = $request->codigoSucursal;
             $venta->puntoVenta = $request->puntoVenta;
             $venta->documentoSector = $request->documentoSector;
@@ -87,9 +88,10 @@ class VentaController extends Controller
             $venta->monto_descuento_adicional = $request->monto_descuento_adicional;
             $venta->motivo = $request->motivo;
             $venta->total = $request->total;
+            $venta->codigoSeguimiento = 'pendiente-' . Str::uuid()->toString();
             $venta->save(); // ahora tenemos $venta->id
 
-            // 2) Asignar codigoOrden único basado en ID
+            // 2) Asignar codigoOrden Ãºnico basado en ID
             $venta->codigoOrden = $this->codigoOrdenFromId($venta->id);
             $venta->save();
 
@@ -101,8 +103,6 @@ class VentaController extends Controller
                 $detalleVenta->servicio_id = $item['servicio_id'];
                 $detalleVenta->cantidad = $item['cantidad'];
                 $detalleVenta->precio = $item['precio'];
-                $detalleVenta->codigosEspeciales = $item['codigoEspecial'] ?? null;
-                $detalleVenta->informacionesAdicionales = $item['informacionAdicional'] ?? null;
                 $detalleVenta->save();
 
                 $precioUnitario = (float) $item['precio'];
@@ -145,19 +145,19 @@ class VentaController extends Controller
 
             if (!$result['ok']) {
                 if (($result['status'] ?? 0) === 0) {
-                    Log::error('AGETIC emitirFactura fallo de conexión/timeout', ['result' => $result]);
+                    Log::error('AGETIC emitirFactura fallo de conexiÃ³n/timeout', ['result' => $result]);
                     throw new \RuntimeException('No se pudo conectar con AGETIC: ' . ($result['error'] ?? 'sin detalle'));
                 }
 
                 $body    = $result['body'] ?? [];
-                $mensaje = $body['mensaje'] ?? 'Error en emisión';
+                $mensaje = $body['mensaje'] ?? 'Error en emisiÃ³n';
                 $errores = $body['datos']['errores'] ?? null;
 
                 if (is_array($errores) && collect($errores)->contains(fn($e) =>
                     stripos($e, 'ya ha sido emitida') !== false || stripos($e, 'PROCESADO') !== false
                 )) {
                     Log::warning('AGETIC: codigoOrden ya procesado', ['codigoOrden' => $venta->codigoOrden, 'respuesta' => $body]);
-                    throw new \RuntimeException('Esta orden ya fue emitida previamente. Use un nuevo código de orden.');
+                    throw new \RuntimeException('Esta orden ya fue emitida previamente. Use un nuevo cÃ³digo de orden.');
                 }
 
                 Log::error('AGETIC emitirFactura error HTTP', ['status' => $result['status'], 'body' => $body]);
@@ -166,8 +166,8 @@ class VentaController extends Controller
 
             $body = $result['body'] ?? [];
             if (($body['finalizado'] ?? false) !== true) {
-                Log::error('AGETIC emisión no finalizada', ['respuesta' => $body]);
-                throw new \RuntimeException('Emisión no finalizada: ' . ($body['mensaje'] ?? 'sin mensaje'));
+                Log::error('AGETIC emisiÃ³n no finalizada', ['respuesta' => $body]);
+                throw new \RuntimeException('EmisiÃ³n no finalizada: ' . ($body['mensaje'] ?? 'sin mensaje'));
             }
 
             $venta->codigoSeguimiento = data_get($body, 'datos.codigoSeguimiento');
@@ -200,7 +200,7 @@ class VentaController extends Controller
             // 1) Guardar para obtener ID
             $venta = new Venta();
             $venta->cliente_id = $request->cliente_id;
-            $venta->cajero_id = $request->cajero_id;
+            $venta->usuario_id = $request->usuario_id;
             $venta->codigoSucursal = $request->codigoSucursal;
             $venta->puntoVenta = $request->puntoVenta;
             $venta->documentoSector = $request->documentoSector;
@@ -212,9 +212,10 @@ class VentaController extends Controller
             $venta->monto_descuento_adicional = $request->monto_descuento_adicional;
             $venta->motivo = $request->motivo;
             $venta->total = $request->total;
+            $venta->codigoSeguimiento = 'pendiente-' . Str::uuid()->toString();
             $venta->save();
 
-            // 2) Asignar codigoOrden único
+            // 2) Asignar codigoOrden Ãºnico
             $venta->codigoOrden = $this->codigoOrdenFromId($venta->id);
             $venta->save();
 
@@ -226,8 +227,6 @@ class VentaController extends Controller
                 $detalleVenta->servicio_id = $item['servicio_id'];
                 $detalleVenta->cantidad = $item['cantidad'];
                 $detalleVenta->precio = $item['precio'];
-                $detalleVenta->codigosEspeciales = $item['codigoEspecial'] ?? null;
-                $detalleVenta->informacionesAdicionales = $item['informacionAdicional'] ?? null;
                 $detalleVenta->save();
 
                 $precioUnitario = (float) $item['precio'];
@@ -267,13 +266,13 @@ class VentaController extends Controller
                 if (($result['status'] ?? 0) === 0) {
                     $venta->delete();
                     return response()->json([
-                        'message' => 'Error al emitir factura (conexión/timeout)',
+                        'message' => 'Error al emitir factura (conexiÃ³n/timeout)',
                         'details' => $result['error'],
                     ], 400);
                 }
 
                 $body    = $result['body'] ?? [];
-                $mensaje = $body['mensaje'] ?? 'Error en emisión';
+                $mensaje = $body['mensaje'] ?? 'Error en emisiÃ³n';
                 $errores = $body['datos']['errores'] ?? null;
 
                 if (is_array($errores) && collect($errores)->contains(fn($e) =>
@@ -281,7 +280,7 @@ class VentaController extends Controller
                 )) {
                     $venta->delete();
                     return response()->json([
-                        'message' => 'Esta orden ya fue emitida previamente. Use un nuevo código de orden.',
+                        'message' => 'Esta orden ya fue emitida previamente. Use un nuevo cÃ³digo de orden.',
                         'details' => $mensaje,
                         'errores' => $errores,
                     ], 409);
@@ -329,7 +328,7 @@ class VentaController extends Controller
     // =========================
     public function show(Venta $venta)
     {
-        $venta->cajero;
+        $venta->usuario;
         $venta->cliente;
         $venta->detalleVentas->load('servicio');
         $venta->fecha = $venta->created_at->format('Y-m-d');
@@ -354,7 +353,7 @@ class VentaController extends Controller
     }
 
     // =========================
-    //  Eliminar (lógico)
+    //  Eliminar (lÃ³gico)
     // =========================
     public function destroy(Venta $venta)
     {
@@ -539,12 +538,12 @@ class VentaController extends Controller
     }
 
     // =========================
-    //  Consultar emisión
+    //  Consultar emisiÃ³n
     // =========================
     public function consultarVenta($codigoSeguimiento)
     {
         $url = $this->ageticBaseUrl() . "/consulta/{$codigoSeguimiento}";
-        Log::info("Código de Seguimiento: {$codigoSeguimiento}");
+        Log::info("CÃ³digo de Seguimiento: {$codigoSeguimiento}");
         Log::info("URL de Consulta: {$url}");
 
         try {
@@ -561,7 +560,7 @@ class VentaController extends Controller
                 ], $response->status());
             }
         } catch (\Throwable $e) {
-            Log::error("Excepción al consultar venta: " . $e->getMessage());
+            Log::error("ExcepciÃ³n al consultar venta: " . $e->getMessage());
             return response()->json([
                 'error'     => 'Error al consultar la venta',
                 'exception' => $e->getMessage(),
@@ -579,12 +578,12 @@ class VentaController extends Controller
             'motivo'        => $request->motivo,
             'tipoAnulacion' => $request->tipoAnulacion,
         ];
-        Log::info('Datos enviados para anulación de factura:', $requestData);
+        Log::info('Datos enviados para anulaciÃ³n de factura:', $requestData);
 
         try {
             $response = $this->ageticClient()->patch($url, $requestData);
 
-            Log::info('Respuesta de la API de anulación:', $response->json());
+            Log::info('Respuesta de la API de anulaciÃ³n:', $response->json());
 
             if ($response->successful()) {
                 return response()->json([
@@ -598,7 +597,7 @@ class VentaController extends Controller
                 ], $response->status());
             }
         } catch (\Throwable $e) {
-            Log::error('Excepción al anular factura: ' . $e->getMessage());
+            Log::error('ExcepciÃ³n al anular factura: ' . $e->getMessage());
             return response()->json([
                 'error'     => 'Error al anular la factura',
                 'exception' => $e->getMessage(),
@@ -609,18 +608,18 @@ class VentaController extends Controller
     // =========================
     //  Reportes
     // =========================
-    public function ventasDelDia($cajeroId)
+    public function ventasDelDia($usuarioId)
     {
-        $ventas = Venta::where('cajero_id', $cajeroId)
+        $ventas = Venta::where('usuario_id', $usuarioId)
             ->whereDate('created_at', Carbon::today())
-            ->with(['detalleVentas', 'cliente', 'cajero'])
+            ->with(['detalleVentas', 'cliente', 'usuario'])
             ->get();
 
         $total = $ventas->sum('total');
 
         $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
-            ->whereHas('venta', function ($query) use ($cajeroId) {
-                $query->where('cajero_id', $cajeroId)
+            ->whereHas('venta', function ($query) use ($usuarioId) {
+                $query->where('usuario_id', $usuarioId)
                     ->whereDate('created_at', Carbon::today());
             })
             ->groupBy('servicio_id')
@@ -634,19 +633,19 @@ class VentaController extends Controller
         ]);
     }
 
-    public function ventasDelMes($cajeroId)
+    public function ventasDelMes($usuarioId)
     {
-        $ventas = Venta::where('cajero_id', $cajeroId)
+        $ventas = Venta::where('usuario_id', $usuarioId)
             ->whereMonth('created_at', Carbon::now()->month)
             ->whereYear('created_at', Carbon::now()->year)
-            ->with(['detalleVentas', 'cliente', 'cajero'])
+            ->with(['detalleVentas', 'cliente', 'usuario'])
             ->get();
 
         $total = $ventas->sum('total');
 
         $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
-            ->whereHas('venta', function ($query) use ($cajeroId) {
-                $query->where('cajero_id', $cajeroId)
+            ->whereHas('venta', function ($query) use ($usuarioId) {
+                $query->where('usuario_id', $usuarioId)
                     ->whereMonth('created_at', Carbon::now()->month)
                     ->whereYear('created_at', Carbon::now()->year);
             })
@@ -661,20 +660,20 @@ class VentaController extends Controller
         ]);
     }
 
-    public function ventasPorFecha($cajeroId, Request $request)
+    public function ventasPorFecha($usuarioId, Request $request)
     {
         $fecha = $request->input('fecha');
 
-        $ventas = Venta::where('cajero_id', $cajeroId)
+        $ventas = Venta::where('usuario_id', $usuarioId)
             ->whereDate('created_at', $fecha)
-            ->with(['detalleVentas', 'cliente', 'cajero'])
+            ->with(['detalleVentas', 'cliente', 'usuario'])
             ->get();
 
         $total = $ventas->sum('total');
 
         $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
-            ->whereHas('venta', function ($query) use ($cajeroId, $fecha) {
-                $query->where('cajero_id', $cajeroId)
+            ->whereHas('venta', function ($query) use ($usuarioId, $fecha) {
+                $query->where('usuario_id', $usuarioId)
                     ->whereDate('created_at', $fecha);
             })
             ->groupBy('servicio_id')
@@ -688,3 +687,5 @@ class VentaController extends Controller
         ]);
     }
 }
+
+

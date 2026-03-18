@@ -10,14 +10,14 @@ class LoginLog extends Model
    use HasFactory;
 
    protected $fillable = [
-      'cajero_id',
+      'usuario_id',
       'ip_address',
       'user_agent',
       'login_time',
    ];
 
-   public function cajero()
+   public function usuario()
    {
-      return $this->belongsTo(Cajero::class);
+      return $this->belongsTo(Usuario::class, 'usuario_id');
    }
 }

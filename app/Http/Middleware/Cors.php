@@ -7,6 +7,15 @@ use Illuminate\Http\Request;
 
 class Cors
 {
+   private function addCorsHeaders($response)
+   {
+      return $response
+         ->header('Access-Control-Allow-Origin', '*')
+         ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
+         ->header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With, Application')
+         ->header('Access-Control-Max-Age', '86400');
+   }
+
    /**
     * Handle an incoming request.
     *
@@ -16,9 +25,10 @@ class Cors
     */
    public function handle(Request $request, Closure $next)
    {
-      return $next($request)
-         ->header('Access-Control-Allow-Origin', '*')
-         ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH')
-         ->header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With, Application');
+      if ($request->getMethod() === 'OPTIONS') {
+         return $this->addCorsHeaders(response()->json([], 204));
+      }
+
+      return $this->addCorsHeaders($next($request));
    }
 }

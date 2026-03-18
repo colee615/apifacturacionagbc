@@ -16,9 +16,9 @@ class Venta extends Model
    {
       return $this->belongsTo(Cliente::class);
    }
-   public function cajero()
+   public function usuario()
    {
-      return $this->belongsTo(Cajero::class);
+      return $this->belongsTo(Usuario::class, 'usuario_id');
    }
    protected static function boot()
    {

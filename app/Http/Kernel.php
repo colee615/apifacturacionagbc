@@ -68,6 +68,7 @@ class Kernel extends HttpKernel
       'working_hours' => \App\Http\Middleware\CheckWorkingHours::class,
       'jwt.refresh' => \Tymon\JWTAuth\Http\Middleware\RefreshToken::class,
       'jwt.auth' => \Tymon\JWTAuth\Http\Middleware\Authenticate::class,
+      'permission' => \App\Http\Middleware\EnsureHasPermission::class,
       'auth' => \App\Http\Middleware\Authenticate::class,
       'cors' => \App\Http\Middleware\Cors::class,
       'auth.basic' => \Illuminate\Auth\Middleware\AuthenticateWithBasicAuth::class,

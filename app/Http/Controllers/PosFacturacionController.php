@@ -14,20 +14,20 @@ class PosFacturacionController extends Controller
 
       $ventaId = $request->venta_id; // Asegúrate de ajustar esto según cómo se maneje en tu front-end
 
-      $url = "https://sefe.demo.agetic.gob.bo/facturacion/emision/individual";
-      $token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3UzN2TFE3bkRuODNoeVlXVDZfcWoiLCJleHAiOjE3NDA4MDE1OTksIm5pdCI6IjM1NTcwMTAyNyIsImlzcyI6InlpampSdXRhU01DRUs5ZGRtYXFEbWNwSUpKcUxranhzIn0.gLLEwjLMHDmYaYtBKMHgQIRdwVVDSdeoikQrwPQNNuA';
+      $url = rtrim(config('services.agetic.base_url', 'https://sefe.demo.agetic.gob.bo'), '/') . '/facturacion/emision/individual';
+      $token = config('services.agetic.token');
 
       $response = Http::withHeaders([
          'Authorization' => 'Bearer ' . $token,
          'Content-Type' => 'application/json'
       ])->post($url, [
          'codigoOrden' => $ventaId,  //Código de orden de la solicitud,necesario para identificar deforma única la emisión de factura.
-         'codigoSucursal' => $request->codigoSucursal, // codigo sucursal del cajero logueado
-         'puntoVenta' => $request->puntoVenta,         // codigo sucursal del cajero logueado
+         'codigoSucursal' => $request->codigoSucursal, // codigo sucursal del usuario logueado
+         'puntoVenta' => $request->puntoVenta,         // codigo sucursal del usuario logueado
          'documentoSector' => $request->documentoSector, // siempre debe ser 1 por ahora
-         'municipio' => $request->municipio,            // municipio de la sucursal del cajero logueado
-         'departamento' => $request->departamento,      // departamento de la sucursal del cajero logueado
-         'telefono' => $request->telefono,              // telefono de la sucursal del cajero logueado
+         'municipio' => $request->municipio,            // municipio de la sucursal del usuario logueado
+         'departamento' => $request->departamento,      // departamento de la sucursal del usuario logueado
+         'telefono' => $request->telefono,              // telefono de la sucursal del usuario logueado
          'razonSocial' => $request->razonSocial,        // jalar el nombre del cliente (razon social)
          'documentoIdentidad' => $request->documentoIdentidad, //jalar el documentoIdentidad del cliente
          'tipoDocumentoIdentidad' => $request->tipoDocumentoIdentidad, //jalar el tipodocumentoidentidad del cliente
@@ -52,3 +52,4 @@ class PosFacturacionController extends Controller
       return $response->json();
    }
 }
+

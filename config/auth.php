@@ -13,8 +13,8 @@ return [
     |
     */
    'defaults' => [
-      'guard' => 'cajero', // Cambiado de 'user' a 'cajero'
-      'passwords' => 'cajeros', // Cambiado de 'users' a 'cajeros'
+      'guard' => 'usuario',
+      'passwords' => 'usuarios',
    ],
 
    /*
@@ -35,13 +35,13 @@ return [
     */
 
    'guards' => [
-      'cajero' => [
+      'usuario' => [
          'driver' => 'session',
-         'provider' => 'cajeros',
+         'provider' => 'usuarios',
       ],
       'api' => [
          'driver' => 'jwt',
-         'provider' => 'cajeros',
+         'provider' => 'usuarios',
       ],
    ],
 
@@ -63,9 +63,9 @@ return [
     */
 
    'providers' => [
-      'cajeros' => [
+      'usuarios' => [
          'driver' => 'eloquent',
-         'model' => App\Models\Cajero::class,
+         'model' => App\Models\Usuario::class,
       ],
    ],
 
@@ -85,8 +85,8 @@ return [
     */
 
    'passwords' => [
-      'cajeros' => [
-         'provider' => 'cajeros',
+      'usuarios' => [
+         'provider' => 'usuarios',
          'table' => 'password_resets',
          'expire' => 60,
          'throttle' => 60,
