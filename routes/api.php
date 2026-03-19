@@ -19,6 +19,6 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
     return $request->user();
 });
 
-Route::middleware('jwt.auth')->prefix('factura-venta')->group(function () {
+Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/emitir', [FacturaVentaApiController::class, 'emitir']);
 });

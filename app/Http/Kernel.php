@@ -65,6 +65,7 @@ class Kernel extends HttpKernel
    * @var array<string, class-string|string>
    */
    protected $routeMiddleware = [
+      'factura.auth' => \App\Http\Middleware\AuthenticateFacturaVenta::class,
       'jwt.refresh' => \Tymon\JWTAuth\Http\Middleware\RefreshToken::class,
       'jwt.auth' => \Tymon\JWTAuth\Http\Middleware\Authenticate::class,
       'permission' => \App\Http\Middleware\EnsureHasPermission::class,

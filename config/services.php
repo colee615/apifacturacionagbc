@@ -34,5 +34,8 @@ return [
         'token'    => env('AGETIC_TOKEN'),
         'verify'   => env('AGETIC_SSL_VERIFY', true), // true|false
     ],
+    'facturacion_api' => [
+        'integration_token' => env('FACTURACION_INTEGRATION_TOKEN', env('AGETIC_TOKEN')),
+    ],
 
 ];
