@@ -21,4 +21,6 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 
 Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/emitir', [FacturaVentaApiController::class, 'emitir']);
+    Route::get('/consultar/{codigoSeguimiento}', [FacturaVentaApiController::class, 'consultar']);
+    Route::get('/pdf/{codigoSeguimiento}', [FacturaVentaApiController::class, 'pdf']);
 });

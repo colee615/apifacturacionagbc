@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Cliente;
 use App\Models\DetalleVenta;
+use App\Models\Notificacione;
 use App\Models\Servicio;
 use App\Models\Usuario;
 use App\Models\Venta;
@@ -254,6 +255,87 @@ class FacturaVentaApiController extends Controller
 
             return response()->json([
                 'message' => 'Error inesperado al emitir la factura de venta.',
+                'details' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function consultar(Request $request, string $codigoSeguimiento)
+    {
+        $tipo = $request->query('tipo');
+        $url = $this->ageticBaseUrl() . "/consulta/{$codigoSeguimiento}";
+
+        if (in_array($tipo, ['CO', 'CUF'], true)) {
+            $url .= '?tipo=' . $tipo;
+        }
+
+        try {
+            $response = $this->ageticClient()->get($url);
+            $payload = $response->json();
+
+            if ($response->successful()) {
+                $this->sufeValidator->validateConsultaFacturaResponse($payload ?? []);
+
+                return response()->json($payload, 200);
+            }
+
+            return response()->json($payload ?? [
+                'message' => 'Error al consultar la factura.',
+            ], $response->status());
+        } catch (RequestException $e) {
+            return response()->json($e->response?->json() ?? [
+                'message' => 'Error al consultar la factura.',
+                'details' => $e->getMessage(),
+            ], $e->response?->status() ?? 502);
+        } catch (ConnectionException $e) {
+            return response()->json([
+                'message' => 'No se pudo conectar con el servicio SEFE.',
+                'details' => $e->getMessage(),
+            ], 504);
+        } catch (\Throwable $e) {
+            Log::error('FacturaVentaApi consultar unexpected error', ['msg' => $e->getMessage()]);
+
+            return response()->json([
+                'message' => 'Error inesperado al consultar la factura.',
+                'details' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function pdf(string $codigoSeguimiento)
+    {
+        try {
+            $notificacion = Notificacione::query()
+                ->where('codigo_seguimiento', $codigoSeguimiento)
+                ->latest('id')
+                ->first();
+
+            if (!$notificacion) {
+                return response()->json([
+                    'message' => 'Aun no existe una notificacion asociada a la factura.',
+                ], 404);
+            }
+
+            $detalle = json_decode((string) $notificacion->detalle, true) ?: [];
+            $urlPdf = $detalle['urlPdf'] ?? null;
+            $cuf = $detalle['cuf'] ?? null;
+
+            if ($urlPdf) {
+                return response()->json([
+                    'pdf_url' => $urlPdf,
+                    'cuf' => $cuf,
+                ]);
+            }
+
+            return response()->json([
+                'message' => 'La factura aun no tiene PDF disponible.',
+                'cuf' => $cuf,
+            ], 404);
+        } catch (\Throwable $e) {
+            Log::error('FacturaVentaApi pdf unexpected error', ['msg' => $e->getMessage()]);
+
+            return response()->json([
+                'message' => 'Error inesperado al obtener el PDF de la factura.',
                 'details' => $e->getMessage(),
             ], 500);
         }

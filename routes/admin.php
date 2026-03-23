@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\IntegrationTokenController;
 use App\Http\Controllers\RbacController;
 use App\Http\Controllers\UsuarioController;
 use App\Http\Controllers\VentaController;
@@ -101,4 +102,15 @@ Route::middleware(['jwt.auth', 'permission:rbac.manage'])->prefix('rbac')->group
    Route::post('/roles/{role}/views', [RbacController::class, 'syncRoleViews']);
    Route::post('/users/{usuario}/roles', [RbacController::class, 'syncUserRoles']);
    Route::get('/users/{usuario}/access', [RbacController::class, 'userAccess']);
+});
+
+Route::middleware(['integration.tokens.admin'])->prefix('integration-tokens')->group(function () {
+   Route::get('/', [IntegrationTokenController::class, 'index']);
+   Route::post('/', [IntegrationTokenController::class, 'store']);
+   Route::put('/{integrationToken}', [IntegrationTokenController::class, 'update']);
+   Route::patch('/{integrationToken}', [IntegrationTokenController::class, 'update']);
+   Route::get('/{integrationToken}/reveal', [IntegrationTokenController::class, 'reveal']);
+   Route::put('/{integrationToken}/activate', [IntegrationTokenController::class, 'activate']);
+   Route::put('/{integrationToken}/deactivate', [IntegrationTokenController::class, 'deactivate']);
+   Route::delete('/{integrationToken}', [IntegrationTokenController::class, 'destroy']);
 });
