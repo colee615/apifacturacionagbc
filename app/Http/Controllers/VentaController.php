@@ -54,12 +54,12 @@ class VentaController extends Controller
     // =========================
     private function codigoOrdenFromId(int $id): string
     {
-        return 'venta-' . str_pad((string) $id, 8, '0', STR_PAD_LEFT);
+        return Venta::formatCodigoOrdenFromNumber($id);
     }
 
     private function loadVentaRelations(Venta $venta): Venta
     {
-        return $venta->loadMissing(['cliente', 'detalleVentas.servicio']);
+        return $venta->loadMissing(['detalleVentas']);
     }
 
     private function latestNotificationForVenta(Venta $venta): ?Notificacione
@@ -173,16 +173,14 @@ class VentaController extends Controller
 
     private function detalleVentaPayload(DetalleVenta $detalleVenta): array
     {
-        $servicio = $detalleVenta->servicio;
-
         return [
-            'actividadEconomica' => $servicio->actividadEconomica,
-            'codigoSin' => $servicio->codigoSin,
-            'codigo' => $servicio->codigo,
-            'descripcion' => $servicio->descripcion,
+            'actividadEconomica' => $detalleVenta->actividadEconomica,
+            'codigoSin' => $detalleVenta->codigoSin,
+            'codigo' => $detalleVenta->codigo,
+            'descripcion' => $detalleVenta->descripcion,
             'precioUnitario' => (float) $detalleVenta->precio,
             'cantidad' => (float) $detalleVenta->cantidad,
-            'unidadMedida' => (int) $servicio->unidadMedida,
+            'unidadMedida' => (int) $detalleVenta->unidadMedida,
         ];
     }
 
@@ -198,12 +196,12 @@ class VentaController extends Controller
             'municipio' => $venta->municipio,
             'departamento' => $venta->departamento,
             'telefono' => $venta->telefono,
-            'razonSocial' => $venta->cliente->razonSocial,
-            'documentoIdentidad' => $venta->cliente->documentoIdentidad,
-            'tipoDocumentoIdentidad' => (int) $venta->cliente->tipoDocumentoIdentidad,
-            'complemento' => $venta->cliente->complemento,
-            'correo' => $venta->cliente->correo,
-            'codigoCliente' => $venta->cliente->codigoCliente,
+            'razonSocial' => $venta->razonSocial,
+            'documentoIdentidad' => $venta->documentoIdentidad,
+            'tipoDocumentoIdentidad' => (int) $venta->tipoDocumentoIdentidad,
+            'complemento' => $venta->complemento,
+            'correo' => $venta->correo,
+            'codigoCliente' => $venta->codigoCliente,
             'metodoPago' => (int) $venta->metodoPago,
             'montoTotal' => (float) $venta->total,
             'montoDescuentoAdicional' => (float) $venta->monto_descuento_adicional,
@@ -235,7 +233,7 @@ class VentaController extends Controller
     {
         $ventas = Venta::whereIn('id', $ventaIds)
             ->where('estado', 1)
-            ->with(['cliente', 'detalleVentas.servicio'])
+            ->with(['detalleVentas'])
             ->get()
             ->keyBy('id');
 
@@ -281,10 +279,10 @@ class VentaController extends Controller
             'codigoSeguimiento' => $venta->codigoSeguimiento,
             'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
             'cliente' => [
-                'id' => $venta->cliente?->id,
-                'razonSocial' => $venta->cliente?->razonSocial,
-                'documentoIdentidad' => $venta->cliente?->documentoIdentidad,
-                'codigoCliente' => $venta->cliente?->codigoCliente,
+                'id' => null,
+                'razonSocial' => $venta->razonSocial,
+                'documentoIdentidad' => $venta->documentoIdentidad,
+                'codigoCliente' => $venta->codigoCliente,
             ],
             'total' => (float) $venta->total,
             'codigoSucursal' => (int) $venta->codigoSucursal,
@@ -293,8 +291,8 @@ class VentaController extends Controller
             'status' => $status,
             'detalle' => $venta->detalleVentas->map(function ($detalleVenta) {
                 return [
-                    'servicio_id' => $detalleVenta->servicio_id,
-                    'descripcion' => $detalleVenta->servicio?->descripcion,
+                    'codigo' => $detalleVenta->codigo,
+                    'descripcion' => $detalleVenta->descripcion,
                     'cantidad' => (float) $detalleVenta->cantidad,
                     'precio' => (float) $detalleVenta->precio,
                 ];
@@ -320,7 +318,7 @@ class VentaController extends Controller
         $scope = $request->query('scope', 'actionable');
 
         $ventas = Venta::where('estado', 1)
-            ->with(['cliente', 'detalleVentas.servicio'])
+            ->with(['detalleVentas'])
             ->latest('id')
             ->get()
             ->map(fn ($venta) => $this->operationRow($venta));
@@ -348,14 +346,18 @@ class VentaController extends Controller
         try {
             // 1) Crear y guardar para obtener ID
             $venta = new Venta();
-            $venta->cliente_id = $validatedRequest['cliente_id'];
-            $venta->usuario_id = $validatedRequest['usuario_id'];
             $venta->codigoSucursal = $validatedRequest['codigoSucursal'];
             $venta->puntoVenta = $validatedRequest['puntoVenta'];
             $venta->documentoSector = $validatedRequest['documentoSector'];
             $venta->municipio = $validatedRequest['municipio'];
             $venta->departamento = $validatedRequest['departamento'] ?? null;
             $venta->telefono = $validatedRequest['telefono'];
+            $venta->codigoCliente = $validatedRequest['codigoCliente'] ?? null;
+            $venta->razonSocial = $validatedRequest['razonSocial'] ?? null;
+            $venta->documentoIdentidad = $validatedRequest['documentoIdentidad'] ?? null;
+            $venta->tipoDocumentoIdentidad = $validatedRequest['tipoDocumentoIdentidad'] ?? null;
+            $venta->complemento = $validatedRequest['complemento'] ?? null;
+            $venta->correo = $validatedRequest['correo'] ?? null;
             $venta->metodoPago = $validatedRequest['metodoPago'];
             $venta->formatoFactura = $validatedRequest['formatoFactura'];
             $venta->monto_descuento_adicional = $validatedRequest['monto_descuento_adicional'] ?? 0;
@@ -373,7 +375,11 @@ class VentaController extends Controller
             foreach ($validatedRequest['carrito'] as $item) {
                 $detalleVenta = new DetalleVenta();
                 $detalleVenta->venta_id = $venta->id;
-                $detalleVenta->servicio_id = $item['servicio_id'];
+                $detalleVenta->actividadEconomica = $item['actividadEconomica'];
+                $detalleVenta->codigoSin = $item['codigoSin'];
+                $detalleVenta->codigo = $item['codigo'];
+                $detalleVenta->descripcion = $item['descripcion'];
+                $detalleVenta->unidadMedida = $item['unidadMedida'];
                 $detalleVenta->cantidad = $item['cantidad'];
                 $detalleVenta->precio = $item['precio'];
                 $detalleVenta->save();
@@ -400,12 +406,12 @@ class VentaController extends Controller
                 'municipio'              => $validatedRequest['municipio'],
                 'departamento'           => $validatedRequest['departamento'] ?? null,
                 'telefono'               => $validatedRequest['telefono'],
-                'razonSocial'            => $venta->cliente->razonSocial,
-                'documentoIdentidad'     => $venta->cliente->documentoIdentidad,
-                'tipoDocumentoIdentidad' => $venta->cliente->tipoDocumentoIdentidad,
-                'complemento'            => $venta->cliente->complemento,
-                'correo'                 => $venta->cliente->correo,
-                'codigoCliente'          => $venta->cliente->codigoCliente,
+                'razonSocial'            => $venta->razonSocial,
+                'documentoIdentidad'     => $venta->documentoIdentidad,
+                'tipoDocumentoIdentidad' => $venta->tipoDocumentoIdentidad,
+                'complemento'            => $venta->complemento,
+                'correo'                 => $venta->correo,
+                'codigoCliente'          => $venta->codigoCliente,
                 'metodoPago'             => $validatedRequest['metodoPago'],
                 'montoTotal'             => $validatedRequest['total'],
                 'montoDescuentoAdicional' => $validatedRequest['monto_descuento_adicional'] ?? 0,
@@ -491,9 +497,7 @@ class VentaController extends Controller
     // =========================
     public function show(Venta $venta)
     {
-        $venta->usuario;
-        $venta->cliente;
-        $venta->detalleVentas->load('servicio');
+        $venta->load('detalleVentas');
         $venta->fecha = $venta->created_at->format('Y-m-d');
         return $venta;
     }
@@ -507,7 +511,9 @@ class VentaController extends Controller
         $venta->pago = $request->pago;
         $venta->cambio = $request->cambio;
         $venta->tipo = $request->tipo;
-        $venta->cliente_id = $request->cliente_id;
+        $venta->codigoCliente = $request->codigoCliente ?? $venta->codigoCliente;
+        $venta->razonSocial = $request->razonSocial ?? $venta->razonSocial;
+        $venta->documentoIdentidad = $request->documentoIdentidad ?? $venta->documentoIdentidad;
         $venta->motivo = $request->motivo;
         $venta->estado = $request->estado;
         $venta->save();
@@ -1230,19 +1236,19 @@ class VentaController extends Controller
     // =========================
     public function ventasDelDia($usuarioId)
     {
-        $ventas = Venta::where('usuario_id', $usuarioId)
+        $ventas = Venta::where('origen_sistema', 'BOLIPOST')
             ->whereDate('created_at', Carbon::today())
-            ->with(['detalleVentas', 'cliente', 'usuario'])
+            ->with(['detalleVentas'])
             ->get();
 
         $total = $ventas->sum('total');
 
-        $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
-            ->whereHas('venta', function ($query) use ($usuarioId) {
-                $query->where('usuario_id', $usuarioId)
+        $servicios = DetalleVenta::select('codigo', 'descripcion', DB::raw('count(*) as total'))
+            ->whereHas('venta', function ($query) {
+                $query->where('origen_sistema', 'BOLIPOST')
                     ->whereDate('created_at', Carbon::today());
             })
-            ->groupBy('servicio_id')
+            ->groupBy('codigo', 'descripcion')
             ->orderBy('total', 'desc')
             ->get();
 
@@ -1255,21 +1261,21 @@ class VentaController extends Controller
 
     public function ventasDelMes($usuarioId)
     {
-        $ventas = Venta::where('usuario_id', $usuarioId)
+        $ventas = Venta::where('origen_sistema', 'BOLIPOST')
             ->whereMonth('created_at', Carbon::now()->month)
             ->whereYear('created_at', Carbon::now()->year)
-            ->with(['detalleVentas', 'cliente', 'usuario'])
+            ->with(['detalleVentas'])
             ->get();
 
         $total = $ventas->sum('total');
 
-        $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
-            ->whereHas('venta', function ($query) use ($usuarioId) {
-                $query->where('usuario_id', $usuarioId)
+        $servicios = DetalleVenta::select('codigo', 'descripcion', DB::raw('count(*) as total'))
+            ->whereHas('venta', function ($query) {
+                $query->where('origen_sistema', 'BOLIPOST')
                     ->whereMonth('created_at', Carbon::now()->month)
                     ->whereYear('created_at', Carbon::now()->year);
             })
-            ->groupBy('servicio_id')
+            ->groupBy('codigo', 'descripcion')
             ->orderBy('total', 'desc')
             ->get();
 
@@ -1284,19 +1290,19 @@ class VentaController extends Controller
     {
         $fecha = $request->input('fecha');
 
-        $ventas = Venta::where('usuario_id', $usuarioId)
+        $ventas = Venta::where('origen_sistema', 'BOLIPOST')
             ->whereDate('created_at', $fecha)
-            ->with(['detalleVentas', 'cliente', 'usuario'])
+            ->with(['detalleVentas'])
             ->get();
 
         $total = $ventas->sum('total');
 
-        $servicios = DetalleVenta::select('servicio_id', DB::raw('count(*) as total'))
-            ->whereHas('venta', function ($query) use ($usuarioId, $fecha) {
-                $query->where('usuario_id', $usuarioId)
+        $servicios = DetalleVenta::select('codigo', 'descripcion', DB::raw('count(*) as total'))
+            ->whereHas('venta', function ($query) use ($fecha) {
+                $query->where('origen_sistema', 'BOLIPOST')
                     ->whereDate('created_at', $fecha);
             })
-            ->groupBy('servicio_id')
+            ->groupBy('codigo', 'descripcion')
             ->orderBy('total', 'desc')
             ->get();
 

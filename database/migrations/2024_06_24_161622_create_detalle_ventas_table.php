@@ -14,7 +14,11 @@ return new class extends Migration
       Schema::create('detalle_ventas', function (Blueprint $table) {
          $table->id();
          $table->foreignId('venta_id')->constrained('ventas')->onDelete('cascade');
-         $table->foreignId('servicio_id')->constrained('servicios');
+         $table->string('actividadEconomica', 20)->nullable();
+         $table->string('codigoSin', 20)->nullable();
+         $table->string('codigo', 50)->nullable();
+         $table->string('descripcion', 500)->nullable();
+         $table->integer('unidadMedida')->nullable();
          $table->decimal('precio', 8, 2)->default(0);
          $table->decimal('cantidad', 8, 2)->default(0);
          $table->integer('estado')->default(1);

@@ -67,17 +67,13 @@ return new class extends Migration
 
       DB::table('roles')->insert([
          ['name' => 'Administrador', 'slug' => 'admin', 'description' => 'Acceso total', 'is_system' => true, 'created_at' => $now, 'updated_at' => $now],
-         ['name' => 'Cajero', 'slug' => 'cajero', 'description' => 'Operacion de caja y ventas', 'is_system' => true, 'created_at' => $now, 'updated_at' => $now],
+         ['name' => 'Usuario', 'slug' => 'usuario', 'description' => 'Operacion de caja y ventas', 'is_system' => true, 'created_at' => $now, 'updated_at' => $now],
       ]);
 
       $permissions = [
          ['name' => 'Ver dashboard', 'slug' => 'dashboard.view'],
-         ['name' => 'Gestionar empresa', 'slug' => 'empresa.manage'],
          ['name' => 'Gestionar sucursales', 'slug' => 'sucursales.manage'],
          ['name' => 'Gestionar usuarios', 'slug' => 'usuarios.manage'],
-         ['name' => 'Leer clientes', 'slug' => 'clientes.read'],
-         ['name' => 'Crear/editar clientes', 'slug' => 'clientes.write'],
-         ['name' => 'Gestionar servicios', 'slug' => 'servicios.manage'],
          ['name' => 'Leer ventas', 'slug' => 'ventas.read'],
          ['name' => 'Crear/editar ventas', 'slug' => 'ventas.write'],
          ['name' => 'Anular ventas', 'slug' => 'ventas.void'],
@@ -96,11 +92,8 @@ return new class extends Migration
 
       $views = [
          ['name' => 'Dashboard', 'slug' => 'dashboard', 'route' => '/dashboard'],
-         ['name' => 'Empresa', 'slug' => 'empresa', 'route' => '/empresa'],
          ['name' => 'Sucursales', 'slug' => 'sucursales', 'route' => '/sucursales'],
          ['name' => 'Usuarios', 'slug' => 'usuarios', 'route' => '/usuarios'],
-         ['name' => 'Clientes', 'slug' => 'clientes', 'route' => '/clientes'],
-         ['name' => 'Servicios', 'slug' => 'servicios', 'route' => '/servicios'],
          ['name' => 'Ventas', 'slug' => 'ventas', 'route' => '/ventas'],
          ['name' => 'Reportes', 'slug' => 'reportes', 'route' => '/reportes'],
          ['name' => 'Configuracion', 'slug' => 'configuracion', 'route' => '/configuracion'],
@@ -123,7 +116,7 @@ return new class extends Migration
       $viewIds = DB::table('views_access')->pluck('id', 'slug');
 
       $adminPerms = array_keys($permissionIds->toArray());
-      $cajeroPerms = ['dashboard.view', 'clientes.read', 'clientes.write', 'ventas.read', 'ventas.write'];
+      $usuarioPerms = ['dashboard.view', 'ventas.read', 'ventas.write'];
 
       foreach ($adminPerms as $slug) {
          DB::table('role_permission')->insert([
@@ -134,9 +127,9 @@ return new class extends Migration
          ]);
       }
 
-      foreach ($cajeroPerms as $slug) {
+      foreach ($usuarioPerms as $slug) {
          DB::table('role_permission')->insert([
-            'role_id' => $roleIds['cajero'],
+            'role_id' => $roleIds['usuario'],
             'permission_id' => $permissionIds[$slug],
             'created_at' => $now,
             'updated_at' => $now,
@@ -152,19 +145,18 @@ return new class extends Migration
          ]);
       }
 
-      foreach (['dashboard', 'clientes', 'ventas', 'reportes'] as $viewSlug) {
+      foreach (['dashboard', 'ventas', 'reportes'] as $viewSlug) {
          DB::table('role_view')->insert([
-            'role_id' => $roleIds['cajero'],
+            'role_id' => $roleIds['usuario'],
             'view_access_id' => $viewIds[$viewSlug],
             'created_at' => $now,
             'updated_at' => $now,
          ]);
       }
 
-      $usuarios = DB::table('usuarios')->select('id', 'role')->get();
+      $usuarios = DB::table('usuarios')->select('id')->get();
       foreach ($usuarios as $usuario) {
-         $legacyRole = strtolower((string) $usuario->role);
-         $roleSlug = in_array($legacyRole, ['admin', 'administrador'], true) ? 'admin' : 'cajero';
+         $roleSlug = 'usuario';
          DB::table('usuario_role')->insert([
             'usuario_id' => $usuario->id,
             'role_id' => $roleIds[$roleSlug],

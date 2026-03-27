@@ -13,14 +13,14 @@ return new class extends Migration
    {
       Schema::create('special_access_logs', function (Blueprint $table) {
          $table->id();
-         $table->unsignedBigInteger('cajero_id');
+         $table->unsignedBigInteger('usuario_id');
          $table->unsignedBigInteger('modified_by');
          $table->boolean('special_access');
          $table->text('motivo');
          $table->timestamps();
 
-         $table->foreign('cajero_id')->references('id')->on('cajeros')->onDelete('cascade');
-         $table->foreign('modified_by')->references('id')->on('cajeros')->onDelete('cascade');
+         $table->foreign('usuario_id')->references('id')->on('usuarios')->onDelete('cascade');
+         $table->foreign('modified_by')->references('id')->on('usuarios')->onDelete('cascade');
       });
    }
    /**

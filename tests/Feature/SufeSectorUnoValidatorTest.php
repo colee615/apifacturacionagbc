@@ -19,7 +19,7 @@ class SufeSectorUnoValidatorTest extends TestCase
     public function test_individual_sector_uno_payload_is_valid(): void
     {
         $payload = [
-            'codigoOrden' => 'venta-00000001',
+            'codigoOrden' => 'AGBC-0000001',
             'codigoSucursal' => 0,
             'puntoVenta' => 0,
             'documentoSector' => 1,
@@ -51,7 +51,7 @@ class SufeSectorUnoValidatorTest extends TestCase
 
         $validated = $this->validator->validateIndividualPayload($payload);
 
-        $this->assertSame('venta-00000001', $validated['codigoOrden']);
+        $this->assertSame('AGBC-0000001', $validated['codigoOrden']);
         $this->assertSame(1, $validated['documentoSector']);
     }
 
@@ -60,7 +60,7 @@ class SufeSectorUnoValidatorTest extends TestCase
         $this->expectException(ValidationException::class);
 
         $payload = [
-            'codigoOrden' => 'venta-00000002',
+            'codigoOrden' => 'AGBC-0000002',
             'codigoSucursal' => 0,
             'puntoVenta' => 0,
             'documentoSector' => 1,

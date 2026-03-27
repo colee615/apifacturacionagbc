@@ -7,16 +7,10 @@ use Illuminate\Database\Eloquent\Model;
 
 class DetalleVenta extends Model
 {
-   use HasFactory;
-   // Relación con Venta
-   public function venta()
-   {
-      return $this->belongsTo(Venta::class);
-   }
+    use HasFactory;
 
-   // Relación con Servicio
-   public function servicio()
-   {
-      return $this->belongsTo(Servicio::class);
-   }
+    public function venta()
+    {
+        return $this->belongsTo(Venta::class);
+    }
 }

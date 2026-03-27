@@ -24,3 +24,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/consultar/{codigoSeguimiento}', [FacturaVentaApiController::class, 'consultar']);
     Route::get('/pdf/{codigoSeguimiento}', [FacturaVentaApiController::class, 'pdf']);
 });
+
+Route::middleware('factura.auth')->prefix('facturacion')->group(function () {
+    Route::post('/emision/individual', [FacturaVentaApiController::class, 'emitir']);
+});

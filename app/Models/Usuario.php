@@ -51,7 +51,6 @@ class Usuario extends Authenticatable implements JWTSubject
       $roles = $this->roles()
          ->pluck('slug')
          ->map(fn($slug) => strtolower((string) $slug))
-         ->map(fn($slug) => $slug === 'cajero' ? 'usuario' : $slug)
          ->values();
 
       if ($roles->isEmpty()) {
@@ -122,7 +121,6 @@ class Usuario extends Authenticatable implements JWTSubject
       $slugs = collect($roleSlugs)
          ->map(fn($slug) => strtolower((string) $slug))
          ->map(fn($slug) => $slug === 'administrador' ? 'admin' : $slug)
-         ->map(fn($slug) => $slug === 'cajero' ? 'usuario' : $slug)
          ->filter()
          ->unique()
          ->values();

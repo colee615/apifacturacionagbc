@@ -13,13 +13,6 @@ Route::post('reset-password/{token}', [UsuarioController::class, 'resetPassword'
 Route::middleware(['jwt.auth'])->group(function () {
    Route::get('me', [UsuarioController::class, 'me']);
 
-   Route::get('/clientes', 'ClienteController@index')->middleware('permission:clientes.read');
-   Route::get('/clientes/{cliente}', 'ClienteController@show')->middleware('permission:clientes.read');
-   Route::post('/clientes', 'ClienteController@store')->middleware('permission:clientes.write,clientes.create,clientes.manage');
-   Route::put('/clientes/{cliente}', 'ClienteController@update')->middleware('permission:clientes.write,clientes.update,clientes.manage');
-   Route::patch('/clientes/{cliente}', 'ClienteController@update')->middleware('permission:clientes.write,clientes.update,clientes.manage');
-   Route::delete('/clientes/{cliente}', 'ClienteController@destroy')->middleware('permission:clientes.write,clientes.delete,clientes.manage');
-
    Route::get('/ventas', 'VentaController@index')->middleware('permission:ventas.read');
    Route::get('/ventas/operables', 'VentaController@operables')->middleware('permission:ventas.read');
    Route::get('/ventas/{venta}', 'VentaController@show')->middleware('permission:ventas.read');
@@ -47,10 +40,6 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::post('venta2', 'VentaController@venta2')->middleware('permission:ventas.write');
 });
 
-Route::middleware(['jwt.auth', 'permission:empresa.manage'])->group(function () {
-   Route::apiResource('/empresa', 'EmpresaController');
-});
-
 Route::middleware(['jwt.auth'])->group(function () {
    Route::get('/sucursales', 'SucursaleController@index')->middleware('permission:sucursales.manage');
    Route::get('/sucursales/{sucursale}', 'SucursaleController@show')->middleware('permission:sucursales.manage');
@@ -67,12 +56,6 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::delete('/usuarios/{usuario}', 'UsuarioController@destroy')->whereNumber('usuario')->middleware('permission:usuarios.manage,usuarios.delete');
    Route::put('/usuarios/activar/{id}', 'UsuarioController@activar')->middleware('permission:usuarios.manage,usuarios.update');
 
-   Route::get('/servicios', 'ServicioController@index')->middleware('permission:servicios.manage');
-   Route::get('/servicios/{servicio}', 'ServicioController@show')->middleware('permission:servicios.manage');
-   Route::post('/servicios', 'ServicioController@store')->middleware('permission:servicios.manage,servicios.create');
-   Route::put('/servicios/{servicio}', 'ServicioController@update')->middleware('permission:servicios.manage,servicios.update');
-   Route::patch('/servicios/{servicio}', 'ServicioController@update')->middleware('permission:servicios.manage,servicios.update');
-   Route::delete('/servicios/{servicio}', 'ServicioController@destroy')->middleware('permission:servicios.manage,servicios.delete');
 });
 
 Route::middleware(['jwt.auth', 'permission:dashboard.view'])->group(function () {

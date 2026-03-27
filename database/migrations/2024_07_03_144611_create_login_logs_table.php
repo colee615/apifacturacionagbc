@@ -13,13 +13,13 @@ return new class extends Migration
    {
       Schema::create('login_logs', function (Blueprint $table) {
          $table->id();
-         $table->unsignedBigInteger('cajero_id');
+         $table->unsignedBigInteger('usuario_id');
          $table->string('ip_address');
          $table->string('user_agent');
          $table->timestamp('login_time');
          $table->timestamps();
 
-         $table->foreign('cajero_id')->references('id')->on('cajeros')->onDelete('cascade');
+         $table->foreign('usuario_id')->references('id')->on('usuarios')->onDelete('cascade');
       });
    }
 
