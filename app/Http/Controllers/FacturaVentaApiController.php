@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\DetalleVenta;
 use App\Models\Notificacione;
 use App\Models\Venta;
 use App\Support\SufeSectorUnoValidator;
@@ -12,7 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Validation\ValidationException;
 
 class FacturaVentaApiController extends Controller
@@ -58,56 +57,99 @@ class FacturaVentaApiController extends Controller
         }
     }
 
-    private function createVenta(array $payload): Venta
+    private function resolveCodigoOrden(array $payload, int $ventaId): string
     {
-        $venta = new Venta();
-        $venta->origen_sistema = 'BOLIPOST';
-        $venta->origen_usuario_id = data_get($payload, 'origenUsuario.id');
-        $venta->origen_usuario_nombre = data_get($payload, 'origenUsuario.nombre');
-        $venta->origen_usuario_email = data_get($payload, 'origenUsuario.email');
-        $venta->origen_sucursal_id = data_get($payload, 'origenSucursal.id');
-        $venta->origen_sucursal_codigo = data_get($payload, 'origenSucursal.codigo');
-        $venta->origen_sucursal_nombre = data_get($payload, 'origenSucursal.nombre');
-        $venta->codigoSucursal = (int) $payload['codigoSucursal'];
-        $venta->puntoVenta = (int) $payload['puntoVenta'];
-        $venta->documentoSector = (int) $payload['documentoSector'];
-        $venta->municipio = $payload['municipio'];
-        $venta->departamento = $payload['departamento'] ?? null;
-        $venta->telefono = $payload['telefono'];
-        $venta->codigoCliente = $payload['codigoCliente'];
-        $venta->razonSocial = $payload['razonSocial'];
-        $venta->documentoIdentidad = $payload['documentoIdentidad'];
-        $venta->tipoDocumentoIdentidad = (int) $payload['tipoDocumentoIdentidad'];
-        $venta->complemento = (int) $payload['tipoDocumentoIdentidad'] === 1
-            ? ($payload['complemento'] ?? null)
-            : null;
-        $venta->correo = $payload['correo'];
-        $venta->metodoPago = (int) $payload['metodoPago'];
-        $venta->formatoFactura = $payload['formatoFactura'];
-        $venta->monto_descuento_adicional = (float) ($payload['montoDescuentoAdicional'] ?? 0);
-        $venta->motivo = 'Integracion bolipost';
-        $venta->total = (float) $payload['montoTotal'];
-        $venta->codigoSeguimiento = 'pendiente-' . Str::uuid()->toString();
-        $venta->estado = 1;
-        $venta->save();
+        $codigoOrdenRecibido = trim((string) ($payload['codigoOrden'] ?? ''));
+        $codigoOrden = $codigoOrdenRecibido !== ''
+            ? $codigoOrdenRecibido
+            : Venta::formatCodigoOrdenFromNumber($ventaId);
 
-        return $venta;
+        $exists = DB::table('ventas')
+            ->where('codigoOrden', $codigoOrden)
+            ->where('id', '<>', $ventaId)
+            ->exists();
+
+        if ($exists) {
+            throw ValidationException::withMessages([
+                'codigoOrden' => ['El codigoOrden ya existe en ventas. Envie un codigoOrden nuevo.'],
+            ]);
+        }
+
+        return $codigoOrden;
     }
 
-    private function createDetalleVentas(Venta $venta, array $payload): void
+    private function createVenta(array $payload): array
     {
+        $now = Date::now();
+        $codigoSeguimiento = 'pendiente-' . (string) str()->uuid();
+
+        $ventaId = DB::table('ventas')->insertGetId([
+            'origen_sistema' => 'BOLIPOST',
+            'origen_usuario_id' => data_get($payload, 'origenUsuario.id'),
+            'origen_usuario_nombre' => data_get($payload, 'origenUsuario.nombre'),
+            'origen_usuario_email' => data_get($payload, 'origenUsuario.email'),
+            'origen_sucursal_id' => data_get($payload, 'origenSucursal.id'),
+            'origen_sucursal_codigo' => data_get($payload, 'origenSucursal.codigo'),
+            'origen_sucursal_nombre' => data_get($payload, 'origenSucursal.nombre'),
+            'codigoSucursal' => (int) $payload['codigoSucursal'],
+            'puntoVenta' => (int) $payload['puntoVenta'],
+            'documentoSector' => (int) $payload['documentoSector'],
+            'municipio' => $payload['municipio'],
+            'departamento' => $payload['departamento'] ?? null,
+            'telefono' => $payload['telefono'],
+            'codigoCliente' => (string) $payload['codigoCliente'],
+            'razonSocial' => $payload['razonSocial'],
+            'documentoIdentidad' => $payload['documentoIdentidad'],
+            'tipoDocumentoIdentidad' => (int) $payload['tipoDocumentoIdentidad'],
+            'complemento' => (int) $payload['tipoDocumentoIdentidad'] === 1
+                ? ($payload['complemento'] ?? null)
+                : null,
+            'correo' => $payload['correo'],
+            'metodoPago' => (int) $payload['metodoPago'],
+            'formatoFactura' => $payload['formatoFactura'],
+            'monto_descuento_adicional' => (float) ($payload['montoDescuentoAdicional'] ?? 0),
+            'motivo' => 'Integracion bolipost',
+            'total' => (float) $payload['montoTotal'],
+            'codigoSeguimiento' => $codigoSeguimiento,
+            'estado' => 1,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $codigoOrden = $this->resolveCodigoOrden($payload, (int) $ventaId);
+
+        DB::table('ventas')
+            ->where('id', $ventaId)
+            ->update([
+                'codigoOrden' => $codigoOrden,
+                'updated_at' => $now,
+            ]);
+
+        return [
+            'id' => (int) $ventaId,
+            'codigoOrden' => $codigoOrden,
+            'codigoSeguimiento' => $codigoSeguimiento,
+        ];
+    }
+
+    private function createDetalleVentas(array $venta, array $payload): void
+    {
+        $now = Date::now();
+
         foreach ($payload['detalle'] as $detalle) {
-            $detalleVenta = new DetalleVenta();
-            $detalleVenta->venta_id = $venta->id;
-            $detalleVenta->actividadEconomica = $detalle['actividadEconomica'];
-            $detalleVenta->codigoSin = $detalle['codigoSin'];
-            $detalleVenta->codigo = $detalle['codigo'];
-            $detalleVenta->descripcion = $detalle['descripcion'];
-            $detalleVenta->unidadMedida = (int) $detalle['unidadMedida'];
-            $detalleVenta->precio = (float) $detalle['precioUnitario'];
-            $detalleVenta->cantidad = (float) $detalle['cantidad'];
-            $detalleVenta->estado = 1;
-            $detalleVenta->save();
+            DB::table('detalle_ventas')->insert([
+                'venta_id' => $venta['id'],
+                'actividadEconomica' => $detalle['actividadEconomica'],
+                'codigoSin' => $detalle['codigoSin'],
+                'codigo' => $detalle['codigo'],
+                'descripcion' => $detalle['descripcion'],
+                'unidadMedida' => (int) $detalle['unidadMedida'],
+                'precio' => (float) $detalle['precioUnitario'],
+                'cantidad' => (float) $detalle['cantidad'],
+                'estado' => 1,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
         }
     }
 
@@ -171,17 +213,17 @@ class FacturaVentaApiController extends Controller
                 'origen_sucursal_nombre' => data_get($validated, 'origenSucursal.nombre'),
             ]);
             $venta = $this->createVenta($validated);
-            $codigoOrden = (string) $venta->codigoOrden;
+            $codigoOrden = (string) $venta['codigoOrden'];
             Log::info('FacturaVentaApi emitir venta created', [
                 'codigoOrden' => $codigoOrden,
                 'codigoOrden_recibido' => $codigoOrdenRecibido,
-                'venta_id' => $venta->id,
-                'codigoSeguimiento_temporal' => $venta->codigoSeguimiento,
+                'venta_id' => $venta['id'],
+                'codigoSeguimiento_temporal' => $venta['codigoSeguimiento'],
             ]);
             $this->createDetalleVentas($venta, $validated);
             Log::info('FacturaVentaApi emitir detalle created', [
                 'codigoOrden' => $codigoOrden,
-                'venta_id' => $venta->id,
+                'venta_id' => $venta['id'],
                 'detalle_count' => count($validated['detalle'] ?? []),
             ]);
             $requestPayload = $this->sanitizePayloadForAgetic($validated);
@@ -198,13 +240,17 @@ class FacturaVentaApiController extends Controller
 
             if ($response->successful()) {
                 $this->sufeValidator->validateAcceptedIndividualResponse($payload ?? []);
-                $venta->codigoSeguimiento = data_get($payload, 'datos.codigoSeguimiento');
-                $venta->save();
+                DB::table('ventas')
+                    ->where('id', $venta['id'])
+                    ->update([
+                        'codigoSeguimiento' => data_get($payload, 'datos.codigoSeguimiento'),
+                        'updated_at' => Date::now(),
+                    ]);
                 Log::info('FacturaVentaApi emitir response accepted', [
                 'status' => $response->status(),
-                'codigoOrden' => $venta->codigoOrden,
-                'codigoSeguimiento' => $venta->codigoSeguimiento,
-                'venta_id' => $venta->id,
+                'codigoOrden' => $venta['codigoOrden'],
+                'codigoSeguimiento' => data_get($payload, 'datos.codigoSeguimiento'),
+                'venta_id' => $venta['id'],
                 'body' => $payload,
             ]);
                 DB::commit();
@@ -214,8 +260,8 @@ class FacturaVentaApiController extends Controller
 
             Log::warning('FacturaVentaApi emitir response rejected', [
                 'status' => $response->status(),
-                'codigoOrden' => $venta->codigoOrden,
-                'venta_id' => $venta->id,
+                'codigoOrden' => $venta['codigoOrden'],
+                'venta_id' => $venta['id'],
                 'body' => $payload,
             ]);
 
@@ -233,7 +279,7 @@ class FacturaVentaApiController extends Controller
             DB::rollBack();
             Log::warning('FacturaVentaApi emitir rolled back after rejected response', [
                 'codigoOrden' => $codigoOrden,
-                'venta_id' => $venta->id ?? null,
+                'venta_id' => $venta['id'] ?? null,
             ]);
 
             return response()->json($payload, $response->status());
