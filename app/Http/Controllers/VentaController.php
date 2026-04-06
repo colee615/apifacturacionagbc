@@ -13,7 +13,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Validation\ValidationException;
-use Carbon\Carbon;
 use Illuminate\Support\Str;
 
 class VentaController extends Controller
@@ -77,8 +76,9 @@ class VentaController extends Controller
     {
         $notification = $this->latestNotificationForVenta($venta);
         $detalle = $notification ? json_decode($notification->detalle, true) : [];
+        $estadoSufe = strtoupper((string) ($venta->estado_sufe ?? ''));
 
-        if (Str::startsWith((string) $venta->codigoSeguimiento, 'pendiente-')) {
+        if (blank($venta->codigoSeguimiento) || Str::startsWith((string) $venta->codigoSeguimiento, 'pendiente-')) {
             return [
                 'key' => 'PENDIENTE',
                 'label' => 'Pendiente de envío',
@@ -94,17 +94,77 @@ class VentaController extends Controller
         }
 
         if (!$notification) {
+            if ($estadoSufe === 'PROCESADA' || !blank($venta->cuf)) {
+                return [
+                    'key' => 'PROCESADO',
+                    'label' => 'Facturada',
+                    'can_emit' => false,
+                    'can_massive' => false,
+                    'can_cafc' => false,
+                    'can_consult' => true,
+                    'can_annul' => !blank($venta->cuf),
+                    'notification_state' => null,
+                    'tipoEmision' => $venta->tipo_emision_sufe,
+                    'cuf' => $venta->cuf,
+                ];
+            }
+
+            if ($estadoSufe === 'OBSERVADA') {
+                return [
+                    'key' => 'OBSERVADO',
+                    'label' => 'Observado',
+                    'can_emit' => true,
+                    'can_massive' => true,
+                    'can_cafc' => true,
+                    'can_consult' => true,
+                    'can_annul' => false,
+                    'notification_state' => null,
+                    'tipoEmision' => $venta->tipo_emision_sufe,
+                    'cuf' => $venta->cuf,
+                ];
+            }
+
+            if ($estadoSufe === 'CONTINGENCIA_CREADA') {
+                return [
+                    'key' => 'CONTINGENCIA_CREADA',
+                    'label' => 'Pendiente por contingencia',
+                    'can_emit' => false,
+                    'can_massive' => false,
+                    'can_cafc' => false,
+                    'can_consult' => true,
+                    'can_annul' => false,
+                    'notification_state' => null,
+                    'tipoEmision' => $venta->tipo_emision_sufe,
+                    'cuf' => $venta->cuf,
+                ];
+            }
+
+            if ($estadoSufe === 'RECEPCIONADA' || $estadoSufe === '') {
+                return [
+                    'key' => 'RECEPCIONADA',
+                    'label' => 'En proceso',
+                    'can_emit' => false,
+                    'can_massive' => false,
+                    'can_cafc' => false,
+                    'can_consult' => true,
+                    'can_annul' => false,
+                    'notification_state' => null,
+                    'tipoEmision' => $venta->tipo_emision_sufe,
+                    'cuf' => $venta->cuf,
+                ];
+            }
+
             return [
-                'key' => 'ENVIADO_SIN_NOTIFICACION',
-                'label' => 'Enviado sin notificación',
+                'key' => 'PENDIENTE_CONFIRMACION',
+                'label' => 'En proceso',
                 'can_emit' => false,
                 'can_massive' => false,
                 'can_cafc' => false,
                 'can_consult' => true,
                 'can_annul' => false,
                 'notification_state' => null,
-                'tipoEmision' => null,
-                'cuf' => null,
+                'tipoEmision' => $venta->tipo_emision_sufe,
+                'cuf' => $venta->cuf,
             ];
         }
 
@@ -115,7 +175,7 @@ class VentaController extends Controller
         if ($estado === 'EXITO') {
             return [
                 'key' => 'PROCESADO',
-                'label' => 'Procesado correctamente',
+                'label' => 'Facturada',
                 'can_emit' => false,
                 'can_massive' => false,
                 'can_cafc' => false,
@@ -130,7 +190,7 @@ class VentaController extends Controller
         if ($estado === 'OBSERVADO') {
             return [
                 'key' => 'OBSERVADO',
-                'label' => 'Observado',
+                'label' => 'Observada',
                 'can_emit' => true,
                 'can_massive' => true,
                 'can_cafc' => true,
@@ -145,7 +205,7 @@ class VentaController extends Controller
         if ($estado === 'CREADO') {
             return [
                 'key' => 'CONTINGENCIA_CREADA',
-                'label' => 'Contingencia creada',
+                'label' => 'Pendiente por contingencia',
                 'can_emit' => false,
                 'can_massive' => false,
                 'can_cafc' => false,
@@ -169,6 +229,38 @@ class VentaController extends Controller
             'tipoEmision' => $tipoEmision,
             'cuf' => $cuf,
         ];
+    }
+
+    private function syncVentaFromConsulta(string $codigoSeguimiento, array $payload): void
+    {
+        $estadoConsulta = strtoupper((string) ($payload['estado'] ?? ''));
+
+        $estadoSufe = match ($estadoConsulta) {
+            'PROCESADO' => 'PROCESADA',
+            'OBSERVADO' => 'OBSERVADA',
+            'ANULADO' => 'ANULADA',
+            'PENDIENTE' => 'RECEPCIONADA',
+            default => null,
+        };
+
+        $update = array_filter([
+            'estado_sufe' => $estadoSufe,
+            'cuf' => $payload['cuf'] ?? null,
+            'observacion_sufe' => $payload['observacion'] ?? null,
+            'updated_at' => now(),
+        ], function ($value, $key) {
+            if ($key === 'updated_at') {
+                return true;
+            }
+
+            return $value !== null;
+        }, ARRAY_FILTER_USE_BOTH);
+
+        if (!empty($update)) {
+            Venta::query()
+                ->where('codigoSeguimiento', $codigoSeguimiento)
+                ->update($update);
+        }
     }
 
     private function detalleVentaPayload(DetalleVenta $detalleVenta): array
@@ -335,200 +427,38 @@ class VentaController extends Controller
     }
 
     // =========================
-    //  Crear + Emitir factura
-    // =========================
-    public function store(Request $request)
-    {
-        $validatedRequest = $this->sufeValidator->validateVentaStoreRequest($request->all());
-
-        DB::beginTransaction();
-
-        try {
-            // 1) Crear y guardar para obtener ID
-            $venta = new Venta();
-            $venta->codigoSucursal = $validatedRequest['codigoSucursal'];
-            $venta->puntoVenta = $validatedRequest['puntoVenta'];
-            $venta->documentoSector = $validatedRequest['documentoSector'];
-            $venta->municipio = $validatedRequest['municipio'];
-            $venta->departamento = $validatedRequest['departamento'] ?? null;
-            $venta->telefono = $validatedRequest['telefono'];
-            $venta->codigoCliente = $validatedRequest['codigoCliente'] ?? null;
-            $venta->razonSocial = $validatedRequest['razonSocial'] ?? null;
-            $venta->documentoIdentidad = $validatedRequest['documentoIdentidad'] ?? null;
-            $venta->tipoDocumentoIdentidad = $validatedRequest['tipoDocumentoIdentidad'] ?? null;
-            $venta->complemento = $validatedRequest['complemento'] ?? null;
-            $venta->correo = $validatedRequest['correo'] ?? null;
-            $venta->metodoPago = $validatedRequest['metodoPago'];
-            $venta->formatoFactura = $validatedRequest['formatoFactura'];
-            $venta->monto_descuento_adicional = $validatedRequest['monto_descuento_adicional'] ?? 0;
-            $venta->motivo = $validatedRequest['motivo'] ?? null;
-            $venta->total = $validatedRequest['total'];
-            $venta->codigoSeguimiento = 'pendiente-' . Str::uuid()->toString();
-            $venta->save(); // ahora tenemos $venta->id
-
-            // 2) Asignar codigoOrden Ãºnico basado en ID
-            $venta->codigoOrden = $this->codigoOrdenFromId($venta->id);
-            $venta->save();
-
-            // 3) Guardar detalles
-            $detalleVentaList = [];
-            foreach ($validatedRequest['carrito'] as $item) {
-                $detalleVenta = new DetalleVenta();
-                $detalleVenta->venta_id = $venta->id;
-                $detalleVenta->actividadEconomica = $item['actividadEconomica'];
-                $detalleVenta->codigoSin = $item['codigoSin'];
-                $detalleVenta->codigo = $item['codigo'];
-                $detalleVenta->descripcion = $item['descripcion'];
-                $detalleVenta->unidadMedida = $item['unidadMedida'];
-                $detalleVenta->cantidad = $item['cantidad'];
-                $detalleVenta->precio = $item['precio'];
-                $detalleVenta->save();
-
-                $precioUnitario = (float) $item['precio'];
-
-                $detalleVentaList[] = [
-                    'actividadEconomica' => $item['actividadEconomica'],
-                    'codigoSin'          => $item['codigoSin'],
-                    'codigo'             => $item['codigo'],
-                    'descripcion'        => $item['descripcion'],
-                    'precioUnitario'     => $precioUnitario,
-                    'cantidad'           => $item['cantidad'],
-                    'unidadMedida'       => $item['unidadMedida'],
-                ];
-            }
-
-            // 4) Payload AGETIC
-            $facturaData = [
-                'codigoOrden'            => $venta->codigoOrden,
-                'codigoSucursal'         => $validatedRequest['codigoSucursal'],
-                'puntoVenta'             => $validatedRequest['puntoVenta'],
-                'documentoSector'        => $validatedRequest['documentoSector'],
-                'municipio'              => $validatedRequest['municipio'],
-                'departamento'           => $validatedRequest['departamento'] ?? null,
-                'telefono'               => $validatedRequest['telefono'],
-                'razonSocial'            => $venta->razonSocial,
-                'documentoIdentidad'     => $venta->documentoIdentidad,
-                'tipoDocumentoIdentidad' => $venta->tipoDocumentoIdentidad,
-                'complemento'            => $venta->complemento,
-                'correo'                 => $venta->correo,
-                'codigoCliente'          => $venta->codigoCliente,
-                'metodoPago'             => $validatedRequest['metodoPago'],
-                'montoTotal'             => $validatedRequest['total'],
-                'montoDescuentoAdicional' => $validatedRequest['monto_descuento_adicional'] ?? 0,
-                'formatoFactura'         => $validatedRequest['formatoFactura'],
-                'detalle'                => $detalleVentaList,
-            ];
-
-            $this->sufeValidator->validateIndividualPayload($facturaData);
-
-            Log::info('Datos enviados para emitir factura:', $facturaData);
-
-            $result = $this->emitirFactura($facturaData);
-
-            if (!$result['ok']) {
-                if (($result['status'] ?? 0) === 0) {
-                    Log::error('AGETIC emitirFactura fallo de conexiÃ³n/timeout', ['result' => $result]);
-                    throw new \RuntimeException('No se pudo conectar con AGETIC: ' . ($result['error'] ?? 'sin detalle'));
-                }
-
-                $body    = $result['body'] ?? [];
-                $mensaje = $body['mensaje'] ?? 'Error en emisiÃ³n';
-                $errores = $body['datos']['errores'] ?? null;
-
-                if (is_array($body)) {
-                    try {
-                        $this->sufeValidator->validateRejectedResponse($body);
-                    } catch (ValidationException $validationException) {
-                        Log::warning('La respuesta de rechazo de SUFE no cumple el protocolo', [
-                            'errores' => $validationException->errors(),
-                            'body' => $body,
-                        ]);
-                    }
-                }
-
-                if (is_array($errores) && collect($errores)->contains(fn($e) =>
-                    stripos($e, 'ya ha sido emitida') !== false || stripos($e, 'PROCESADO') !== false
-                )) {
-                    Log::warning('AGETIC: codigoOrden ya procesado', ['codigoOrden' => $venta->codigoOrden, 'respuesta' => $body]);
-                    throw new \RuntimeException('Esta orden ya fue emitida previamente. Use un nuevo cÃ³digo de orden.');
-                }
-
-                Log::error('AGETIC emitirFactura error HTTP', ['status' => $result['status'], 'body' => $body]);
-                throw new \RuntimeException($mensaje);
-            }
-
-            $body = $result['body'] ?? [];
-            $this->sufeValidator->validateAcceptedIndividualResponse($body);
-
-            if (($body['finalizado'] ?? false) !== true) {
-                Log::error('AGETIC emisiÃ³n no finalizada', ['respuesta' => $body]);
-                throw new \RuntimeException('EmisiÃ³n no finalizada: ' . ($body['mensaje'] ?? 'sin mensaje'));
-            }
-
-            $venta->codigoSeguimiento = data_get($body, 'datos.codigoSeguimiento');
-            $venta->save();
-
-            DB::commit();
-
-            return response()->json([
-                'message'           => 'Venta guardada y factura emitida correctamente',
-                'codigoSeguimiento' => data_get($body, 'datos.codigoSeguimiento'),
-            ]);
-        } catch (ValidationException $e) {
-            DB::rollBack();
-            return response()->json([
-                'message' => 'La solicitud no cumple la validación del protocolo SEFE.',
-                'errors' => $e->errors(),
-            ], 422);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error('Error al guardar venta o emitir factura:', ['message' => $e->getMessage()]);
-            return response()->json([
-                'message' => 'Error al guardar venta o emitir factura',
-                'details' => $e->getMessage(),
-            ], 400);
-        }
-    }
-
-   
-
-    // =========================
     //  Mostrar
     // =========================
     public function show(Venta $venta)
     {
         $venta->load('detalleVentas');
-        $venta->fecha = $venta->created_at->format('Y-m-d');
-        return $venta;
-    }
+        $status = $this->protocolStatusForVenta($venta);
+        $notification = $this->latestNotificationForVenta($venta);
+        $detalleNotificacion = $notification ? json_decode((string) $notification->detalle, true) : [];
 
-    // =========================
-    //  Actualizar
-    // =========================
-    public function update(Request $request, Venta $venta)
-    {
-        $venta->total = $request->total;
-        $venta->pago = $request->pago;
-        $venta->cambio = $request->cambio;
-        $venta->tipo = $request->tipo;
-        $venta->codigoCliente = $request->codigoCliente ?? $venta->codigoCliente;
-        $venta->razonSocial = $request->razonSocial ?? $venta->razonSocial;
-        $venta->documentoIdentidad = $request->documentoIdentidad ?? $venta->documentoIdentidad;
-        $venta->motivo = $request->motivo;
-        $venta->estado = $request->estado;
-        $venta->save();
+        $data = $venta->toArray();
+        $data['fecha'] = $venta->created_at->format('Y-m-d');
+        $data['cliente'] = [
+            'razonSocial' => $venta->razonSocial,
+            'documentoIdentidad' => $venta->documentoIdentidad,
+            'codigoCliente' => $venta->codigoCliente,
+        ];
+        $data['status'] = $status;
+        $data['seguimiento'] = [
+            'codigoSeguimiento' => $venta->codigoSeguimiento,
+            'estadoSufe' => $venta->estado_sufe,
+            'tipoEmision' => $venta->tipo_emision_sufe,
+            'cuf' => $venta->cuf,
+            'urlPdf' => $venta->url_pdf,
+            'urlXml' => $venta->url_xml,
+            'observacion' => $venta->observacion_sufe,
+            'fechaNotificacion' => $venta->fecha_notificacion_sufe,
+            'notificacionEstado' => $notification?->estado,
+            'notificacionMensaje' => $notification?->mensaje,
+            'detalle' => $detalleNotificacion,
+        ];
 
-        return response()->json($venta);
-    }
-
-    // =========================
-    //  Eliminar (lÃ³gico)
-    // =========================
-    public function destroy(Venta $venta)
-    {
-        $venta->estado = 0;
-        $venta->save();
-        return response()->json(['message' => 'Venta eliminada correctamente']);
+        return response()->json($data);
     }
 
     // =========================
@@ -1014,6 +944,7 @@ class VentaController extends Controller
             if ($response->successful()) {
                 $payload = $response->json();
                 $this->sufeValidator->validateConsultaFacturaResponse($payload);
+                $this->syncVentaFromConsulta($codigoSeguimiento, $payload);
 
                 Log::info('Respuesta de la API:', $payload);
                 return response()->json($payload, 200);
@@ -1222,6 +1153,30 @@ class VentaController extends Controller
                 'message' => 'La solicitud de anulación no cumple la validación del protocolo SEFE.',
                 'errors' => $e->errors(),
             ], 422);
+        } catch (RequestException $e) {
+            $response = $e->response;
+            $payload = $response?->json();
+
+            if (is_array($payload)) {
+                try {
+                    $this->sufeValidator->validateRejectedResponse($payload);
+                } catch (ValidationException $validationException) {
+                    Log::warning('La respuesta de rechazo de anulación no cumple el protocolo', [
+                        'errores' => $validationException->errors(),
+                        'body' => $payload,
+                    ]);
+                }
+            }
+
+            Log::warning('Anulación rechazada por SEFE', [
+                'status' => $response?->status(),
+                'body' => $payload,
+            ]);
+
+            return response()->json([
+                'message' => data_get($payload, 'mensaje', 'No se pudo anular la factura.'),
+                'details' => $payload,
+            ], $response?->status() ?: 400);
         } catch (\Throwable $e) {
             Log::error('ExcepciÃ³n al anular factura: ' . $e->getMessage());
             return response()->json([
@@ -1231,85 +1186,4 @@ class VentaController extends Controller
         }
     }
 
-    // =========================
-    //  Reportes
-    // =========================
-    public function ventasDelDia($usuarioId)
-    {
-        $ventas = Venta::where('origen_sistema', 'BOLIPOST')
-            ->whereDate('created_at', Carbon::today())
-            ->with(['detalleVentas'])
-            ->get();
-
-        $total = $ventas->sum('total');
-
-        $servicios = DetalleVenta::select('codigo', 'descripcion', DB::raw('count(*) as total'))
-            ->whereHas('venta', function ($query) {
-                $query->where('origen_sistema', 'BOLIPOST')
-                    ->whereDate('created_at', Carbon::today());
-            })
-            ->groupBy('codigo', 'descripcion')
-            ->orderBy('total', 'desc')
-            ->get();
-
-        return response()->json([
-            'ventas'    => $ventas,
-            'total'     => $total,
-            'servicios' => $servicios,
-        ]);
-    }
-
-    public function ventasDelMes($usuarioId)
-    {
-        $ventas = Venta::where('origen_sistema', 'BOLIPOST')
-            ->whereMonth('created_at', Carbon::now()->month)
-            ->whereYear('created_at', Carbon::now()->year)
-            ->with(['detalleVentas'])
-            ->get();
-
-        $total = $ventas->sum('total');
-
-        $servicios = DetalleVenta::select('codigo', 'descripcion', DB::raw('count(*) as total'))
-            ->whereHas('venta', function ($query) {
-                $query->where('origen_sistema', 'BOLIPOST')
-                    ->whereMonth('created_at', Carbon::now()->month)
-                    ->whereYear('created_at', Carbon::now()->year);
-            })
-            ->groupBy('codigo', 'descripcion')
-            ->orderBy('total', 'desc')
-            ->get();
-
-        return response()->json([
-            'ventas'    => $ventas,
-            'total'     => $total,
-            'servicios' => $servicios,
-        ]);
-    }
-
-    public function ventasPorFecha($usuarioId, Request $request)
-    {
-        $fecha = $request->input('fecha');
-
-        $ventas = Venta::where('origen_sistema', 'BOLIPOST')
-            ->whereDate('created_at', $fecha)
-            ->with(['detalleVentas'])
-            ->get();
-
-        $total = $ventas->sum('total');
-
-        $servicios = DetalleVenta::select('codigo', 'descripcion', DB::raw('count(*) as total'))
-            ->whereHas('venta', function ($query) use ($fecha) {
-                $query->where('origen_sistema', 'BOLIPOST')
-                    ->whereDate('created_at', $fecha);
-            })
-            ->groupBy('codigo', 'descripcion')
-            ->orderBy('total', 'desc')
-            ->get();
-
-        return response()->json([
-            'ventas'    => $ventas,
-            'total'     => $total,
-            'servicios' => $servicios,
-        ]);
-    }
 }

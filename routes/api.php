@@ -27,4 +27,5 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
 
 Route::middleware('factura.auth')->prefix('facturacion')->group(function () {
     Route::post('/emision/individual', [FacturaVentaApiController::class, 'emitir']);
+    Route::post('/contingencia', [FacturaVentaApiController::class, 'contingenciaCafc']);
 });

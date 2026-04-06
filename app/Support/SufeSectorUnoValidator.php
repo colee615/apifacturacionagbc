@@ -24,42 +24,6 @@ class SufeSectorUnoValidator
         'ANULACION',
     ];
 
-    public function validateVentaStoreRequest(array $data): array
-    {
-        $validator = Validator::make($data, [
-            'codigoSucursal' => ['required', 'integer', 'min:0'],
-            'puntoVenta' => ['required', 'integer', 'min:0'],
-            'documentoSector' => ['required', 'integer', 'in:1'],
-            'municipio' => ['required', 'string', 'min:2', 'max:25', 'regex:/^[A-ZÀ-ſ\s\.-]+$/u'],
-            'departamento' => ['nullable', 'string', 'min:2', 'max:15', 'regex:/^[A-Z\s\.-]+$/u'],
-            'telefono' => ['required', 'string', 'regex:/^[0-9]{7,8}$/'],
-            'razonSocial' => ['required', 'string', 'min:2', 'max:500'],
-            'documentoIdentidad' => ['required', 'string', 'min:1', 'max:20'],
-            'tipoDocumentoIdentidad' => ['required', 'integer', 'between:1,5'],
-            'complemento' => ['nullable', 'string', 'max:20'],
-            'correo' => ['required', 'email', 'max:50'],
-            'codigoCliente' => ['required', 'string', 'min:2', 'max:35'],
-            'metodoPago' => ['required', 'integer', 'between:1,308'],
-            'formatoFactura' => ['required', 'string', 'in:rollo,pagina'],
-            'monto_descuento_adicional' => ['nullable', 'numeric', 'min:0'],
-            'motivo' => ['nullable', 'string', 'max:255'],
-            'total' => ['required', 'numeric', 'gt:0'],
-            'carrito' => ['required', 'array', 'min:1', 'max:500'],
-            'carrito.*.actividadEconomica' => ['required', 'string', 'size:6', 'regex:/^[0-9]+$/'],
-            'carrito.*.codigoSin' => ['required', 'string', 'min:5', 'max:7', 'regex:/^[0-9]+$/'],
-            'carrito.*.codigo' => ['required', 'string', 'min:3', 'max:50', 'regex:/^[A-Za-z0-9\s\-_.]+$/'],
-            'carrito.*.descripcion' => ['required', 'string', 'min:5', 'max:500'],
-            'carrito.*.unidadMedida' => ['required', 'integer', 'min:1'],
-            'carrito.*.cantidad' => ['required', 'numeric', 'gt:0'],
-            'carrito.*.precio' => ['required', 'numeric', 'gt:0'],
-        ]);
-
-        $this->applyCombinedLocationValidation($validator, $data, 'municipio', 'departamento');
-        $this->applyStoreTotalValidation($validator, $data);
-
-        return $validator->validate();
-    }
-
     public function validateIndividualPayload(array $data): array
     {
         $validator = Validator::make($data, array_merge(
@@ -209,6 +173,16 @@ class SufeSectorUnoValidator
         ])->validate();
     }
 
+    public function validateReceivedIndividualResponse(array $data): array
+    {
+        return Validator::make($data, [
+            'finalizado' => ['required', 'boolean'],
+            'mensaje' => ['required', 'string'],
+            'datos' => ['required', 'array'],
+            'datos.codigoSeguimiento' => ['required', 'string', 'regex:/^[0-9]+$/'],
+        ])->validate();
+    }
+
     public function validateRejectedResponse(array $data): array
     {
         return Validator::make($data, [
@@ -246,6 +220,28 @@ class SufeSectorUnoValidator
                 }
             }
         });
+
+        return $validator->validate();
+    }
+
+    public function validateAcceptedContingenciaCafcResponse(array $data): array
+    {
+        $validator = Validator::make($data, [
+            'finalizado' => ['required', 'boolean'],
+            'mensaje' => ['required', 'string'],
+            'datos' => ['required', 'array'],
+            'datos.codigoSeguimientoPaquete' => ['nullable', 'string'],
+            'datos.detalle' => ['required', 'array'],
+            'datos.detalle.*.codigoSeguimiento' => ['required', 'string'],
+            'datos.detalle.*.nroFactura' => ['required'],
+            'datos.detalle.*.documentoIdentidad' => ['required', 'string'],
+            'datos.detalle.*.fechaEmision' => ['required', 'string'],
+            'datos.rechazados' => ['present', 'array'],
+            'datos.rechazados.*.nroFactura' => ['required'],
+            'datos.rechazados.*.documentoIdentidad' => ['required', 'string'],
+            'datos.rechazados.*.fechaEmision' => ['required', 'string'],
+            'datos.rechazados.*.observacion' => ['required'],
+        ]);
 
         return $validator->validate();
     }
@@ -421,23 +417,6 @@ class SufeSectorUnoValidator
                 if ($combinedLength > 25) {
                     $validator->errors()->add($departamentoKey, 'La longitud combinada de municipio y departamento no puede superar 25 caracteres.');
                 }
-            }
-        });
-    }
-
-    private function applyStoreTotalValidation($validator, array $data): void
-    {
-        $validator->after(function ($validator) use ($data) {
-            $expectedTotal = collect($data['carrito'] ?? [])->sum(function ($item) {
-                return (float) ($item['cantidad'] ?? 0) * (float) ($item['precio'] ?? 0);
-            });
-
-            $discount = (float) ($data['monto_descuento_adicional'] ?? 0);
-            $expectedTotal = round($expectedTotal - $discount, 2);
-            $receivedTotal = round((float) ($data['total'] ?? 0), 2);
-
-            if ($expectedTotal !== $receivedTotal) {
-                $validator->errors()->add('total', 'El total enviado no coincide con la suma del carrito y el descuento adicional.');
             }
         });
     }

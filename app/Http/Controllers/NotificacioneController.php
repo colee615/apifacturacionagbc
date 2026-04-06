@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Notificacione;
+use App\Models\Venta;
 use App\Support\SufeSectorUnoValidator;
 use Illuminate\Http\Request;
 
@@ -68,6 +69,47 @@ class NotificacioneController extends Controller
       //
    }
 
+   private function resolveVentaEstadoSufe(array $validated): string
+   {
+      $estado = (string) ($validated['estado'] ?? '');
+      $tipoEmision = (string) data_get($validated, 'detalle.tipoEmision', '');
+
+      if ($estado === 'EXITO') {
+         return 'PROCESADA';
+      }
+
+      if ($estado === 'OBSERVADO') {
+         return 'OBSERVADA';
+      }
+
+      if ($estado === 'CREADO' && $tipoEmision === 'CONTINGENCIA') {
+         return 'CONTINGENCIA_CREADA';
+      }
+
+      if ($estado === 'CREADO') {
+         return 'CREADA';
+      }
+
+      return 'RECEPCIONADA';
+   }
+
+   private function syncVentaFromNotification(string $codigoSeguimiento, array $validated): void
+   {
+      $observacion = $validated['observacion'] ?? data_get($validated, 'detalle.observacion');
+
+      Venta::query()
+         ->where('codigoSeguimiento', $codigoSeguimiento)
+         ->update([
+            'estado_sufe' => $this->resolveVentaEstadoSufe($validated),
+            'tipo_emision_sufe' => data_get($validated, 'detalle.tipoEmision'),
+            'cuf' => data_get($validated, 'detalle.cuf'),
+            'url_pdf' => data_get($validated, 'detalle.urlPdf'),
+            'url_xml' => data_get($validated, 'detalle.urlXml'),
+            'observacion_sufe' => $observacion,
+            'fecha_notificacion_sufe' => $validated['fecha'] ?? null,
+            'updated_at' => now(),
+         ]);
+   }
 
    public function procesarNotificacion(Request $request, $codigoSeguimiento)
    {
@@ -90,6 +132,7 @@ class NotificacioneController extends Controller
          )),
      ]);
       $notificacion->save();
+      $this->syncVentaFromNotification($codigoSeguimiento, $validated);
 
       return response()->json([
          'message' => 'Notificación recibida',

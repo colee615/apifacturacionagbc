@@ -12,42 +12,20 @@ Route::post('reset-password/{token}', [UsuarioController::class, 'resetPassword'
 
 Route::middleware(['jwt.auth'])->group(function () {
    Route::get('me', [UsuarioController::class, 'me']);
-
    Route::get('/ventas', 'VentaController@index')->middleware('permission:ventas.read');
    Route::get('/ventas/operables', 'VentaController@operables')->middleware('permission:ventas.read');
-   Route::get('/ventas/{venta}', 'VentaController@show')->middleware('permission:ventas.read');
-   Route::post('/ventas', 'VentaController@store')->middleware('permission:ventas.write');
-   Route::post('/ventas/individual', 'VentaController@emitirFacturaIndividual')->middleware('permission:ventas.write');
-   Route::post('/ventas/documento-ajuste/{cufFactura}', 'VentaController@emitirDocumentoAjuste')->middleware('permission:ventas.write');
    Route::post('/ventas/emitir-seleccion', 'VentaController@emitirVentasSeleccionadas')->middleware('permission:ventas.write');
    Route::post('/ventas/consultar-seleccion', 'VentaController@consultarVentasSeleccionadas')->middleware('permission:ventas.read');
-   Route::put('/ventas/{venta}', 'VentaController@update')->middleware('permission:ventas.write');
-   Route::patch('/ventas/{venta}', 'VentaController@update')->middleware('permission:ventas.write');
-   Route::delete('/ventas/{venta}', 'VentaController@destroy')->middleware('permission:ventas.write');
-
-   Route::get('/ventas/dia/{usuarioId}', [VentaController::class, 'ventasDelDia'])->middleware('permission:ventas.read');
-   Route::get('/ventas/mes/{usuarioId}', [VentaController::class, 'ventasDelMes'])->middleware('permission:ventas.read');
-   Route::post('/ventas/fecha/{usuarioId}', [VentaController::class, 'ventasPorFecha'])->middleware('permission:ventas.read');
-   Route::get('venta/pdf/{codigoSeguimiento}', 'VentaController@getPdfUrl')->middleware('permission:ventas.read');
-   Route::get('ventas/consultar/{codigoSeguimiento}', 'VentaController@consultarVenta')->middleware('permission:ventas.read');
-   Route::get('ventas/consultar-paquete/{codigoSeguimientoPaquete}', 'VentaController@consultarPaquete')->middleware('permission:ventas.read');
-    Route::get('ventas/homologacion/productos', 'VentaController@homologarProductos')->middleware('permission:ventas.read');
-    Route::get('ventas/parametricas/{tipoParametro}', 'VentaController@listarParametricas')->middleware('permission:ventas.read');
-   Route::patch('ventas/anular/{cuf}', 'VentaController@anularFactura')->middleware('permission:ventas.void');
-   Route::post('ventas/masiva', 'VentaController@emitirFacturasMasivas')->middleware('permission:ventas.write');
-   Route::post('ventas/contingencia-cafc', 'VentaController@emitirContingenciaCafc')->middleware('permission:ventas.write');
-   Route::post('ventas/contingencia-cafc-seleccion', 'VentaController@emitirContingenciaCafcSeleccionadas')->middleware('permission:ventas.write');
-   Route::post('venta2', 'VentaController@venta2')->middleware('permission:ventas.write');
+   Route::post('/ventas/masiva', 'VentaController@emitirFacturasMasivas')->middleware('permission:ventas.write');
+   Route::post('/ventas/contingencia-cafc', 'VentaController@emitirContingenciaCafc')->middleware('permission:ventas.write');
+   Route::post('/ventas/contingencia-cafc-seleccion', 'VentaController@emitirContingenciaCafcSeleccionadas')->middleware('permission:ventas.write');
+   Route::get('/ventas/consultar-paquete/{codigoSeguimientoPaquete}', 'VentaController@consultarPaquete')->middleware('permission:ventas.read');
+   Route::get('/ventas/consultar/{codigoSeguimiento}', 'VentaController@consultarVenta')->middleware('permission:ventas.read');
+   Route::patch('/ventas/anular/{cuf}', 'VentaController@anularFactura')->middleware('permission:ventas.write');
+   Route::get('/ventas/{venta}', 'VentaController@show')->middleware('permission:ventas.read');
 });
 
 Route::middleware(['jwt.auth'])->group(function () {
-   Route::get('/sucursales', 'SucursaleController@index')->middleware('permission:sucursales.manage');
-   Route::get('/sucursales/{sucursale}', 'SucursaleController@show')->middleware('permission:sucursales.manage');
-   Route::post('/sucursales', 'SucursaleController@store')->middleware('permission:sucursales.manage,sucursales.create');
-   Route::put('/sucursales/{sucursale}', 'SucursaleController@update')->middleware('permission:sucursales.manage,sucursales.update');
-   Route::patch('/sucursales/{sucursale}', 'SucursaleController@update')->middleware('permission:sucursales.manage,sucursales.update');
-   Route::delete('/sucursales/{sucursale}', 'SucursaleController@destroy')->middleware('permission:sucursales.manage,sucursales.delete');
-
    Route::get('/usuarios', 'UsuarioController@index')->middleware('permission:usuarios.manage');
    Route::get('/usuarios/{usuario}', 'UsuarioController@show')->whereNumber('usuario')->middleware('permission:usuarios.manage');
    Route::post('/usuarios', 'UsuarioController@store')->middleware('permission:usuarios.manage,usuarios.create');
@@ -59,7 +37,8 @@ Route::middleware(['jwt.auth'])->group(function () {
 });
 
 Route::middleware(['jwt.auth', 'permission:dashboard.view'])->group(function () {
-   Route::apiResource('/notificaciones', 'NotificacioneController');
+   Route::get('/notificaciones', 'NotificacioneController@index');
+   Route::get('/notificaciones/{notificacione}', 'NotificacioneController@show');
 });
 
 Route::middleware(['jwt.auth', 'permission:rbac.manage'])->prefix('rbac')->group(function () {

@@ -17,7 +17,7 @@ class UsuarioController extends Controller
 {
    public function index()
    {
-      return Usuario::with(['sucursale', 'roles:id,name,slug'])->get();
+      return Usuario::with(['roles:id,name,slug'])->get();
    }
 
    public function store(Request $request)
@@ -25,7 +25,6 @@ class UsuarioController extends Controller
       $request->validate([
          'name' => 'required|string',
          'email' => 'required|string|email|unique:usuarios',
-         'sucursale_id' => 'required|integer|exists:sucursales,id',
          'password' => 'required',
          'role_ids' => 'nullable|array',
          'role_ids.*' => 'integer|exists:roles,id',
@@ -35,7 +34,6 @@ class UsuarioController extends Controller
       $usuario->name = $request->name;
       $usuario->email = $request->email;
       $usuario->password = Hash::make($request->input('password'));
-      $usuario->sucursale_id = $request->sucursale_id;
       $usuario->save();
       $roleIds = $request->input('role_ids');
       if (is_array($roleIds) && !empty($roleIds)) {
@@ -46,13 +44,13 @@ class UsuarioController extends Controller
             $usuario->roles()->sync([$defaultRoleId]);
          }
       }
-      $usuario->load(['sucursale', 'roles:id,name,slug']);
+      $usuario->load(['roles:id,name,slug']);
       return $usuario;
    }
 
    public function show(Usuario $usuario)
    {
-      $usuario->load(['sucursale', 'roles:id,name,slug']);
+      $usuario->load(['roles:id,name,slug']);
       return $usuario;
    }
 
@@ -61,7 +59,6 @@ class UsuarioController extends Controller
       $request->validate([
          'name' => 'required|string',
          'email' => 'required|string|email|unique:usuarios,email,' . $usuario->id,
-         'sucursale_id' => 'required|integer|exists:sucursales,id',
          'role_ids' => 'nullable|array',
          'role_ids.*' => 'integer|exists:roles,id',
       ]);
@@ -72,12 +69,11 @@ class UsuarioController extends Controller
       if (isset($request->password) && !empty($request->password)) {
          $usuario->password = Hash::make($request->password);
       }
-      $usuario->sucursale_id = $request->sucursale_id;
       $usuario->save();
       if ($request->has('role_ids')) {
          $usuario->roles()->sync($request->input('role_ids', []));
       }
-      $usuario->load(['sucursale', 'roles:id,name,slug']);
+      $usuario->load(['roles:id,name,slug']);
 
       return $usuario;
    }
@@ -114,8 +110,6 @@ class UsuarioController extends Controller
       $log->login_time = now();
       $log->save();
 
-      $usuario->load('sucursale');
-
       return response()->json([
          'message' => 'Inicio de sesion exitoso',
          'token' => $token,
@@ -134,8 +128,6 @@ class UsuarioController extends Controller
       if (!$usuario) {
          return response()->json(['error' => 'No autenticado'], 401);
       }
-
-      $usuario->load('sucursale');
 
       return response()->json([
          'usuario' => $usuario,

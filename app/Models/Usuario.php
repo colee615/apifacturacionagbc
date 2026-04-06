@@ -21,7 +21,6 @@ class Usuario extends Authenticatable implements JWTSubject
       'name',
       'email',
       'password',
-      'sucursale_id',
       'estado',
    ];
 
@@ -31,11 +30,6 @@ class Usuario extends Authenticatable implements JWTSubject
    ];
 
    protected $casts = [];
-
-   public function sucursale()
-   {
-      return $this->belongsTo(Sucursale::class);
-   }
 
    public function roles()
    {
