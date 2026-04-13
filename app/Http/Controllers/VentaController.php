@@ -392,6 +392,275 @@ class VentaController extends Controller
         ];
     }
 
+    private function validateVentaReportFilters(Request $request): array
+    {
+        return $request->validate([
+            'fechaInicio' => ['nullable', 'date_format:Y-m-d'],
+            'fechaFin' => ['nullable', 'date_format:Y-m-d'],
+            'origen_usuario_id' => ['nullable', 'string', 'max:100'],
+            'origen_sucursal_id' => ['nullable', 'string', 'max:100'],
+            'origen_venta_id' => ['nullable', 'string', 'max:100'],
+            'origen_venta_tipo' => ['nullable', 'string', 'max:100'],
+            'codigoSucursal' => ['nullable', 'integer', 'min:0'],
+            'puntoVenta' => ['nullable', 'integer', 'min:0'],
+            'estado_sufe' => ['nullable', 'string', 'max:50'],
+            'q' => ['nullable', 'string', 'max:100'],
+            'limite' => ['nullable', 'integer', 'min:1', 'max:500'],
+        ]);
+    }
+
+    private function buildVentaReportQuery(array $filters)
+    {
+        $query = Venta::query()->where('estado', 1);
+
+        if (!empty($filters['fechaInicio'])) {
+            $query->whereDate('created_at', '>=', $filters['fechaInicio']);
+        }
+
+        if (!empty($filters['fechaFin'])) {
+            $query->whereDate('created_at', '<=', $filters['fechaFin']);
+        }
+
+        foreach (['origen_usuario_id', 'origen_sucursal_id', 'origen_venta_id', 'origen_venta_tipo'] as $field) {
+            if (!empty($filters[$field])) {
+                $query->where($field, (string) $filters[$field]);
+            }
+        }
+
+        if (array_key_exists('codigoSucursal', $filters) && $filters['codigoSucursal'] !== null) {
+            $query->where('codigoSucursal', (int) $filters['codigoSucursal']);
+        }
+
+        if (array_key_exists('puntoVenta', $filters) && $filters['puntoVenta'] !== null) {
+            $query->where('puntoVenta', (int) $filters['puntoVenta']);
+        }
+
+        if (!empty($filters['estado_sufe'])) {
+            $query->whereRaw('upper(coalesce(estado_sufe, ?)) = ?', ['', strtoupper((string) $filters['estado_sufe'])]);
+        }
+
+        if (!empty($filters['q'])) {
+            $term = '%' . trim((string) $filters['q']) . '%';
+            $query->where(function ($search) use ($term) {
+                $search->where('codigoOrden', 'like', $term)
+                    ->orWhere('codigoSeguimiento', 'like', $term)
+                    ->orWhere('razonSocial', 'like', $term)
+                    ->orWhere('documentoIdentidad', 'like', $term)
+                    ->orWhere('codigoCliente', 'like', $term)
+                    ->orWhere('origen_usuario_id', 'like', $term)
+                    ->orWhere('origen_usuario_nombre', 'like', $term)
+                    ->orWhere('origen_sucursal_nombre', 'like', $term);
+            });
+        }
+
+        return $query;
+    }
+
+    public function kardexUsuarios(Request $request)
+    {
+        $filters = $this->validateVentaReportFilters($request);
+        $baseQuery = $this->buildVentaReportQuery($filters);
+
+        $rows = (clone $baseQuery)
+            ->selectRaw("
+                coalesce(origen_usuario_id, 'SIN-USUARIO') as origen_usuario_id,
+                coalesce(origen_usuario_nombre, 'SIN USUARIO') as origen_usuario_nombre,
+                count(*) as cantidad_ventas,
+                sum(total) as total_vendido,
+                min(created_at) as primera_venta,
+                max(created_at) as ultima_venta,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'PROCESADA' then 1 else 0 end) as facturadas,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' then 1 else 0 end) as observadas,
+                sum(case when upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA') then 1 else 0 end) as pendientes
+            ")
+            ->groupByRaw("coalesce(origen_usuario_id, 'SIN-USUARIO'), coalesce(origen_usuario_nombre, 'SIN USUARIO')")
+            ->orderByDesc('total_vendido')
+            ->orderBy('origen_usuario_nombre')
+            ->get();
+
+        $detalle = collect();
+        if (!empty($filters['origen_usuario_id'])) {
+            $detalle = (clone $baseQuery)
+                ->latest('created_at')
+                ->limit((int) ($filters['limite'] ?? 200))
+                ->get([
+                    'id',
+                    'created_at',
+                    'codigoOrden',
+                    'codigoSeguimiento',
+                    'origen_venta_id',
+                    'origen_venta_tipo',
+                    'codigoSucursal',
+                    'puntoVenta',
+                    'razonSocial',
+                    'documentoIdentidad',
+                    'codigoCliente',
+                    'total',
+                    'estado_sufe',
+                    'cuf',
+                ])
+                ->map(function (Venta $venta) {
+                    return [
+                        'id' => $venta->id,
+                        'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
+                        'codigoOrden' => $venta->codigoOrden,
+                        'codigoSeguimiento' => $venta->codigoSeguimiento,
+                        'origenVentaId' => $venta->origen_venta_id,
+                        'origenVentaTipo' => $venta->origen_venta_tipo,
+                        'codigoSucursal' => (int) $venta->codigoSucursal,
+                        'puntoVenta' => (int) $venta->puntoVenta,
+                        'razonSocial' => $venta->razonSocial,
+                        'documentoIdentidad' => $venta->documentoIdentidad,
+                        'codigoCliente' => $venta->codigoCliente,
+                        'total' => (float) $venta->total,
+                        'estadoSufe' => $venta->estado_sufe,
+                        'cuf' => $venta->cuf,
+                    ];
+                });
+        }
+
+        return response()->json([
+            'filters' => $filters,
+            'resumen' => [
+                'usuarios' => $rows->count(),
+                'ventas' => (int) $rows->sum('cantidad_ventas'),
+                'totalVendido' => (float) $rows->sum(fn ($row) => (float) $row->total_vendido),
+                'facturadas' => (int) $rows->sum('facturadas'),
+                'observadas' => (int) $rows->sum('observadas'),
+                'pendientes' => (int) $rows->sum('pendientes'),
+            ],
+            'usuarios' => $rows->map(function ($row) {
+                return [
+                    'usuarioId' => $row->origen_usuario_id,
+                    'usuarioNombre' => $row->origen_usuario_nombre,
+                    'cantidadVentas' => (int) $row->cantidad_ventas,
+                    'totalVendido' => (float) $row->total_vendido,
+                    'facturadas' => (int) $row->facturadas,
+                    'observadas' => (int) $row->observadas,
+                    'pendientes' => (int) $row->pendientes,
+                    'primeraVenta' => $row->primera_venta,
+                    'ultimaVenta' => $row->ultima_venta,
+                ];
+            })->values(),
+            'detalle' => $detalle->values(),
+        ]);
+    }
+
+    public function reporteVentas(Request $request)
+    {
+        $filters = $this->validateVentaReportFilters($request);
+        $baseQuery = $this->buildVentaReportQuery($filters);
+        $limite = (int) ($filters['limite'] ?? 100);
+
+        $resumen = (clone $baseQuery)
+            ->selectRaw("
+                count(*) as cantidad_ventas,
+                coalesce(sum(total), 0) as total_vendido,
+                coalesce(avg(total), 0) as ticket_promedio,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'PROCESADA' then 1 else 0 end) as facturadas,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' then 1 else 0 end) as observadas,
+                sum(case when upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA') then 1 else 0 end) as pendientes
+            ")
+            ->first();
+
+        $porEstado = (clone $baseQuery)
+            ->selectRaw("
+                coalesce(nullif(upper(estado_sufe), ''), 'SIN_ESTADO') as estado,
+                count(*) as cantidad,
+                coalesce(sum(total), 0) as total
+            ")
+            ->groupByRaw("coalesce(nullif(upper(estado_sufe), ''), 'SIN_ESTADO')")
+            ->orderByDesc('cantidad')
+            ->get();
+
+        $porSucursal = (clone $baseQuery)
+            ->selectRaw("
+                codigoSucursal,
+                puntoVenta,
+                count(*) as cantidad,
+                coalesce(sum(total), 0) as total
+            ")
+            ->groupBy('codigoSucursal', 'puntoVenta')
+            ->orderByDesc('total')
+            ->get();
+
+        $ventas = (clone $baseQuery)
+            ->latest('created_at')
+            ->limit($limite)
+            ->get([
+                'id',
+                'created_at',
+                'codigoOrden',
+                'codigoSeguimiento',
+                'origen_venta_id',
+                'origen_venta_tipo',
+                'origen_usuario_id',
+                'origen_usuario_nombre',
+                'origen_sucursal_id',
+                'origen_sucursal_nombre',
+                'codigoSucursal',
+                'puntoVenta',
+                'razonSocial',
+                'documentoIdentidad',
+                'codigoCliente',
+                'total',
+                'estado_sufe',
+                'cuf',
+            ])
+            ->map(function (Venta $venta) {
+                return [
+                    'id' => $venta->id,
+                    'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
+                    'codigoOrden' => $venta->codigoOrden,
+                    'codigoSeguimiento' => $venta->codigoSeguimiento,
+                    'origenVentaId' => $venta->origen_venta_id,
+                    'origenVentaTipo' => $venta->origen_venta_tipo,
+                    'usuario' => [
+                        'id' => $venta->origen_usuario_id,
+                        'nombre' => $venta->origen_usuario_nombre,
+                    ],
+                    'sucursal' => [
+                        'id' => $venta->origen_sucursal_id,
+                        'nombre' => $venta->origen_sucursal_nombre,
+                        'codigoSucursal' => (int) $venta->codigoSucursal,
+                        'puntoVenta' => (int) $venta->puntoVenta,
+                    ],
+                    'cliente' => [
+                        'razonSocial' => $venta->razonSocial,
+                        'documentoIdentidad' => $venta->documentoIdentidad,
+                        'codigoCliente' => $venta->codigoCliente,
+                    ],
+                    'total' => (float) $venta->total,
+                    'estadoSufe' => $venta->estado_sufe,
+                    'cuf' => $venta->cuf,
+                ];
+            });
+
+        return response()->json([
+            'filters' => $filters,
+            'resumen' => [
+                'cantidadVentas' => (int) ($resumen->cantidad_ventas ?? 0),
+                'totalVendido' => (float) ($resumen->total_vendido ?? 0),
+                'ticketPromedio' => (float) ($resumen->ticket_promedio ?? 0),
+                'facturadas' => (int) ($resumen->facturadas ?? 0),
+                'observadas' => (int) ($resumen->observadas ?? 0),
+                'pendientes' => (int) ($resumen->pendientes ?? 0),
+            ],
+            'porEstado' => $porEstado->map(fn ($row) => [
+                'estado' => $row->estado,
+                'cantidad' => (int) $row->cantidad,
+                'total' => (float) $row->total,
+            ])->values(),
+            'porSucursal' => $porSucursal->map(fn ($row) => [
+                'codigoSucursal' => (int) $row->codigoSucursal,
+                'puntoVenta' => (int) $row->puntoVenta,
+                'cantidad' => (int) $row->cantidad,
+                'total' => (float) $row->total,
+            ])->values(),
+            'ventas' => $ventas->values(),
+        ]);
+    }
+
     // =========================
     //  Listado
     // =========================

@@ -13,6 +13,8 @@ Route::post('reset-password/{token}', [UsuarioController::class, 'resetPassword'
 Route::middleware(['jwt.auth'])->group(function () {
    Route::get('me', [UsuarioController::class, 'me']);
    Route::get('/ventas', 'VentaController@index')->middleware('permission:ventas.read');
+   Route::get('/ventas/reportes/kardex-usuarios', 'VentaController@kardexUsuarios')->middleware('permission:ventas.read');
+   Route::get('/ventas/reportes/resumen', 'VentaController@reporteVentas')->middleware('permission:ventas.read');
    Route::get('/ventas/operables', 'VentaController@operables')->middleware('permission:ventas.read');
    Route::post('/ventas/emitir-seleccion', 'VentaController@emitirVentasSeleccionadas')->middleware('permission:ventas.write');
    Route::post('/ventas/consultar-seleccion', 'VentaController@consultarVentasSeleccionadas')->middleware('permission:ventas.read');

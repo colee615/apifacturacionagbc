@@ -29,6 +29,8 @@ class SufeSectorUnoValidator
         $validator = Validator::make($data, array_merge(
             [
                 'codigoOrden' => ['required', 'string', 'min:1', 'max:64'],
+                'origenVenta.id' => ['nullable', 'string', 'max:100'],
+                'origenVenta.tipo' => ['nullable', 'string', 'max:100'],
                 'origenUsuario.id' => ['nullable', 'string', 'max:100'],
                 'origenUsuario.nombre' => ['nullable', 'string', 'max:255'],
                 'origenUsuario.email' => ['nullable', 'email', 'max:120'],

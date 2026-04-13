@@ -86,7 +86,14 @@ class FacturaVentaApiController extends Controller
 
         $ventaId = DB::table('ventas')->insertGetId([
             'origen_sistema' => 'BOLIPOST',
+            'origen_venta_id' => data_get($payload, 'origenVenta.id'),
+            'origen_venta_tipo' => data_get($payload, 'origenVenta.tipo'),
+            'origen_usuario_id' => data_get($payload, 'origenUsuario.id'),
             'origen_usuario_nombre' => data_get($payload, 'origenUsuario.nombre'),
+            'origen_usuario_email' => data_get($payload, 'origenUsuario.email'),
+            'origen_sucursal_id' => data_get($payload, 'origenSucursal.id'),
+            'origen_sucursal_codigo' => data_get($payload, 'origenSucursal.codigo'),
+            'origen_sucursal_nombre' => data_get($payload, 'origenSucursal.nombre'),
             'codigoSucursal' => (int) $payload['codigoSucursal'],
             'puntoVenta' => (int) $payload['puntoVenta'],
             'documentoSector' => (int) $payload['documentoSector'],
@@ -146,7 +153,7 @@ class FacturaVentaApiController extends Controller
     {
         $clean = $payload;
 
-        unset($clean['origenUsuario'], $clean['origenSucursal']);
+        unset($clean['origenVenta'], $clean['origenUsuario'], $clean['origenSucursal']);
 
         if ((int) ($clean['tipoDocumentoIdentidad'] ?? 0) !== 1 || blank($clean['complemento'] ?? null)) {
             unset($clean['complemento']);
