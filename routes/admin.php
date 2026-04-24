@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\IntegrationTokenController;
+use App\Http\Controllers\CajaDiariaController;
 use App\Http\Controllers\RbacController;
 use App\Http\Controllers\UsuarioController;
 use App\Http\Controllers\VentaController;
@@ -14,6 +15,7 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::get('me', [UsuarioController::class, 'me']);
    Route::get('/ventas', 'VentaController@index')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/kardex-usuarios', 'VentaController@kardexUsuarios')->middleware('permission:ventas.read');
+   Route::get('/ventas/reportes/kardex-pdf', 'VentaController@reporteKardexPdf')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/resumen', 'VentaController@reporteVentas')->middleware('permission:ventas.read');
    Route::get('/ventas/operables', 'VentaController@operables')->middleware('permission:ventas.read');
    Route::post('/ventas/emitir-seleccion', 'VentaController@emitirVentasSeleccionadas')->middleware('permission:ventas.write');
@@ -25,6 +27,12 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::get('/ventas/consultar/{codigoSeguimiento}', 'VentaController@consultarVenta')->middleware('permission:ventas.read');
    Route::patch('/ventas/anular/{cuf}', 'VentaController@anularFactura')->middleware('permission:ventas.write');
    Route::get('/ventas/{venta}', 'VentaController@show')->middleware('permission:ventas.read');
+
+   Route::get('/caja/estado', [CajaDiariaController::class, 'estado'])->middleware('permission:ventas.read');
+   Route::post('/caja/abrir', [CajaDiariaController::class, 'abrir'])->middleware('permission:ventas.write');
+   Route::post('/caja/cerrar', [CajaDiariaController::class, 'cerrar'])->middleware('permission:ventas.write');
+   Route::get('/caja/arqueos', [CajaDiariaController::class, 'arqueos'])->middleware('permission:ventas.read');
+   Route::get('/caja/reporte-diario', [CajaDiariaController::class, 'reporteDiario'])->middleware('permission:ventas.read');
 });
 
 Route::middleware(['jwt.auth'])->group(function () {

@@ -9,7 +9,7 @@ class Venta extends Model
 {
    use HasFactory;
 
-   public const CODIGO_ORDEN_PREFIX = 'AGBC-';
+   public const CODIGO_ORDEN_PREFIX = 'VENTA-';
    public const CODIGO_ORDEN_PAD = 7;
 
    public function detalleVentas()

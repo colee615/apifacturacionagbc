@@ -6,10 +6,15 @@ use App\Models\Venta;
 use App\Models\DetalleVenta;
 use App\Models\Notificacione;
 use App\Support\SufeSectorUnoValidator;
+use Dompdf\Dompdf;
+use Dompdf\Options;
+use Illuminate\Http\Response as HttpResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Validation\ValidationException;
@@ -17,6 +22,10 @@ use Illuminate\Support\Str;
 
 class VentaController extends Controller
 {
+    private static ?bool $hasOrigenUsuarioAliasColumn = null;
+    private static ?bool $hasOrigenUsuarioCarnetColumn = null;
+    private static ?bool $hasOrigenUsuarioEmailColumn = null;
+
     public function __construct(
         private readonly SufeSectorUnoValidator $sufeValidator
     ) {
@@ -398,6 +407,9 @@ class VentaController extends Controller
             'fechaInicio' => ['nullable', 'date_format:Y-m-d'],
             'fechaFin' => ['nullable', 'date_format:Y-m-d'],
             'origen_usuario_id' => ['nullable', 'string', 'max:100'],
+            'origen_usuario_email' => ['nullable', 'string', 'max:120'],
+            'origen_usuario_alias' => ['nullable', 'string', 'max:80'],
+            'origen_usuario_carnet' => ['nullable', 'string', 'max:40'],
             'origen_sucursal_id' => ['nullable', 'string', 'max:100'],
             'origen_venta_id' => ['nullable', 'string', 'max:100'],
             'origen_venta_tipo' => ['nullable', 'string', 'max:100'],
@@ -407,6 +419,42 @@ class VentaController extends Controller
             'q' => ['nullable', 'string', 'max:100'],
             'limite' => ['nullable', 'integer', 'min:1', 'max:500'],
         ]);
+    }
+
+    private function normalizeCarnet(?string $value): ?string
+    {
+        $clean = strtoupper(trim((string) $value));
+        if ($clean === '') {
+            return null;
+        }
+
+        return preg_replace('/\s+/', '', $clean) ?: null;
+    }
+
+    private function resolveIdentityFilters(Request $request, array $filters): array
+    {
+        $hasManualIdentity = !empty($filters['origen_usuario_id'])
+            || !empty($filters['origen_usuario_email'])
+            || !empty($filters['origen_usuario_alias'])
+            || !empty($filters['origen_usuario_carnet']);
+
+        if ($hasManualIdentity) {
+            $filters['origen_usuario_email'] = strtolower(trim((string) ($filters['origen_usuario_email'] ?? ''))) ?: null;
+            $filters['origen_usuario_alias'] = strtolower(trim((string) ($filters['origen_usuario_alias'] ?? ''))) ?: null;
+            $filters['origen_usuario_carnet'] = $this->normalizeCarnet($filters['origen_usuario_carnet'] ?? null);
+            return $filters;
+        }
+
+        $usuario = Auth::guard('api')->user() ?? $request->user();
+        if (!$usuario) {
+            return $filters;
+        }
+
+        $filters['origen_usuario_email'] = strtolower(trim((string) ($usuario->email ?? ''))) ?: null;
+        $filters['origen_usuario_alias'] = strtolower(trim((string) ($usuario->alias ?? ''))) ?: null;
+        $filters['origen_usuario_carnet'] = $this->normalizeCarnet((string) ($usuario->numero_carnet ?? ''));
+
+        return $filters;
     }
 
     private function buildVentaReportQuery(array $filters)
@@ -425,6 +473,18 @@ class VentaController extends Controller
             if (!empty($filters[$field])) {
                 $query->where($field, (string) $filters[$field]);
             }
+        }
+
+        if (!empty($filters['origen_usuario_email']) && $this->hasOrigenUsuarioEmailColumn()) {
+            $query->whereRaw('lower(coalesce(origen_usuario_email, ?)) = ?', ['', strtolower((string) $filters['origen_usuario_email'])]);
+        }
+
+        if (!empty($filters['origen_usuario_alias']) && $this->hasOrigenUsuarioAliasColumn()) {
+            $query->whereRaw('lower(coalesce(origen_usuario_alias, ?)) = ?', ['', strtolower((string) $filters['origen_usuario_alias'])]);
+        }
+
+        if (!empty($filters['origen_usuario_carnet']) && $this->hasOrigenUsuarioCarnetColumn()) {
+            $query->whereRaw("upper(replace(coalesce(origen_usuario_carnet, ''), ' ', '')) = ?", [(string) $filters['origen_usuario_carnet']]);
         }
 
         if (array_key_exists('codigoSucursal', $filters) && $filters['codigoSucursal'] !== null) {
@@ -450,15 +510,198 @@ class VentaController extends Controller
                     ->orWhere('origen_usuario_id', 'like', $term)
                     ->orWhere('origen_usuario_nombre', 'like', $term)
                     ->orWhere('origen_sucursal_nombre', 'like', $term);
+
+                if ($this->hasOrigenUsuarioEmailColumn()) {
+                    $search->orWhere('origen_usuario_email', 'like', $term);
+                }
+                if ($this->hasOrigenUsuarioAliasColumn()) {
+                    $search->orWhere('origen_usuario_alias', 'like', $term);
+                }
+                if ($this->hasOrigenUsuarioCarnetColumn()) {
+                    $search->orWhere('origen_usuario_carnet', 'like', $term);
+                }
             });
         }
 
         return $query;
     }
 
+    private function hasOrigenUsuarioAliasColumn(): bool
+    {
+        if (self::$hasOrigenUsuarioAliasColumn === null) {
+            self::$hasOrigenUsuarioAliasColumn = Schema::hasColumn('ventas', 'origen_usuario_alias');
+        }
+
+        return self::$hasOrigenUsuarioAliasColumn;
+    }
+
+    private function hasOrigenUsuarioCarnetColumn(): bool
+    {
+        if (self::$hasOrigenUsuarioCarnetColumn === null) {
+            self::$hasOrigenUsuarioCarnetColumn = Schema::hasColumn('ventas', 'origen_usuario_carnet');
+        }
+
+        return self::$hasOrigenUsuarioCarnetColumn;
+    }
+
+    private function hasOrigenUsuarioEmailColumn(): bool
+    {
+        if (self::$hasOrigenUsuarioEmailColumn === null) {
+            self::$hasOrigenUsuarioEmailColumn = Schema::hasColumn('ventas', 'origen_usuario_email');
+        }
+
+        return self::$hasOrigenUsuarioEmailColumn;
+    }
+
+    private function extractNumeroFacturaFromDetalle(?string $detalle): ?string
+    {
+        if (!$detalle) {
+            return null;
+        }
+
+        $decoded = json_decode($detalle, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+
+        $candidates = [
+            data_get($decoded, 'nroFactura'),
+            data_get($decoded, 'numeroFactura'),
+            data_get($decoded, 'factura.nroFactura'),
+            data_get($decoded, 'factura.numeroFactura'),
+            data_get($decoded, 'consultaSefe.nroFactura'),
+            data_get($decoded, 'consultaSefe.numeroFactura'),
+            data_get($decoded, 'datos.nroFactura'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            $value = trim((string) $candidate);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function numeroFacturaMapFromSeguimientos(array $seguimientos): array
+    {
+        $seguimientos = array_values(array_unique(array_filter(array_map(
+            fn ($v) => trim((string) $v),
+            $seguimientos
+        ))));
+
+        if ($seguimientos === []) {
+            return [];
+        }
+
+        $map = [];
+        $notificaciones = Notificacione::query()
+            ->whereIn('codigo_seguimiento', $seguimientos)
+            ->orderByDesc('id')
+            ->get(['codigo_seguimiento', 'detalle']);
+
+        foreach ($notificaciones as $notificacion) {
+            $codigoSeguimiento = trim((string) $notificacion->codigo_seguimiento);
+            if ($codigoSeguimiento === '' || array_key_exists($codigoSeguimiento, $map)) {
+                continue;
+            }
+
+            $numeroFactura = $this->extractNumeroFacturaFromDetalle((string) $notificacion->detalle);
+            if ($numeroFactura !== null) {
+                $map[$codigoSeguimiento] = $numeroFactura;
+            }
+        }
+
+        return $map;
+    }
+
+    private function numeroFacturaMapFromBridgeCartRows($ventasRows): array
+    {
+        $cartIds = collect($ventasRows)
+            ->filter(function ($row) {
+                return (string) ($row->origen_venta_tipo ?? '') === 'facturacion_cart_remote'
+                    && trim((string) ($row->origen_venta_id ?? '')) !== '';
+            })
+            ->pluck('origen_venta_id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($cartIds === []) {
+            return [];
+        }
+
+        $map = [];
+        $rows = DB::table('facturacion_carts')
+            ->whereIn('id', $cartIds)
+            ->get(['id', 'respuesta_emision']);
+
+        foreach ($rows as $row) {
+            $numeroFactura = $this->extractNumeroFacturaFromDetalle((string) ($row->respuesta_emision ?? ''));
+            if ($numeroFactura !== null) {
+                $map[(int) $row->id] = $numeroFactura;
+            }
+        }
+
+        return $map;
+    }
+
+    private function itemsCountMapsFromRows($ventasRows): array
+    {
+        $ventaIds = collect($ventasRows)
+            ->pluck('id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $cartIds = collect($ventasRows)
+            ->filter(function ($row) {
+                return in_array((string) ($row->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true)
+                    && (int) ($row->origen_venta_id ?? 0) > 0;
+            })
+            ->pluck('origen_venta_id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $detalleCounts = [];
+        if ($ventaIds !== []) {
+            $detalleCounts = DB::table('detalle_ventas')
+                ->selectRaw('venta_id, count(*) as cantidad')
+                ->whereIn('venta_id', $ventaIds)
+                ->groupBy('venta_id')
+                ->pluck('cantidad', 'venta_id')
+                ->map(fn ($count) => (int) $count)
+                ->toArray();
+        }
+
+        $cartCounts = [];
+        if ($cartIds !== [] && DB::table('facturacion_cart_items')->exists()) {
+            $cartCounts = DB::table('facturacion_cart_items')
+                ->selectRaw('cart_id, count(*) as cantidad')
+                ->whereIn('cart_id', $cartIds)
+                ->groupBy('cart_id')
+                ->pluck('cantidad', 'cart_id')
+                ->map(fn ($count) => (int) $count)
+                ->toArray();
+        }
+
+        return [
+            'detalle' => $detalleCounts,
+            'cart' => $cartCounts,
+        ];
+    }
+
     public function kardexUsuarios(Request $request)
     {
-        $filters = $this->validateVentaReportFilters($request);
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
         $baseQuery = $this->buildVentaReportQuery($filters);
 
         $rows = (clone $baseQuery)
@@ -479,40 +722,73 @@ class VentaController extends Controller
             ->get();
 
         $detalle = collect();
-        if (!empty($filters['origen_usuario_id'])) {
-            $detalle = (clone $baseQuery)
+        if (
+            !empty($filters['origen_usuario_id'])
+            || !empty($filters['origen_usuario_email'])
+            || !empty($filters['origen_usuario_alias'])
+            || !empty($filters['origen_usuario_carnet'])
+        ) {
+            $detalleColumns = [
+                'id',
+                'created_at',
+                'codigoOrden',
+                'codigoSeguimiento',
+                'numero_factura',
+                'origen_venta_id',
+                'origen_venta_tipo',
+                'codigoSucursal',
+                'puntoVenta',
+                'razonSocial',
+                'documentoIdentidad',
+                'codigoCliente',
+                'total',
+                'estado_sufe',
+                'cuf',
+            ];
+            if ($this->hasOrigenUsuarioEmailColumn()) {
+                $detalleColumns[] = 'origen_usuario_email';
+            }
+            if ($this->hasOrigenUsuarioAliasColumn()) {
+                $detalleColumns[] = 'origen_usuario_alias';
+            }
+            if ($this->hasOrigenUsuarioCarnetColumn()) {
+                $detalleColumns[] = 'origen_usuario_carnet';
+            }
+
+            $detalleRows = (clone $baseQuery)
                 ->latest('created_at')
                 ->limit((int) ($filters['limite'] ?? 200))
-                ->get([
-                    'id',
-                    'created_at',
-                    'codigoOrden',
-                    'codigoSeguimiento',
-                    'origen_venta_id',
-                    'origen_venta_tipo',
-                    'codigoSucursal',
-                    'puntoVenta',
-                    'razonSocial',
-                    'documentoIdentidad',
-                    'codigoCliente',
-                    'total',
-                    'estado_sufe',
-                    'cuf',
-                ])
-                ->map(function (Venta $venta) {
+                ->get($detalleColumns);
+            $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($detalleRows->pluck('codigoSeguimiento')->all());
+            $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($detalleRows);
+            $itemsCountMaps = $this->itemsCountMapsFromRows($detalleRows);
+
+            $detalle = $detalleRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $itemsCountMaps) {
+                    $codigoSeguimiento = trim((string) $venta->codigoSeguimiento);
+                    $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
+                    $ventaId = (int) $venta->id;
+                    $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
+                    if ($itemsCount === 0 && $origenVentaId > 0) {
+                        $itemsCount = (int) ($itemsCountMaps['cart'][$origenVentaId] ?? 0);
+                    }
                     return [
                         'id' => $venta->id,
                         'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
                         'codigoOrden' => $venta->codigoOrden,
                         'codigoSeguimiento' => $venta->codigoSeguimiento,
+                        'numeroFactura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
                         'origenVentaId' => $venta->origen_venta_id,
                         'origenVentaTipo' => $venta->origen_venta_tipo,
+                        'origenUsuarioEmail' => $venta->origen_usuario_email,
+                        'origenUsuarioAlias' => $venta->origen_usuario_alias,
+                        'origenUsuarioCarnet' => $venta->origen_usuario_carnet,
                         'codigoSucursal' => (int) $venta->codigoSucursal,
                         'puntoVenta' => (int) $venta->puntoVenta,
                         'razonSocial' => $venta->razonSocial,
                         'documentoIdentidad' => $venta->documentoIdentidad,
                         'codigoCliente' => $venta->codigoCliente,
                         'total' => (float) $venta->total,
+                        'itemsCount' => $itemsCount,
                         'estadoSufe' => $venta->estado_sufe,
                         'cuf' => $venta->cuf,
                     ];
@@ -546,9 +822,210 @@ class VentaController extends Controller
         ]);
     }
 
+    public function reporteKardexPdf(Request $request): HttpResponse
+    {
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        $limite = (int) ($filters['limite'] ?? 500);
+
+        $ventasRows = (clone $this->buildVentaReportQuery($filters))
+            ->latest('created_at')
+            ->limit($limite)
+            ->get([
+                'id',
+                'created_at',
+                'codigoOrden',
+                'codigoSeguimiento',
+                'numero_factura',
+                'origen_venta_id',
+                'origen_venta_tipo',
+                'codigoSucursal',
+                'puntoVenta',
+                'total',
+            ]);
+
+        $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventasRows->pluck('codigoSeguimiento')->all());
+        $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventasRows);
+
+        $ventaIds = $ventasRows->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $detalleVentasMap = [];
+        if ($ventaIds !== []) {
+            $detalleVentasMap = DB::table('detalle_ventas')
+                ->whereIn('venta_id', $ventaIds)
+                ->orderBy('id')
+                ->get(['venta_id', 'id', 'codigo', 'descripcion', 'cantidad', 'precio'])
+                ->groupBy('venta_id')
+                ->toArray();
+        }
+
+        $cartIds = $ventasRows
+            ->filter(fn ($venta) => in_array((string) ($venta->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true))
+            ->pluck('origen_venta_id')
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $cartItemsMap = [];
+        if ($cartIds !== [] && Schema::hasTable('facturacion_cart_items')) {
+            $cartItemsMap = DB::table('facturacion_cart_items')
+                ->whereIn('cart_id', $cartIds)
+                ->orderBy('id')
+                ->get([
+                    'cart_id',
+                    'id',
+                    'codigo',
+                    'titulo',
+                    'nombre_servicio',
+                    'nombre_destinatario',
+                    'resumen_origen',
+                    'cantidad',
+                    'monto_base',
+                    'monto_extras',
+                    'total_linea',
+                ])
+                ->groupBy('cart_id')
+                ->toArray();
+        }
+
+        $rows = collect();
+        foreach ($ventasRows as $venta) {
+            $ventaId = (int) $venta->id;
+            $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
+            $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
+            $numeroFactura = trim((string) (
+                $venta->numero_factura
+                ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? ''))
+            ));
+            $fecha = optional($venta->created_at)->format('d/m/Y') ?: '-';
+
+            $cartItems = collect($cartItemsMap[$origenVentaId] ?? []);
+            if ($cartItems->isNotEmpty()) {
+                foreach ($cartItems as $item) {
+                    $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
+                    if (!is_array($resumen)) {
+                        $resumen = [];
+                    }
+
+                    $codigoItem = trim((string) (($resumen['codigo'] ?? null) ?: ($item->codigo ?? '')));
+                    $codigoItem = $codigoItem !== '' ? $codigoItem : ('ITEM-' . (int) $item->id);
+
+                    $tipoEnvio = trim((string) ($item->nombre_servicio ?? ''));
+                    if ($tipoEnvio === '') {
+                        $tipoEnvio = trim((string) ($item->titulo ?? 'SIN SERVICIO'));
+                    }
+
+                    $rows->push([
+                        'fecha' => $fecha,
+                        'origen' => trim((string) ($resumen['ciudad'] ?? $resumen['origen'] ?? '-')) ?: '-',
+                        'tipo_envio' => $tipoEnvio !== '' ? $tipoEnvio : 'SIN SERVICIO',
+                        'codigo_item' => $codigoItem,
+                        'peso' => round((float) ($resumen['peso'] ?? 0), 3),
+                        'cantidad' => max(1, (int) ($item->cantidad ?? 1)),
+                        'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
+                        'importe_parcial' => round((float) ($item->monto_base ?? 0), 2),
+                        'importe_general' => round((float) ($item->total_linea ?? 0), 2),
+                    ]);
+                }
+
+                continue;
+            }
+
+            $detalleVentas = collect($detalleVentasMap[$ventaId] ?? []);
+            foreach ($detalleVentas as $item) {
+                $cantidad = max(1, (int) ($item->cantidad ?? 1));
+                $precio = round((float) ($item->precio ?? 0), 2);
+                $descripcion = trim((string) ($item->descripcion ?? 'SIN SERVICIO'));
+                $codigoServicio = trim((string) ($item->codigo ?? ''));
+                $codigoItem = $codigoServicio;
+                if ($codigoItem === '' || preg_match('/^SRV[\-0-9A-Z_]*$/i', $codigoItem)) {
+                    if (preg_match('/\b(EN[0-9A-Z]+)\b/i', $descripcion, $matchPaquete)) {
+                        $codigoItem = strtoupper((string) $matchPaquete[1]);
+                    } else {
+                        $codigoItem = '-';
+                    }
+                }
+
+                $rows->push([
+                    'fecha' => $fecha,
+                    'origen' => '-',
+                    'tipo_envio' => $descripcion !== '' ? $descripcion : 'SIN SERVICIO',
+                    'codigo_item' => $codigoItem,
+                    'peso' => 0.0,
+                    'cantidad' => $cantidad,
+                    'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
+                    'importe_parcial' => $precio,
+                    'importe_general' => round($cantidad * $precio, 2),
+                ]);
+            }
+        }
+
+        $totals = [
+            'parcial' => round((float) $rows->sum('importe_parcial'), 2),
+            'general' => round((float) $rows->sum('importe_general'), 2),
+        ];
+
+        $authUser = Auth::guard('api')->user() ?? $request->user();
+        $usuario = (object) [
+            'name' => trim((string) data_get($authUser, 'nombre', data_get($authUser, 'name', 'Sin responsable'))),
+            'sucursal' => (object) [
+                'nombre' => trim((string) data_get($authUser, 'sucursal.nombre', '')),
+                'descripcion' => trim((string) data_get($authUser, 'sucursal.descripcion', '')),
+                'municipio' => trim((string) data_get($authUser, 'sucursal.municipio', '')),
+                'puntoVenta' => trim((string) data_get($authUser, 'sucursal.puntoVenta', '')),
+            ],
+        ];
+
+        $filtersView = [
+            'estado' => 'emitido',
+            'estado_emision' => (string) ($filters['estado_sufe'] ?? 'all'),
+            'from' => $filters['fechaInicio'] ?? null,
+            'to' => $filters['fechaFin'] ?? null,
+            'q' => trim((string) ($filters['q'] ?? '')),
+        ];
+
+        $dummyCarts = $rows->isEmpty()
+            ? collect()
+            : collect([(object) ['items' => $rows->map(fn ($row) => (object) [
+                'titulo' => (string) ($row['tipo_envio'] ?? ''),
+                'nombre_servicio' => (string) ($row['tipo_envio'] ?? ''),
+            ])->values()]]);
+
+        $html = view('facturacion.mis-ventas-kardex-pdf', [
+            'user' => $usuario,
+            'filters' => $filtersView,
+            'carts' => $dummyCarts,
+            'rows' => $rows->values(),
+            'totals' => $totals,
+            'generatedAt' => now(),
+        ])->render();
+
+        $options = new Options();
+        $options->set('isRemoteEnabled', false);
+        $options->set('defaultFont', 'DejaVu Serif');
+
+        $dompdf = new Dompdf($options);
+        $dompdf->loadHtml($html, 'UTF-8');
+        $dompdf->setPaper('A4', 'portrait');
+        $dompdf->render();
+
+        $filename = 'kardex-facturacion-' . now()->format('Ymd-His') . '.pdf';
+
+        return response($dompdf->output(), 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+        ]);
+    }
+
     public function reporteVentas(Request $request)
     {
-        $filters = $this->validateVentaReportFilters($request);
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
         $baseQuery = $this->buildVentaReportQuery($filters);
         $limite = (int) ($filters['limite'] ?? 100);
 
@@ -574,9 +1051,8 @@ class VentaController extends Controller
             ->get();
 
         $porSucursal = (clone $baseQuery)
+            ->select('codigoSucursal', 'puntoVenta')
             ->selectRaw("
-                codigoSucursal,
-                puntoVenta,
                 count(*) as cantidad,
                 coalesce(sum(total), 0) as total
             ")
@@ -584,18 +1060,22 @@ class VentaController extends Controller
             ->orderByDesc('total')
             ->get();
 
-        $ventas = (clone $baseQuery)
+        $ventasRows = (clone $baseQuery)
             ->latest('created_at')
             ->limit($limite)
-            ->get([
+            ->get(array_values(array_filter([
                 'id',
                 'created_at',
                 'codigoOrden',
                 'codigoSeguimiento',
+                'numero_factura',
                 'origen_venta_id',
                 'origen_venta_tipo',
                 'origen_usuario_id',
                 'origen_usuario_nombre',
+                $this->hasOrigenUsuarioEmailColumn() ? 'origen_usuario_email' : null,
+                $this->hasOrigenUsuarioAliasColumn() ? 'origen_usuario_alias' : null,
+                $this->hasOrigenUsuarioCarnetColumn() ? 'origen_usuario_carnet' : null,
                 'origen_sucursal_id',
                 'origen_sucursal_nombre',
                 'codigoSucursal',
@@ -606,18 +1086,33 @@ class VentaController extends Controller
                 'total',
                 'estado_sufe',
                 'cuf',
-            ])
-            ->map(function (Venta $venta) {
+            ])));
+        $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventasRows->pluck('codigoSeguimiento')->all());
+        $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventasRows);
+        $itemsCountMaps = $this->itemsCountMapsFromRows($ventasRows);
+
+        $ventas = $ventasRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $itemsCountMaps) {
+                $codigoSeguimiento = trim((string) $venta->codigoSeguimiento);
+                $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
+                $ventaId = (int) $venta->id;
+                $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
+                if ($itemsCount === 0 && $origenVentaId > 0) {
+                    $itemsCount = (int) ($itemsCountMaps['cart'][$origenVentaId] ?? 0);
+                }
                 return [
                     'id' => $venta->id,
                     'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
                     'codigoOrden' => $venta->codigoOrden,
                     'codigoSeguimiento' => $venta->codigoSeguimiento,
+                    'numeroFactura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
                     'origenVentaId' => $venta->origen_venta_id,
                     'origenVentaTipo' => $venta->origen_venta_tipo,
                     'usuario' => [
                         'id' => $venta->origen_usuario_id,
                         'nombre' => $venta->origen_usuario_nombre,
+                        'email' => $venta->origen_usuario_email,
+                        'alias' => $venta->origen_usuario_alias,
+                        'carnet' => $venta->origen_usuario_carnet,
                     ],
                     'sucursal' => [
                         'id' => $venta->origen_sucursal_id,
@@ -630,6 +1125,7 @@ class VentaController extends Controller
                         'documentoIdentidad' => $venta->documentoIdentidad,
                         'codigoCliente' => $venta->codigoCliente,
                     ],
+                    'itemsCount' => $itemsCount,
                     'total' => (float) $venta->total,
                     'estadoSufe' => $venta->estado_sufe,
                     'cuf' => $venta->cuf,
@@ -705,6 +1201,61 @@ class VentaController extends Controller
         $notification = $this->latestNotificationForVenta($venta);
         $detalleNotificacion = $notification ? json_decode((string) $notification->detalle, true) : [];
 
+        $detalle = $venta->detalleVentas->map(function ($detalleVenta) {
+            $cantidad = (float) $detalleVenta->cantidad;
+            $base = (float) $detalleVenta->precio;
+            return [
+                'codigo' => $detalleVenta->codigo,
+                'descripcion' => $detalleVenta->descripcion,
+                'cantidad' => $cantidad,
+                'precio' => $base,
+                'monto_base' => $base,
+                'monto_extras' => 0.0,
+                'total_linea' => round($cantidad * $base, 2),
+                'titulo' => $detalleVenta->descripcion,
+                'subtitulo' => null,
+            ];
+        })->values()->all();
+
+        if (in_array((string) ($venta->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true)) {
+            $cartId = (int) ($venta->origen_venta_id ?? 0);
+            if ($cartId > 0 && DB::table('facturacion_cart_items')->exists()) {
+                $detalleCart = DB::table('facturacion_cart_items')
+                    ->where('cart_id', $cartId)
+                    ->orderBy('id')
+                    ->get()
+                    ->map(function ($item) {
+                        $cantidad = (float) ($item->cantidad ?? 1);
+                        $base = (float) ($item->monto_base ?? 0);
+                        $extras = (float) ($item->monto_extras ?? 0);
+                        $totalLinea = (float) ($item->total_linea ?? round(($base + $extras) * max(1, $cantidad), 2));
+                        $titulo = trim((string) ($item->titulo ?? ''));
+                        $servicio = trim((string) ($item->nombre_servicio ?? ''));
+                        $destinatario = trim((string) ($item->nombre_destinatario ?? ''));
+                        return [
+                            'codigo' => (string) ($item->codigo ?: ('ITEM-' . $item->id)),
+                            // Priorizamos "titulo" para que UI muestre "Admision EMS"
+                            // y dejamos el servicio como linea secundaria.
+                            'descripcion' => (string) ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle')),
+                            'cantidad' => $cantidad,
+                            'precio' => $base,
+                            'monto_base' => $base,
+                            'monto_extras' => $extras,
+                            'total_linea' => $totalLinea,
+                            'titulo' => $servicio,
+                            'subtitulo' => $destinatario,
+                            'origen_tipo' => (string) ($item->origen_tipo ?? ''),
+                        ];
+                    })
+                    ->values()
+                    ->all();
+
+                if (!empty($detalleCart)) {
+                    $detalle = $detalleCart;
+                }
+            }
+        }
+
         $data = $venta->toArray();
         $data['fecha'] = $venta->created_at->format('Y-m-d');
         $data['cliente'] = [
@@ -712,6 +1263,7 @@ class VentaController extends Controller
             'documentoIdentidad' => $venta->documentoIdentidad,
             'codigoCliente' => $venta->codigoCliente,
         ];
+        $data['detalle'] = $detalle;
         $data['status'] = $status;
         $data['seguimiento'] = [
             'codigoSeguimiento' => $venta->codigoSeguimiento,

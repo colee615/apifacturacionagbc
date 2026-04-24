@@ -25,6 +25,8 @@ class UsuarioController extends Controller
       $request->validate([
          'name' => 'required|string',
          'email' => 'required|string|email|unique:usuarios',
+         'alias' => 'nullable|string|max:80|unique:usuarios,alias',
+         'numero_carnet' => 'nullable|string|max:40',
          'password' => 'required',
          'role_ids' => 'nullable|array',
          'role_ids.*' => 'integer|exists:roles,id',
@@ -33,6 +35,8 @@ class UsuarioController extends Controller
       $usuario = new Usuario();
       $usuario->name = $request->name;
       $usuario->email = $request->email;
+      $usuario->alias = $request->filled('alias') ? strtolower(trim((string) $request->alias)) : null;
+      $usuario->numero_carnet = $request->filled('numero_carnet') ? strtoupper(trim((string) $request->numero_carnet)) : null;
       $usuario->password = Hash::make($request->input('password'));
       $usuario->save();
       $roleIds = $request->input('role_ids');
@@ -59,12 +63,16 @@ class UsuarioController extends Controller
       $request->validate([
          'name' => 'required|string',
          'email' => 'required|string|email|unique:usuarios,email,' . $usuario->id,
+         'alias' => 'nullable|string|max:80|unique:usuarios,alias,' . $usuario->id,
+         'numero_carnet' => 'nullable|string|max:40',
          'role_ids' => 'nullable|array',
          'role_ids.*' => 'integer|exists:roles,id',
       ]);
 
       $usuario->name = $request->name;
       $usuario->email = $request->email;
+      $usuario->alias = $request->filled('alias') ? strtolower(trim((string) $request->alias)) : null;
+      $usuario->numero_carnet = $request->filled('numero_carnet') ? strtoupper(trim((string) $request->numero_carnet)) : null;
 
       if (isset($request->password) && !empty($request->password)) {
          $usuario->password = Hash::make($request->password);

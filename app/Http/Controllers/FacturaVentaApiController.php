@@ -60,6 +60,59 @@ class FacturaVentaApiController extends Controller
         }
     }
 
+    private function assertCajaAbierta(array $payload): void
+    {
+        $usuarioId = trim((string) data_get($payload, 'origenUsuario.id', ''));
+        if ($usuarioId === '') {
+            throw ValidationException::withMessages([
+                'origenUsuario.id' => ['Debe enviar el origenUsuario.id para validar apertura de caja.'],
+            ]);
+        }
+
+        $fecha = now()->toDateString();
+        $codigoSucursal = (int) ($payload['codigoSucursal'] ?? 0);
+        $puntoVenta = (int) ($payload['puntoVenta'] ?? 0);
+
+        $caja = DB::table('cajas_diarias')
+            ->where('usuario_id', $usuarioId)
+            ->whereDate('fecha_operacion', $fecha)
+            ->where('estado', 'ABIERTA')
+            ->where('codigo_sucursal', $codigoSucursal)
+            ->where('punto_venta', $puntoVenta)
+            ->first();
+
+        if (!$caja) {
+            throw ValidationException::withMessages([
+                'caja' => ['La caja del dia no esta abierta para este usuario/sucursal. Abra caja antes de emitir.'],
+            ]);
+        }
+    }
+
+    private function addVentaToCaja(array $payload): void
+    {
+        $usuarioId = trim((string) data_get($payload, 'origenUsuario.id', ''));
+        if ($usuarioId === '' || !DB::getSchemaBuilder()->hasTable('cajas_diarias')) {
+            return;
+        }
+
+        $fecha = now()->toDateString();
+        $codigoSucursal = (int) ($payload['codigoSucursal'] ?? 0);
+        $puntoVenta = (int) ($payload['puntoVenta'] ?? 0);
+        $montoTotal = round((float) ($payload['montoTotal'] ?? 0), 2);
+
+        DB::table('cajas_diarias')
+            ->where('usuario_id', $usuarioId)
+            ->whereDate('fecha_operacion', $fecha)
+            ->where('estado', 'ABIERTA')
+            ->where('codigo_sucursal', $codigoSucursal)
+            ->where('punto_venta', $puntoVenta)
+            ->update([
+                'monto_ventas' => DB::raw('coalesce(monto_ventas, 0) + ' . $montoTotal),
+                'cantidad_ventas' => DB::raw('coalesce(cantidad_ventas, 0) + 1'),
+                'updated_at' => now(),
+            ]);
+    }
+
     private function resolveCodigoOrden(array $payload): string
     {
         $codigoOrdenRecibido = trim((string) ($payload['codigoOrden'] ?? ''));
@@ -67,14 +120,17 @@ class FacturaVentaApiController extends Controller
             ? $codigoOrdenRecibido
             : Venta::nextCodigoOrden();
 
+        // Normaliza formatos tipo "venta-1", "VENTA-0001", etc. al formato canónico.
+        if (preg_match('/^venta-(\d+)$/i', $codigoOrden, $matches)) {
+            $codigoOrden = Venta::formatCodigoOrdenFromNumber((int) $matches[1]);
+        }
+
         $exists = DB::table('ventas')
             ->where('codigoOrden', $codigoOrden)
             ->exists();
 
         if ($exists) {
-            throw ValidationException::withMessages([
-                'codigoOrden' => ['El codigoOrden ya existe en ventas. Envie un codigoOrden nuevo.'],
-            ]);
+            $codigoOrden = Venta::nextCodigoOrden();
         }
 
         return $codigoOrden;
@@ -91,6 +147,8 @@ class FacturaVentaApiController extends Controller
             'origen_usuario_id' => data_get($payload, 'origenUsuario.id'),
             'origen_usuario_nombre' => data_get($payload, 'origenUsuario.nombre'),
             'origen_usuario_email' => data_get($payload, 'origenUsuario.email'),
+            'origen_usuario_alias' => data_get($payload, 'origenUsuario.alias'),
+            'origen_usuario_carnet' => data_get($payload, 'origenUsuario.carnet'),
             'origen_sucursal_id' => data_get($payload, 'origenSucursal.id'),
             'origen_sucursal_codigo' => data_get($payload, 'origenSucursal.codigo'),
             'origen_sucursal_nombre' => data_get($payload, 'origenSucursal.nombre'),
@@ -116,6 +174,7 @@ class FacturaVentaApiController extends Controller
             'codigoOrden' => $codigoOrden,
             'codigoSeguimiento' => $codigoSeguimiento,
             'estado_sufe' => 'RECEPCIONADA',
+            'numero_factura' => null,
             'estado' => 1,
             'created_at' => $now,
             'updated_at' => $now,
@@ -165,6 +224,23 @@ class FacturaVentaApiController extends Controller
 
         if ((float) ($clean['montoDescuentoAdicional'] ?? 0) <= 0) {
             unset($clean['montoDescuentoAdicional']);
+        }
+
+        if (isset($clean['detalle']) && is_array($clean['detalle'])) {
+            $clean['detalle'] = collect($clean['detalle'])
+                ->map(function ($line) {
+                    if (!is_array($line)) {
+                        return $line;
+                    }
+
+                    if ((float) ($line['montoDescuento'] ?? 0) <= 0) {
+                        unset($line['montoDescuento']);
+                    }
+
+                    return $line;
+                })
+                ->values()
+                ->all();
         }
 
         return $clean;
@@ -359,6 +435,7 @@ class FacturaVentaApiController extends Controller
                     ->update([
                         'estado_sufe' => $resolvedStatus,
                         'cuf' => data_get($lastConsulta, 'cuf', $lastVenta->cuf),
+                        'numero_factura' => data_get($lastConsulta, 'nroFactura', $lastVenta->numero_factura ?? null),
                         'observacion_sufe' => data_get($lastConsulta, 'observacion', $lastVenta->observacion_sufe),
                         'updated_at' => now(),
                     ]);
@@ -415,7 +492,7 @@ class FacturaVentaApiController extends Controller
 
         $factura = [
             'cuf' => $cuf,
-            'nroFactura' => data_get($detalleNotificacion, 'nroFactura') ?: data_get($consulta, 'nroFactura'),
+            'nroFactura' => ($venta->numero_factura ?? null) ?: data_get($detalleNotificacion, 'nroFactura') ?: data_get($consulta, 'nroFactura'),
             'pdfUrl' => $pdfUrl,
             'xmlUrl' => $xmlUrl,
         ];
@@ -621,6 +698,67 @@ class FacturaVentaApiController extends Controller
         }
     }
 
+    /**
+     * Consolida lineas repetidas de detalle para evitar rechazo SEFE por
+     * codigos de actividad/producto duplicados.
+     *
+     * Se agrupa por actividadEconomica + codigoSin + codigo + unidadMedida +
+     * precioUnitario (+ montoDescuento) y se acumula cantidad.
+     */
+    private function consolidateDetalleLines(array $detalles): array
+    {
+        $grouped = [];
+
+        foreach ($detalles as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $actividad = trim((string) ($line['actividadEconomica'] ?? ''));
+            $codigoSin = trim((string) ($line['codigoSin'] ?? ''));
+            $codigo = trim((string) ($line['codigo'] ?? ''));
+            $descripcion = trim((string) ($line['descripcion'] ?? ''));
+            $unidadMedida = (int) ($line['unidadMedida'] ?? 0);
+            $precioUnitario = round((float) ($line['precioUnitario'] ?? 0), 2);
+            $montoDescuento = round((float) ($line['montoDescuento'] ?? 0), 2);
+            $cantidad = (float) ($line['cantidad'] ?? 0);
+
+            if ($actividad === '' || $codigoSin === '' || $codigo === '' || $unidadMedida <= 0 || $precioUnitario <= 0 || $cantidad <= 0) {
+                continue;
+            }
+
+            $key = implode('|', [
+                $actividad,
+                $codigoSin,
+                $codigo,
+                (string) $unidadMedida,
+                number_format($precioUnitario, 2, '.', ''),
+                number_format($montoDescuento, 2, '.', ''),
+            ]);
+
+            if (!isset($grouped[$key])) {
+                $grouped[$key] = [
+                    'actividadEconomica' => $actividad,
+                    'codigoSin' => $codigoSin,
+                    'codigo' => $codigo,
+                    'descripcion' => $descripcion,
+                    'precioUnitario' => $precioUnitario,
+                    'montoDescuento' => $montoDescuento > 0 ? $montoDescuento : null,
+                    'cantidad' => $cantidad,
+                    'unidadMedida' => $unidadMedida,
+                ];
+                continue;
+            }
+
+            $grouped[$key]['cantidad'] = (float) $grouped[$key]['cantidad'] + $cantidad;
+            if (($grouped[$key]['descripcion'] ?? '') === '' && $descripcion !== '') {
+                $grouped[$key]['descripcion'] = $descripcion;
+            }
+        }
+
+        return array_values($grouped);
+    }
+
     public function emitir(Request $request)
     {
         $requestData = $request->all();
@@ -635,14 +773,24 @@ class FacturaVentaApiController extends Controller
 
         try {
             $validated = $this->sufeValidator->validateIndividualPayload($requestData);
+            $detalleCountOriginal = count($validated['detalle'] ?? []);
+            $validated['detalle'] = $this->consolidateDetalleLines((array) ($validated['detalle'] ?? []));
+            if (empty($validated['detalle'])) {
+                throw ValidationException::withMessages([
+                    'detalle' => ['No se encontro detalle valido para emitir la factura.'],
+                ]);
+            }
+
             Log::info('FacturaVentaApi emitir payload validated', [
                 'codigoOrden_recibido' => $codigoOrdenRecibido,
-                'detalle_count' => count($validated['detalle'] ?? []),
+                'detalle_count' => $detalleCountOriginal,
+                'detalle_count_consolidado' => count($validated['detalle'] ?? []),
                 'montoTotal' => $validated['montoTotal'] ?? null,
                 'documentoIdentidad' => $validated['documentoIdentidad'] ?? null,
                 'codigoCliente' => $validated['codigoCliente'] ?? null,
             ]);
             $this->assertFacturaVentaSector($validated);
+            $this->assertCajaAbierta($validated);
             Log::info('FacturaVentaApi emitir sector validated', [
                 'codigoOrden_recibido' => $codigoOrdenRecibido,
                 'documentoSector' => $validated['documentoSector'] ?? null,
@@ -678,6 +826,7 @@ class FacturaVentaApiController extends Controller
                 $venta = DB::transaction(function () use ($validated, $codigoOrden, $codigoSeguimiento) {
                     $venta = $this->createVenta($validated, $codigoOrden, $codigoSeguimiento);
                     $this->createDetalleVentas($venta, $validated);
+                    $this->addVentaToCaja($validated);
 
                     return $venta;
                 });
@@ -860,6 +1009,27 @@ class FacturaVentaApiController extends Controller
                 }
 
                 if ($venta) {
+                    if (is_array($validatedConsulta)) {
+                        $notificacion = $this->latestNotificationByCodigoSeguimiento($codigoSeguimiento);
+                        $resolvedStatus = $this->resolveBridgeStatus(
+                            (string) ($venta->estado_sufe ?? 'RECEPCIONADA'),
+                            $notificacion,
+                            $validatedConsulta
+                        );
+
+                        DB::table('ventas')
+                            ->where('id', $venta->id)
+                            ->update([
+                                'estado_sufe' => $resolvedStatus,
+                                'cuf' => data_get($validatedConsulta, 'cuf', $venta->cuf),
+                                'numero_factura' => data_get($validatedConsulta, 'nroFactura', $venta->numero_factura ?? null),
+                                'observacion_sufe' => data_get($validatedConsulta, 'observacion', $venta->observacion_sufe),
+                                'updated_at' => now(),
+                            ]);
+
+                        $venta = $this->ventaByCodigoSeguimiento($codigoSeguimiento) ?: $venta;
+                    }
+
                     $notificacion = $this->latestNotificationByCodigoSeguimiento($codigoSeguimiento);
                     $bridgePayload = $this->bridgeConsultPayloadFromVenta(
                         $venta,

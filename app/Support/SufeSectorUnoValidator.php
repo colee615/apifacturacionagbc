@@ -34,6 +34,8 @@ class SufeSectorUnoValidator
                 'origenUsuario.id' => ['nullable', 'string', 'max:100'],
                 'origenUsuario.nombre' => ['nullable', 'string', 'max:255'],
                 'origenUsuario.email' => ['nullable', 'email', 'max:120'],
+                'origenUsuario.alias' => ['nullable', 'string', 'max:80'],
+                'origenUsuario.carnet' => ['nullable', 'string', 'max:40'],
                 'origenSucursal.id' => ['nullable', 'string', 'max:100'],
                 'origenSucursal.codigo' => ['nullable', 'string', 'max:100'],
                 'origenSucursal.nombre' => ['nullable', 'string', 'max:255'],
