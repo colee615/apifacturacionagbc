@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -20,6 +21,43 @@ class FacturaVentaApiBridgeTest extends TestCase
             'services.facturacion_api.integration_token' => 'test-bridge-token',
             'services.facturacion_api.emit_wait_seconds' => 1,
         ]);
+
+        DB::table('cajas_diarias')->updateOrInsert(
+            [
+                'usuario_id' => 'operador-test',
+                'fecha_operacion' => now()->toDateString(),
+            ],
+            [
+                'usuario_nombre' => 'Operador Bolipost',
+                'usuario_email' => 'operador@test.com',
+                'codigo_sucursal' => 0,
+                'punto_venta' => 0,
+                'estado' => 'ABIERTA',
+                'monto_apertura' => 0,
+                'monto_ventas' => 0,
+                'cantidad_ventas' => 0,
+                'abierta_en' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        );
+
+        DB::table('ficha_postal_saldos')->updateOrInsert(
+            [
+                'usuario_id' => 'operador-test',
+                'codigo_sucursal' => 0,
+                'punto_venta' => 0,
+            ],
+            [
+                'usuario_nombre' => 'Operador Bolipost',
+                'usuario_email' => 'operador@test.com',
+                'cantidad_disponible' => 100,
+                'monto_disponible' => 1000,
+                'valor_unitario_referencia' => 10,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        );
     }
 
     public function test_emitir_persists_sale_as_recepcionada_when_sefe_receives_the_request(): void
@@ -64,6 +102,8 @@ class FacturaVentaApiBridgeTest extends TestCase
             'codigoOrden' => $codigoOrden,
             'codigoSeguimiento' => $codigoSeguimiento,
             'estado_sufe' => 'RECEPCIONADA',
+            'cantidad_fichas_postales' => 7,
+            'monto_fichas_postales' => 70,
         ]);
 
         $ventaId = DB::table('ventas')->where('codigoOrden', $codigoOrden)->value('id');
@@ -72,6 +112,13 @@ class FacturaVentaApiBridgeTest extends TestCase
         $this->assertDatabaseHas('detalle_ventas', [
             'venta_id' => $ventaId,
             'codigo' => 'PROD-001',
+        ]);
+        $this->assertDatabaseHas('ficha_postal_saldos', [
+            'usuario_id' => 'operador-test',
+            'codigo_sucursal' => 0,
+            'punto_venta' => 0,
+            'cantidad_disponible' => 93,
+            'monto_disponible' => 930,
         ]);
     }
 
@@ -314,12 +361,168 @@ class FacturaVentaApiBridgeTest extends TestCase
             ]);
     }
 
+    public function test_anular_sends_patch_to_sefe_and_marks_sale_as_pending_annulment(): void
+    {
+        $cuf = 'CUF-DEMO-ANULAR-123';
+        $codigoSeguimiento = '6' . random_int(1000000000000, 9999999999999);
+        $codigoOrden = 'TEST-' . Str::upper(Str::random(10));
+
+        $this->insertProcessedVenta($codigoOrden, $codigoSeguimiento, $cuf);
+
+        Http::fake([
+            '*/anulacion/*' => Http::response([
+                'finalizado' => true,
+                'mensaje' => 'Registro recepcionado con exito!',
+                'datos' => [
+                    'cuf' => $cuf,
+                ],
+            ], 202),
+        ]);
+
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer test-bridge-token',
+            'Accept' => 'application/json',
+        ])->patchJson("/api/factura-venta/anular/{$cuf}", [
+            'motivo' => 'DATOS ERRONEOS EN LA FACTURA',
+            'tipoAnulacion' => 3,
+        ]);
+
+        $response->assertStatus(202)
+            ->assertJson([
+                'ok' => true,
+                'estado' => 'PENDIENTE_ANULACION',
+                'mensaje' => 'Anulación solicitada correctamente.',
+                'factura' => [
+                    'cuf' => $cuf,
+                    'nroFactura' => '45',
+                ],
+            ]);
+
+        Http::assertSent(function (HttpRequest $request) use ($cuf) {
+            return $request->method() === 'PATCH'
+                && Str::endsWith($request->url(), "/anulacion/{$cuf}")
+                && $request['motivo'] === 'DATOS ERRONEOS EN LA FACTURA'
+                && $request['tipoAnulacion'] === 3;
+        });
+
+        $this->assertDatabaseHas('ventas', [
+            'codigoOrden' => $codigoOrden,
+            'codigoSeguimiento' => $codigoSeguimiento,
+            'cuf' => $cuf,
+            'estado_sufe' => 'ANULACION_SOLICITADA',
+            'tipo_emision_sufe' => 'ANULACION',
+        ]);
+    }
+
+    public function test_anulacion_notification_updates_sale_to_anulada_and_consulta_reports_it(): void
+    {
+        $cuf = 'CUF-DEMO-ANULAR-456';
+        $codigoSeguimiento = '5' . random_int(1000000000000, 9999999999999);
+        $codigoOrden = 'TEST-' . Str::upper(Str::random(10));
+
+        $this->insertProcessedVenta($codigoOrden, $codigoSeguimiento, $cuf);
+
+        $notificationPayload = [
+            'finalizado' => true,
+            'fuente' => 'SUFE',
+            'estado' => 'EXITO',
+            'codigoSeguimiento' => $codigoSeguimiento,
+            'fecha' => '28/07/2022 2:56:33 PM',
+            'mensaje' => 'LA SOLICITUD DE EMISIÓN HA SIDO PROCESADA CORRECTAMENTE',
+            'detalle' => [
+                'tipoEmision' => 'ANULACION',
+                'nit' => '5464514',
+                'cuf' => $cuf,
+                'nroFactura' => '45',
+            ],
+        ];
+
+        $this->postJson("/notificacion/{$codigoSeguimiento}", $notificationPayload)
+            ->assertOk()
+            ->assertJson([
+                'message' => 'Notificación recibida',
+                'codigoSeguimiento' => $codigoSeguimiento,
+            ]);
+
+        $this->assertDatabaseHas('ventas', [
+            'codigoOrden' => $codigoOrden,
+            'codigoSeguimiento' => $codigoSeguimiento,
+            'cuf' => $cuf,
+            'estado_sufe' => 'ANULADA',
+            'tipo_emision_sufe' => 'ANULACION',
+            'url_pdf' => "https://sefe.demo.agetic.gob.bo/public/facturas_pdf/{$cuf}.pdf",
+            'url_xml' => "https://sefe.demo.agetic.gob.bo/public/facturas_xml/{$cuf}.xml",
+        ]);
+
+        Http::fake([
+            '*/consulta/*' => Http::response([
+                'estado' => 'ANULADO',
+                'cuf' => $cuf,
+                'nroFactura' => '45',
+            ], 200),
+        ]);
+
+        $consultaResponse = $this->withHeaders([
+            'Authorization' => 'Bearer test-bridge-token',
+            'Accept' => 'application/json',
+        ])->getJson("/api/factura-venta/consultar/{$codigoSeguimiento}");
+
+        $consultaResponse->assertOk()
+            ->assertJson([
+                'ok' => true,
+                'facturada' => false,
+                'estado' => 'ANULADA',
+                'mensaje' => 'Factura anulada correctamente.',
+                'factura' => [
+                    'cuf' => $cuf,
+                    'nroFactura' => '45',
+                ],
+            ]);
+    }
+
+    private function insertProcessedVenta(string $codigoOrden, string $codigoSeguimiento, string $cuf): int
+    {
+        return (int) DB::table('ventas')->insertGetId([
+            'origen_sistema' => 'BOLIPOST',
+            'codigoSucursal' => 0,
+            'puntoVenta' => 0,
+            'documentoSector' => 1,
+            'municipio' => 'LA PAZ',
+            'departamento' => 'LA PAZ',
+            'telefono' => '2457000',
+            'codigoCliente' => 'CLI-0001',
+            'razonSocial' => 'CLIENTE DE PRUEBA',
+            'documentoIdentidad' => '12345678',
+            'tipoDocumentoIdentidad' => 1,
+            'complemento' => '1A',
+            'correo' => 'cliente@test.com',
+            'metodoPago' => 1,
+            'formatoFactura' => 'pagina',
+            'monto_descuento_adicional' => 0,
+            'motivo' => 'Integracion bolipost',
+            'total' => 70,
+            'estado' => 1,
+            'codigoOrden' => $codigoOrden,
+            'codigoSeguimiento' => $codigoSeguimiento,
+            'estado_sufe' => 'PROCESADA',
+            'tipo_emision_sufe' => 'EMISION',
+            'cuf' => $cuf,
+            'numero_factura' => '45',
+            'url_pdf' => "https://sefe.demo.agetic.gob.bo/public/facturas_pdf/{$cuf}.pdf",
+            'url_xml' => "https://sefe.demo.agetic.gob.bo/public/facturas_xml/{$cuf}.xml",
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
     private function validPayload(string $codigoOrden): array
     {
         return [
             'codigoOrden' => $codigoOrden,
             'origenUsuario' => [
+                'id' => 'operador-test',
                 'nombre' => 'Operador Bolipost',
+                'email' => 'operador@test.com',
             ],
             'codigoSucursal' => 0,
             'puntoVenta' => 0,
@@ -336,6 +539,11 @@ class FacturaVentaApiBridgeTest extends TestCase
             'metodoPago' => 1,
             'formatoFactura' => 'pagina',
             'montoTotal' => 70,
+            'fichasPostales' => [
+                'cantidad' => 7,
+                'montoTotal' => 70,
+                'valorUnitario' => 10,
+            ],
             'detalle' => [
                 [
                     'actividadEconomica' => '841121',

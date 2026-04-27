@@ -35,6 +35,11 @@ class SufeSectorUnoValidatorTest extends TestCase
             'metodoPago' => 1,
             'montoTotal' => 200,
             'montoDescuentoAdicional' => 0,
+            'fichasPostales' => [
+                'cantidad' => 20,
+                'montoTotal' => 200,
+                'valorUnitario' => 10,
+            ],
             'formatoFactura' => 'pagina',
             'detalle' => [
                 [
@@ -53,6 +58,48 @@ class SufeSectorUnoValidatorTest extends TestCase
 
         $this->assertSame('AGBC-0000001', $validated['codigoOrden']);
         $this->assertSame(1, $validated['documentoSector']);
+    }
+
+    public function test_individual_payload_rejects_inconsistent_fichas_postales_amount(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $payload = [
+            'codigoOrden' => 'AGBC-0000001',
+            'codigoSucursal' => 0,
+            'puntoVenta' => 0,
+            'documentoSector' => 1,
+            'municipio' => 'LA PAZ',
+            'departamento' => 'LA PAZ',
+            'telefono' => '2457000',
+            'razonSocial' => 'CLIENTE DE PRUEBA',
+            'documentoIdentidad' => '12345678',
+            'tipoDocumentoIdentidad' => 1,
+            'complemento' => '1A',
+            'correo' => 'cliente@test.com',
+            'codigoCliente' => 'CLI-001',
+            'metodoPago' => 1,
+            'montoTotal' => 200,
+            'fichasPostales' => [
+                'cantidad' => 20,
+                'montoTotal' => 150,
+                'valorUnitario' => 10,
+            ],
+            'formatoFactura' => 'pagina',
+            'detalle' => [
+                [
+                    'actividadEconomica' => '841121',
+                    'codigoSin' => '99100',
+                    'codigo' => 'SERV-001',
+                    'descripcion' => 'SERVICIO DE PRUEBA',
+                    'precioUnitario' => 200,
+                    'cantidad' => 1,
+                    'unidadMedida' => 58,
+                ],
+            ],
+        ];
+
+        $this->validator->validateIndividualPayload($payload);
     }
 
     public function test_individual_payload_rejects_special_document_without_nit_type(): void

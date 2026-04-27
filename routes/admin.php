@@ -31,6 +31,11 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::get('/caja/estado', [CajaDiariaController::class, 'estado'])->middleware('permission:ventas.read');
    Route::post('/caja/abrir', [CajaDiariaController::class, 'abrir'])->middleware('permission:ventas.write');
    Route::post('/caja/cerrar', [CajaDiariaController::class, 'cerrar'])->middleware('permission:ventas.write');
+   Route::get('/caja/fichas/stock', [CajaDiariaController::class, 'fichasStock'])->middleware('permission:ventas.read');
+   Route::get('/caja/fichas/sucursal/stock', [CajaDiariaController::class, 'sucursalStock'])->middleware('permission:ventas.read');
+   Route::get('/caja/fichas/cajeros/saldos', [CajaDiariaController::class, 'fichasCajerosSaldos'])->middleware('permission:ventas.read');
+   Route::post('/caja/fichas/sucursal/abastecer', [CajaDiariaController::class, 'abastecerSucursal'])->middleware('permission:ventas.write');
+   Route::post('/caja/fichas/asignar', [CajaDiariaController::class, 'asignarFichas'])->middleware('permission:ventas.write');
    Route::get('/caja/arqueos', [CajaDiariaController::class, 'arqueos'])->middleware('permission:ventas.read');
    Route::get('/caja/reporte-diario', [CajaDiariaController::class, 'reporteDiario'])->middleware('permission:ventas.read');
 });

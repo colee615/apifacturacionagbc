@@ -363,6 +363,12 @@ class SufeSectorUnoValidator
             $prefix . 'montoTotal' => ['required', 'numeric', 'gt:0'],
             $prefix . 'montoGiftcard' => ['nullable', 'numeric', 'min:0'],
             $prefix . 'montoDescuentoAdicional' => ['nullable', 'numeric', 'min:0'],
+            $prefix . 'fichasPostales' => ['nullable', 'array'],
+            $prefix . 'fichasPostales.cantidad' => ['nullable', 'integer', 'min:0'],
+            $prefix . 'fichasPostales.montoTotal' => ['nullable', 'numeric', 'min:0'],
+            $prefix . 'fichasPostales.valorUnitario' => ['nullable', 'numeric', 'gt:0'],
+            $prefix . 'fichasPostales.observacion' => ['nullable', 'string', 'max:500'],
+            $prefix . 'fichasPostales.detalle' => ['nullable', 'array'],
             $prefix . 'formatoFactura' => ['required', 'string', 'in:rollo,pagina'],
             $prefix . 'anchoFactura' => ['nullable', 'integer', 'between:70,110'],
             $prefix . 'codigoExcepcion' => ['nullable', 'integer', 'in:0,1'],
@@ -406,6 +412,7 @@ class SufeSectorUnoValidator
             $this->validateDocumentoEspecial($validator, $data, $errorPrefix);
             $this->validatePaymentFields($validator, $data, $errorPrefix);
             $this->validateFormatoFactura($validator, $data, $errorPrefix);
+            $this->validateFichasPostales($validator, $data, $errorPrefix);
             $this->validateTotal($validator, $data, $errorPrefix, $subtractGiftCard);
         });
     }
@@ -519,6 +526,34 @@ class SufeSectorUnoValidator
 
         if ($formato !== 'rollo' && filled($ancho)) {
             $validator->errors()->add($prefix . 'anchoFactura', 'El anchoFactura solo está permitido cuando formatoFactura es rollo.');
+        }
+    }
+
+    private function validateFichasPostales($validator, array $data, string $prefix): void
+    {
+        $fichas = $data['fichasPostales'] ?? null;
+        if (!is_array($fichas)) {
+            return;
+        }
+
+        $cantidad = isset($fichas['cantidad']) ? (int) $fichas['cantidad'] : 0;
+        $monto = isset($fichas['montoTotal']) ? round((float) $fichas['montoTotal'], 2) : null;
+        $valorUnitario = isset($fichas['valorUnitario']) ? round((float) $fichas['valorUnitario'], 2) : null;
+        $montoVenta = round((float) ($data['montoTotal'] ?? 0), 2);
+
+        if ($cantidad > 0 && $monto === null && ($valorUnitario === null || $valorUnitario <= 0)) {
+            $validator->errors()->add($prefix . 'fichasPostales.montoTotal', 'Debe enviar montoTotal o valorUnitario cuando informa cantidad de fichas postales.');
+        }
+
+        if ($monto !== null && $monto > $montoVenta) {
+            $validator->errors()->add($prefix . 'fichasPostales.montoTotal', 'El montoTotal de fichas postales no puede ser mayor al montoTotal de la venta.');
+        }
+
+        if ($cantidad > 0 && $monto !== null && $valorUnitario !== null && $valorUnitario > 0) {
+            $esperado = round($cantidad * $valorUnitario, 2);
+            if ($esperado !== $monto) {
+                $validator->errors()->add($prefix . 'fichasPostales.montoTotal', 'El montoTotal de fichas postales no coincide con cantidad por valorUnitario.');
+            }
         }
     }
 

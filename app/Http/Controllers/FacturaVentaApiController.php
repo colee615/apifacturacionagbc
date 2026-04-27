@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Notificacione;
 use App\Models\Venta;
+use App\Support\FichaPostalStockService;
 use App\Support\SufeSectorUnoValidator;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -12,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -20,7 +22,8 @@ class FacturaVentaApiController extends Controller
     private const DEBUG_RESPONSE_QUERY_VALUES = ['1', 'true', 'yes', 'on'];
 
     public function __construct(
-        private readonly SufeSectorUnoValidator $sufeValidator
+        private readonly SufeSectorUnoValidator $sufeValidator,
+        private readonly FichaPostalStockService $fichaPostalStockService
     ) {
     }
 
@@ -108,9 +111,83 @@ class FacturaVentaApiController extends Controller
             ->where('punto_venta', $puntoVenta)
             ->update([
                 'monto_ventas' => DB::raw('coalesce(monto_ventas, 0) + ' . $montoTotal),
+                'monto_cierre_esperado' => DB::raw('coalesce(monto_cierre_esperado, coalesce(monto_apertura, 0)) + ' . $montoTotal),
                 'cantidad_ventas' => DB::raw('coalesce(cantidad_ventas, 0) + 1'),
                 'updated_at' => now(),
             ]);
+    }
+
+    private function registerFichaPostalConsumption(array $payload, int $ventaId): void
+    {
+        $consumo = $this->fichaPostalStockService->inferConsumptionFromPayload($payload);
+        $context = $this->fichaPostalContextFromPayload($payload);
+
+        DB::table('ventas')
+            ->where('id', $ventaId)
+            ->update([
+                'cantidad_fichas_postales' => (int) ($consumo['cantidad'] ?? 0),
+                'monto_fichas_postales' => round((float) ($consumo['montoTotal'] ?? 0), 2),
+                'valor_unitario_ficha_postal' => $consumo['valorUnitario'] ?? null,
+                'detalle_fichas_postales' => json_encode([
+                    'detalle' => $consumo['detalle'] ?? [],
+                    'observacion' => $consumo['observacion'] ?? '',
+                    'origen' => data_get($payload, 'fichasPostales', []),
+                ], JSON_UNESCAPED_UNICODE),
+                'updated_at' => now(),
+            ]);
+
+        $cajaId = $this->findOpenCajaIdFromPayload($payload);
+        if ($cajaId !== null && Schema::hasColumn('cajas_diarias', 'cantidad_fichas_consumidas')) {
+            DB::table('cajas_diarias')
+                ->where('id', $cajaId)
+                ->update([
+                    'cantidad_fichas_consumidas' => DB::raw('coalesce(cantidad_fichas_consumidas, 0) + ' . (int) ($consumo['cantidad'] ?? 0)),
+                    'monto_fichas_consumidas' => DB::raw('coalesce(monto_fichas_consumidas, 0) + ' . round((float) ($consumo['montoTotal'] ?? 0), 2)),
+                    'cantidad_fichas_cierre_esperado' => DB::raw('coalesce(cantidad_fichas_cierre_esperado, 0) - ' . (int) ($consumo['cantidad'] ?? 0)),
+                    'monto_fichas_cierre_esperado' => DB::raw('coalesce(monto_fichas_cierre_esperado, 0) - ' . round((float) ($consumo['montoTotal'] ?? 0), 2)),
+                    'updated_at' => now(),
+                ]);
+        }
+
+        $this->fichaPostalStockService->consume($context, $consumo, [
+            'venta_id' => $ventaId,
+            'caja_diaria_id' => $cajaId,
+            'codigo_orden' => (string) ($payload['codigoOrden'] ?? ''),
+            'codigo_seguimiento' => (string) ($payload['codigoSeguimiento'] ?? ''),
+        ]);
+    }
+
+    private function fichaPostalContextFromPayload(array $payload): array
+    {
+        return [
+            'usuario_id' => trim((string) data_get($payload, 'origenUsuario.id', '')),
+            'usuario_nombre' => trim((string) data_get($payload, 'origenUsuario.nombre', '')),
+            'usuario_email' => strtolower(trim((string) data_get($payload, 'origenUsuario.email', ''))),
+            'codigo_sucursal' => (int) ($payload['codigoSucursal'] ?? 0),
+            'punto_venta' => (int) ($payload['puntoVenta'] ?? 0),
+        ];
+    }
+
+    private function findOpenCajaIdFromPayload(array $payload): ?int
+    {
+        if (!Schema::hasTable('cajas_diarias')) {
+            return null;
+        }
+
+        $usuarioId = trim((string) data_get($payload, 'origenUsuario.id', ''));
+        if ($usuarioId === '') {
+            return null;
+        }
+
+        $cajaId = DB::table('cajas_diarias')
+            ->where('usuario_id', $usuarioId)
+            ->whereDate('fecha_operacion', now()->toDateString())
+            ->where('estado', 'ABIERTA')
+            ->where('codigo_sucursal', (int) ($payload['codigoSucursal'] ?? 0))
+            ->where('punto_venta', (int) ($payload['puntoVenta'] ?? 0))
+            ->value('id');
+
+        return $cajaId !== null ? (int) $cajaId : null;
     }
 
     private function resolveCodigoOrden(array $payload): string
@@ -136,7 +213,7 @@ class FacturaVentaApiController extends Controller
         return $codigoOrden;
     }
 
-    private function createVenta(array $payload, string $codigoOrden, string $codigoSeguimiento): array
+    private function createVenta(array $payload, string $codigoOrden, string $codigoSeguimiento, array $consumoFichas): array
     {
         $now = Date::now();
 
@@ -171,6 +248,14 @@ class FacturaVentaApiController extends Controller
             'monto_descuento_adicional' => (float) ($payload['montoDescuentoAdicional'] ?? 0),
             'motivo' => 'Integracion bolipost',
             'total' => (float) $payload['montoTotal'],
+            'cantidad_fichas_postales' => (int) ($consumoFichas['cantidad'] ?? 0),
+            'monto_fichas_postales' => round((float) ($consumoFichas['montoTotal'] ?? 0), 2),
+            'valor_unitario_ficha_postal' => $consumoFichas['valorUnitario'] ?? null,
+            'detalle_fichas_postales' => json_encode([
+                'detalle' => $consumoFichas['detalle'] ?? [],
+                'observacion' => $consumoFichas['observacion'] ?? '',
+                'origen' => data_get($payload, 'fichasPostales', []),
+            ], JSON_UNESCAPED_UNICODE),
             'codigoOrden' => $codigoOrden,
             'codigoSeguimiento' => $codigoSeguimiento,
             'estado_sufe' => 'RECEPCIONADA',
@@ -250,6 +335,9 @@ class FacturaVentaApiController extends Controller
     {
         return match ($status) {
             'PROCESADA' => 'Procesada correctamente',
+            'ANULADA' => 'Anulada',
+            'ANULACION_SOLICITADA' => 'Anulación solicitada',
+            'ANULACION_OBSERVADA' => 'Anulación observada',
             'OBSERVADA' => 'Observada',
             'CONTINGENCIA_CREADA' => 'En contingencia',
             'RECEPCIONADA' => 'Recepcionada por SEFE',
@@ -261,6 +349,9 @@ class FacturaVentaApiController extends Controller
     {
         return match ($status) {
             'PROCESADA' => 'La venta fue validada y procesada correctamente por SEFE.',
+            'ANULADA' => 'La factura fue anulada correctamente por SEFE.',
+            'ANULACION_SOLICITADA' => 'SEFE recepcionó la solicitud de anulación y se espera la notificación final.',
+            'ANULACION_OBSERVADA' => 'SEFE observó la solicitud de anulación y la factura conserva su estado previo.',
             'OBSERVADA' => 'SEFE devolvió observaciones y la venta requiere revisión.',
             'CONTINGENCIA_CREADA' => 'SEFE recepcionó la venta, pero SIAT no estaba disponible y la dejó en contingencia.',
             'RECEPCIONADA' => 'SEFE recepcionó la venta y se espera la notificación final del proceso.',
@@ -272,6 +363,9 @@ class FacturaVentaApiController extends Controller
     {
         return match ($status) {
             'PROCESADA' => 'La venta fue procesada correctamente por SEFE.',
+            'ANULADA' => 'La factura fue anulada correctamente por SEFE.',
+            'ANULACION_SOLICITADA' => 'La solicitud de anulación fue recepcionada por SEFE.',
+            'ANULACION_OBSERVADA' => 'La solicitud de anulación fue observada por SEFE.',
             'OBSERVADA' => 'La venta fue recepcionada, pero SEFE la dejó observada.',
             'CONTINGENCIA_CREADA' => 'La venta fue recepcionada por SEFE y quedó en contingencia.',
             'RECEPCIONADA' => 'La venta fue recepcionada por SEFE y está pendiente de notificación final.',
@@ -283,8 +377,10 @@ class FacturaVentaApiController extends Controller
     {
         return match ($status) {
             'PROCESADA' => 'FACTURADA',
+            'ANULADA' => 'ANULADA',
+            'ANULACION_SOLICITADA' => 'PENDIENTE_ANULACION',
             'RECEPCIONADA', 'CONTINGENCIA_CREADA' => 'PENDIENTE',
-            'OBSERVADA', 'RECHAZADA' => 'RECHAZADA',
+            'OBSERVADA', 'RECHAZADA', 'ANULACION_OBSERVADA' => 'RECHAZADA',
             default => 'PENDIENTE',
         };
     }
@@ -298,6 +394,9 @@ class FacturaVentaApiController extends Controller
     {
         return match ($status) {
             'PROCESADA' => null,
+            'ANULADA' => null,
+            'ANULACION_SOLICITADA' => 'La solicitud fue aceptada y se espera la notificación final de anulación.',
+            'ANULACION_OBSERVADA' => $observacion ?: 'La anulación no pudo completarse porque SEFE devolvió observaciones.',
             'RECEPCIONADA' => 'La venta fue recibida y está esperando la confirmación final de facturación.',
             'CONTINGENCIA_CREADA' => 'La venta fue recibida, pero la facturación quedó en contingencia.',
             'OBSERVADA' => $observacion ?: 'La factura no pudo completarse porque SEFE devolvió observaciones.',
@@ -310,9 +409,12 @@ class FacturaVentaApiController extends Controller
     {
         return match ($status) {
             'PROCESADA' => 'Factura emitida correctamente.',
+            'ANULADA' => 'Factura anulada correctamente.',
+            'ANULACION_SOLICITADA' => 'Anulación solicitada correctamente.',
             'RECEPCIONADA' => 'La venta fue recibida y está pendiente de confirmación.',
             'CONTINGENCIA_CREADA' => 'La venta quedó pendiente por contingencia.',
             'OBSERVADA', 'RECHAZADA' => 'No se pudo emitir la factura.',
+            'ANULACION_OBSERVADA' => 'No se pudo anular la factura.',
             default => 'La venta está en proceso de validación.',
         };
     }
@@ -362,10 +464,21 @@ class FacturaVentaApiController extends Controller
     private function resolveBridgeStatus(string $currentStatus, ?Notificacione $notificacion = null, ?array $consulta = null): string
     {
         if ($notificacion) {
+            $detalle = json_decode((string) $notificacion->detalle, true) ?: [];
+            $tipoEmision = (string) data_get($detalle, 'tipoEmision');
+
+            if ($tipoEmision === 'ANULACION') {
+                return match ($notificacion->estado) {
+                    'EXITO' => 'ANULADA',
+                    'OBSERVADO' => 'ANULACION_OBSERVADA',
+                    default => $currentStatus,
+                };
+            }
+
             return match ($notificacion->estado) {
                 'EXITO' => 'PROCESADA',
                 'OBSERVADO' => 'OBSERVADA',
-                'CREADO' => ((string) data_get(json_decode((string) $notificacion->detalle, true) ?: [], 'tipoEmision') === 'CONTINGENCIA')
+                'CREADO' => $tipoEmision === 'CONTINGENCIA'
                     ? 'CONTINGENCIA_CREADA'
                     : $currentStatus,
                 default => $currentStatus,
@@ -378,6 +491,7 @@ class FacturaVentaApiController extends Controller
         return match ($estadoConsulta) {
             'PROCESADO' => 'PROCESADA',
             'OBSERVADO' => 'OBSERVADA',
+            'ANULADO' => 'ANULADA',
             'PENDIENTE' => $tipoEvento === 'CONTINGENCIA' ? 'CONTINGENCIA_CREADA' : $currentStatus,
             default => $currentStatus,
         };
@@ -385,7 +499,7 @@ class FacturaVentaApiController extends Controller
 
     private function shouldStopWaitingForCashier(string $status): bool
     {
-        return in_array($status, ['PROCESADA', 'OBSERVADA', 'CONTINGENCIA_CREADA'], true);
+        return in_array($status, ['PROCESADA', 'OBSERVADA', 'CONTINGENCIA_CREADA', 'ANULADA', 'ANULACION_OBSERVADA'], true);
     }
 
     private function safeConsultaFactura(string $codigoSeguimiento): ?array
@@ -461,6 +575,13 @@ class FacturaVentaApiController extends Controller
     {
         return DB::table('ventas')
             ->where('codigoSeguimiento', $codigoSeguimiento)
+            ->first();
+    }
+
+    private function ventaByCuf(string $cuf): ?\stdClass
+    {
+        return DB::table('ventas')
+            ->where('cuf', $cuf)
             ->first();
     }
 
@@ -824,9 +945,11 @@ class FacturaVentaApiController extends Controller
                 $reception = $this->resolveSuccessfulReception($payload ?? []);
                 $codigoSeguimiento = (string) data_get($reception['validated'], 'datos.codigoSeguimiento');
                 $venta = DB::transaction(function () use ($validated, $codigoOrden, $codigoSeguimiento) {
-                    $venta = $this->createVenta($validated, $codigoOrden, $codigoSeguimiento);
+                    $consumoFichas = $this->fichaPostalStockService->inferConsumptionFromPayload($validated);
+                    $venta = $this->createVenta($validated, $codigoOrden, $codigoSeguimiento, $consumoFichas);
                     $this->createDetalleVentas($venta, $validated);
                     $this->addVentaToCaja($validated);
+                    $this->registerFichaPostalConsumption($validated, (int) $venta['id']);
 
                     return $venta;
                 });
@@ -968,6 +1091,162 @@ class FacturaVentaApiController extends Controller
                 'ok' => false,
                 'estadoPuente' => 'ERROR',
                 'message' => 'Error inesperado al emitir la factura de venta.',
+                'details' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function anular(Request $request, string $cuf)
+    {
+        try {
+            $validated = $this->sufeValidator->validateAnulacionPayload($request->all());
+            $venta = $this->ventaByCuf($cuf);
+
+            if (!$venta) {
+                return response()->json([
+                    'ok' => false,
+                    'estado' => 'RECHAZADA',
+                    'mensaje' => 'No se pudo anular la factura.',
+                    'razon' => 'No existe una venta local asociada al CUF indicado.',
+                    'factura' => [
+                        'cuf' => $cuf,
+                        'nroFactura' => null,
+                    ],
+                    'estadoPuente' => 'NO_REGISTRADA_LOCALMENTE',
+                ], 404);
+            }
+
+            $estadoActual = strtoupper((string) ($venta->estado_sufe ?? ''));
+
+            if (!in_array($estadoActual, ['PROCESADA', 'ANULACION_OBSERVADA'], true)) {
+                return response()->json([
+                    'ok' => false,
+                    'estado' => 'RECHAZADA',
+                    'mensaje' => 'No se pudo anular la factura.',
+                    'razon' => 'Solo se puede anular una factura procesada correctamente.',
+                    'factura' => [
+                        'cuf' => $cuf,
+                        'nroFactura' => $venta->numero_factura ?? null,
+                    ],
+                    'estadoPuente' => $estadoActual ?: 'SIN_ESTADO',
+                ], 409);
+            }
+
+            Log::info('FacturaVentaApi anular request', [
+                'cuf' => $cuf,
+                'codigoSeguimiento' => $venta->codigoSeguimiento,
+                'payload' => $validated,
+            ]);
+
+            $response = $this->ageticClient()->patch(
+                $this->ageticBaseUrl() . "/anulacion/{$cuf}",
+                $validated
+            );
+
+            $payload = $response->json();
+
+            if ($response->successful()) {
+                $this->sufeValidator->validateAcceptedAnulacionResponse($payload ?? []);
+
+                DB::table('ventas')
+                    ->where('id', $venta->id)
+                    ->update([
+                        'estado_sufe' => 'ANULACION_SOLICITADA',
+                        'tipo_emision_sufe' => 'ANULACION',
+                        'observacion_sufe' => $validated['motivo'],
+                        'updated_at' => now(),
+                    ]);
+
+                $base = [
+                    'ok' => true,
+                    'estado' => 'PENDIENTE_ANULACION',
+                    'mensaje' => 'Anulación solicitada correctamente.',
+                    'razon' => 'La solicitud fue aceptada y se espera la notificación final de anulación.',
+                    'factura' => [
+                        'cuf' => data_get($payload, 'datos.cuf', $cuf),
+                        'nroFactura' => $venta->numero_factura ?? null,
+                    ],
+                ];
+
+                $verbose = [
+                    'estadoPuente' => 'ANULACION_SOLICITADA',
+                    'codigoOrden' => $venta->codigoOrden,
+                    'codigoSeguimiento' => $venta->codigoSeguimiento,
+                    'mensajeTecnico' => data_get($payload, 'mensaje'),
+                    'sefe' => $payload,
+                ];
+
+                return response()->json(
+                    $this->formatResponseForClient($request, $base, $verbose),
+                    $response->status()
+                );
+            }
+
+            $rejectedPayload = is_array($payload) ? $payload : null;
+
+            if ($rejectedPayload !== null) {
+                try {
+                    $this->sufeValidator->validateRejectedResponse($rejectedPayload);
+                } catch (ValidationException $validationException) {
+                    Log::warning('La respuesta de rechazo de anulación no cumple el protocolo', [
+                        'errores' => $validationException->errors(),
+                        'body' => $rejectedPayload,
+                    ]);
+                }
+            }
+
+            return response()->json([
+                'ok' => false,
+                'estado' => 'RECHAZADA',
+                'mensaje' => 'No se pudo anular la factura.',
+                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE rechazó la solicitud de anulación.')),
+                'factura' => [
+                    'cuf' => $cuf,
+                    'nroFactura' => $venta->numero_factura ?? null,
+                ],
+                'estadoPuente' => 'RECHAZADA',
+                'sefe' => $rejectedPayload,
+            ], $response->status());
+        } catch (ValidationException $e) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'RECHAZADA',
+                'mensaje' => 'No se pudo anular la factura.',
+                'razon' => 'La solicitud de anulación no cumple la validación del protocolo.',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (RequestException $e) {
+            $rejectedPayload = $this->validatedRejectedPayloadFromResponse($e->response);
+
+            return response()->json([
+                'ok' => false,
+                'estado' => 'RECHAZADA',
+                'mensaje' => 'No se pudo anular la factura.',
+                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE devolvió un error al procesar la anulación.')),
+                'estadoPuente' => 'ERROR',
+                'sefe' => $e->response?->json(),
+            ], $e->response?->status() ?? 502);
+        } catch (ConnectionException $e) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'ERROR',
+                'mensaje' => 'No se pudo anular la factura.',
+                'razon' => 'No se pudo conectar con SEFE.',
+                'details' => $e->getMessage(),
+            ], 504);
+        } catch (\Throwable $e) {
+            Log::error('FacturaVentaApi anular unexpected error', [
+                'cuf' => $cuf,
+                'msg' => $e->getMessage(),
+                'trace_line' => $e->getLine(),
+                'trace_file' => $e->getFile(),
+            ]);
+
+            return response()->json([
+                'ok' => false,
+                'estado' => 'ERROR',
+                'mensaje' => 'No se pudo anular la factura.',
+                'razon' => 'Ocurrió un error inesperado al procesar la anulación.',
                 'details' => $e->getMessage(),
             ], 500);
         }

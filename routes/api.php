@@ -24,6 +24,7 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 
 Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/emitir', [FacturaVentaApiController::class, 'emitir']);
+    Route::patch('/anular/{cuf}', [FacturaVentaApiController::class, 'anular']);
     Route::get('/consultar/{codigoSeguimiento}', [FacturaVentaApiController::class, 'consultar']);
     Route::get('/pdf/{codigoSeguimiento}', [FacturaVentaApiController::class, 'pdf']);
     Route::get('/cart/context', [FacturacionCartIntegrationController::class, 'context']);
@@ -43,11 +44,17 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/caja/estado', [CajaDiariaController::class, 'estado']);
     Route::post('/caja/abrir', [CajaDiariaController::class, 'abrir']);
     Route::post('/caja/cerrar', [CajaDiariaController::class, 'cerrar']);
+    Route::get('/caja/fichas/stock', [CajaDiariaController::class, 'fichasStock']);
+    Route::get('/caja/fichas/sucursal/stock', [CajaDiariaController::class, 'sucursalStock']);
+    Route::get('/caja/fichas/cajeros/saldos', [CajaDiariaController::class, 'fichasCajerosSaldos']);
+    Route::post('/caja/fichas/sucursal/abastecer', [CajaDiariaController::class, 'abastecerSucursal']);
+    Route::post('/caja/fichas/asignar', [CajaDiariaController::class, 'asignarFichas']);
     Route::get('/caja/arqueos', [CajaDiariaController::class, 'arqueos']);
     Route::get('/caja/reporte-diario', [CajaDiariaController::class, 'reporteDiario']);
 });
 
 Route::middleware('factura.auth')->prefix('facturacion')->group(function () {
     Route::post('/emision/individual', [FacturaVentaApiController::class, 'emitir']);
+    Route::patch('/anulacion/{cuf}', [FacturaVentaApiController::class, 'anular']);
     Route::post('/contingencia', [FacturaVentaApiController::class, 'contingenciaCafc']);
 });

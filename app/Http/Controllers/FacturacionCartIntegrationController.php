@@ -446,6 +446,7 @@ class FacturacionCartIntegrationController extends Controller
 
         $codigoOrden = trim((string) ($cart->codigo_orden ?? ''));
         if ($codigoOrden === '') $codigoOrden = 'VENT-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT);
+        $fichasPostales = $this->resolveCartFichaPostalPayload($cart, $items);
 
         return [
             'codigoOrden' => $codigoOrden,
@@ -460,10 +461,52 @@ class FacturacionCartIntegrationController extends Controller
             'origenSucursal' => ['id' => (string) $cart->origen_sucursal_id, 'codigo' => (string) $cart->origen_sucursal_codigo, 'nombre' => (string) ($cart->origen_sucursal_nombre ?? '')],
             'codigoSucursal' => $codigoSucursal, 'puntoVenta' => $puntoVenta, 'documentoSector' => 1,
             'municipio' => 'LA PAZ', 'departamento' => 'LA PAZ', 'telefono' => '2222222',
-            'codigoCliente' => $sinCliente ? 'SN-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT) : Str::limit('CLI-' . preg_replace('/[^A-Za-z0-9\-_]/', '', strtoupper($doc)), 35, ''),
+            'codigoCliente' => $sinCliente ? 'SN-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT) : Str::limit($this->sanitizeCodigoClienteFromDocument($doc), 35, ''),
             'razonSocial' => Str::upper($razon), 'documentoIdentidad' => $doc, 'tipoDocumentoIdentidad' => $tipo, 'correo' => $correo,
             'metodoPago' => 1, 'formatoFactura' => 'rollo', 'montoTotal' => round((float) $cart->total, 2), 'detalle' => $detalle,
+            'fichasPostales' => $fichasPostales,
         ];
+    }
+
+    private function resolveCartFichaPostalPayload(object $cart, $items): array
+    {
+        $cantidad = 0;
+        $monto = 0.0;
+        $valorUnitario = null;
+        $hasExplicitMonto = false;
+
+        foreach (collect($items) as $item) {
+            $resumen = (array) ($item->resumen_origen ?? []);
+            $cantidad += max(0, (int) ($resumen['cantidad_fichas_postales'] ?? $resumen['fichas_postales_cantidad'] ?? 0));
+
+            if (array_key_exists('monto_fichas_postales', $resumen) || array_key_exists('fichas_postales_monto', $resumen)) {
+                $monto += round((float) ($resumen['monto_fichas_postales'] ?? $resumen['fichas_postales_monto'] ?? 0), 2);
+                $hasExplicitMonto = true;
+            }
+
+            $candidateUnit = $resumen['valor_unitario_ficha_postal'] ?? $resumen['fichas_postales_valor_unitario'] ?? null;
+            if ($valorUnitario === null && is_numeric($candidateUnit) && (float) $candidateUnit > 0) {
+                $valorUnitario = round((float) $candidateUnit, 2);
+            }
+        }
+
+        if (!$hasExplicitMonto) {
+            $monto = round((float) ($cart->total ?? 0), 2);
+        }
+
+        if ($cantidad <= 0 && $valorUnitario !== null && $monto > 0) {
+            $estimado = $monto / $valorUnitario;
+            if (abs($estimado - round($estimado)) < 0.00001) {
+                $cantidad = (int) round($estimado);
+            }
+        }
+
+        return array_filter([
+            'cantidad' => $cantidad,
+            'montoTotal' => round($monto, 2),
+            'valorUnitario' => $valorUnitario,
+            'observacion' => 'Consumo postal inferido desde el carrito remoto.',
+        ], fn ($value) => $value !== null);
     }
 
     private function buildDetalleCodigo(string $codigoPaquete, string $codigoProductoFallback): string
@@ -475,6 +518,12 @@ class FacturacionCartIntegrationController extends Controller
         $source = $paq !== '' ? $paq : trim($codigoProductoFallback);
 
         return Str::limit($this->sanitizeDetalleCodigo($source), 50, '');
+    }
+
+    private function sanitizeCodigoClienteFromDocument(string $document): string
+    {
+        $clean = preg_replace('/[^A-Za-z0-9\-_]/', '', strtoupper(trim($document))) ?? '';
+        return $clean !== '' ? $clean : 'SN';
     }
 
     private function sanitizeDetalleCodigo(string $value): string

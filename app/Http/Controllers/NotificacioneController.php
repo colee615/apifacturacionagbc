@@ -74,6 +74,14 @@ class NotificacioneController extends Controller
       $estado = (string) ($validated['estado'] ?? '');
       $tipoEmision = (string) data_get($validated, 'detalle.tipoEmision', '');
 
+      if ($tipoEmision === 'ANULACION' && $estado === 'EXITO') {
+         return 'ANULADA';
+      }
+
+      if ($tipoEmision === 'ANULACION' && $estado === 'OBSERVADO') {
+         return 'ANULACION_OBSERVADA';
+      }
+
       if ($estado === 'EXITO') {
          return 'PROCESADA';
       }
@@ -96,19 +104,27 @@ class NotificacioneController extends Controller
    private function syncVentaFromNotification(string $codigoSeguimiento, array $validated): void
    {
       $observacion = $validated['observacion'] ?? data_get($validated, 'detalle.observacion');
+      $tipoEmision = (string) data_get($validated, 'detalle.tipoEmision', '');
+      $updates = [
+         'estado_sufe' => $this->resolveVentaEstadoSufe($validated),
+         'tipo_emision_sufe' => $tipoEmision,
+         'observacion_sufe' => $observacion,
+         'fecha_notificacion_sufe' => $validated['fecha'] ?? null,
+         'updated_at' => now(),
+      ];
+
+      if ($tipoEmision !== 'ANULACION' || filled(data_get($validated, 'detalle.cuf'))) {
+         $updates['cuf'] = data_get($validated, 'detalle.cuf');
+      }
+
+      if ($tipoEmision !== 'ANULACION') {
+         $updates['url_pdf'] = data_get($validated, 'detalle.urlPdf');
+         $updates['url_xml'] = data_get($validated, 'detalle.urlXml');
+      }
 
       Venta::query()
          ->where('codigoSeguimiento', $codigoSeguimiento)
-         ->update([
-            'estado_sufe' => $this->resolveVentaEstadoSufe($validated),
-            'tipo_emision_sufe' => data_get($validated, 'detalle.tipoEmision'),
-            'cuf' => data_get($validated, 'detalle.cuf'),
-            'url_pdf' => data_get($validated, 'detalle.urlPdf'),
-            'url_xml' => data_get($validated, 'detalle.urlXml'),
-            'observacion_sufe' => $observacion,
-            'fecha_notificacion_sufe' => $validated['fecha'] ?? null,
-            'updated_at' => now(),
-         ]);
+         ->update($updates);
    }
 
    public function procesarNotificacion(Request $request, $codigoSeguimiento)
