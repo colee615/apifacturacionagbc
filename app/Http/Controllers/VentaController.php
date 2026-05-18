@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -438,14 +440,15 @@ class VentaController extends Controller
             || !empty($filters['origen_usuario_alias'])
             || !empty($filters['origen_usuario_carnet']);
 
-        if ($hasManualIdentity) {
+        $usuario = Auth::guard('api')->user() ?? $request->user();
+
+        if ($hasManualIdentity && $usuario && method_exists($usuario, 'hasRole') && $usuario->hasRole('admin')) {
             $filters['origen_usuario_email'] = strtolower(trim((string) ($filters['origen_usuario_email'] ?? ''))) ?: null;
             $filters['origen_usuario_alias'] = strtolower(trim((string) ($filters['origen_usuario_alias'] ?? ''))) ?: null;
             $filters['origen_usuario_carnet'] = $this->normalizeCarnet($filters['origen_usuario_carnet'] ?? null);
             return $filters;
         }
 
-        $usuario = Auth::guard('api')->user() ?? $request->user();
         if (!$usuario) {
             return $filters;
         }
@@ -1930,11 +1933,152 @@ class VentaController extends Controller
         ]);
     }
 
+    public function anulacionGuardStatus(Request $request)
+    {
+        $user = Auth::guard('api')->user() ?? $request->user();
+
+        return response()->json([
+            'ok' => true,
+            'guard' => $this->buildAnulacionGuardStatus($user),
+        ]);
+    }
+
+    public function autorizarAnulacion(Request $request)
+    {
+        $currentUser = Auth::guard('api')->user() ?? $request->user();
+        if (!$currentUser) {
+            return response()->json([
+                'message' => 'No se pudo identificar al usuario autenticado.',
+            ], 401);
+        }
+
+        $validated = $request->validate([
+            'supervisor_email' => ['required', 'email', 'max:120'],
+            'supervisor_password' => ['required', 'string', 'max:255'],
+            'duracion_minutos' => ['nullable', 'integer', 'min:1', 'max:120'],
+        ]);
+
+        $supervisor = \App\Models\Usuario::query()
+            ->whereRaw('lower(email) = ?', [strtolower((string) $validated['supervisor_email'])])
+            ->where('estado', 1)
+            ->first();
+
+        if (!$supervisor || !Hash::check((string) $validated['supervisor_password'], (string) $supervisor->password)) {
+            return response()->json([
+                'message' => 'Credenciales de supervisor inválidas.',
+                'code' => 'ANULACION_SUPERVISOR_INVALIDO',
+            ], 422);
+        }
+
+        if (!$this->isAnulacionSupervisor($supervisor)) {
+            return response()->json([
+                'message' => 'El usuario supervisor no tiene permisos para autorizar anulaciones.',
+                'code' => 'ANULACION_SUPERVISOR_SIN_PERMISO',
+            ], 403);
+        }
+
+        $duracion = (int) ($validated['duracion_minutos'] ?? 15);
+        $expiresAt = now()->addMinutes($duracion);
+
+        Cache::put($this->anulacionUserUnlockCacheKey((int) $currentUser->id), [
+            'authorized_by_user_id' => (int) $supervisor->id,
+            'authorized_by_email' => (string) $supervisor->email,
+            'authorized_for_user_id' => (int) $currentUser->id,
+            'expires_at' => $expiresAt->toIso8601String(),
+            'created_at' => now()->toIso8601String(),
+        ], $expiresAt);
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Autorizacion temporal de anulacion concedida.',
+            'guard' => $this->buildAnulacionGuardStatus($currentUser),
+        ]);
+    }
+
+    public function revocarAutorizacionAnulacion(Request $request)
+    {
+        $user = Auth::guard('api')->user() ?? $request->user();
+        if (!$user) {
+            return response()->json([
+                'message' => 'No se pudo identificar al usuario autenticado.',
+            ], 401);
+        }
+
+        Cache::forget($this->anulacionUserUnlockCacheKey((int) $user->id));
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Autorizacion temporal revocada.',
+            'guard' => $this->buildAnulacionGuardStatus($user),
+        ]);
+    }
+
+    public function toggleAnulacionGuard(Request $request)
+    {
+        $user = Auth::guard('api')->user() ?? $request->user();
+        if (!$user) {
+            return response()->json([
+                'message' => 'No se pudo identificar al usuario autenticado.',
+            ], 401);
+        }
+
+        if (!$this->isAnulacionSupervisor($user)) {
+            return response()->json([
+                'message' => 'Solo un rol superior puede habilitar o deshabilitar anulaciones globales.',
+                'code' => 'ANULACION_TOGGLE_SIN_PERMISO',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'habilitado' => ['required', 'boolean'],
+            'duracion_minutos' => ['nullable', 'integer', 'min:1', 'max:480'],
+            'motivo' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        if (!(bool) $validated['habilitado']) {
+            Cache::forget($this->anulacionGlobalToggleCacheKey());
+
+            return response()->json([
+                'ok' => true,
+                'message' => 'Anulacion global deshabilitada.',
+                'guard' => $this->buildAnulacionGuardStatus($user),
+            ]);
+        }
+
+        $duracion = (int) ($validated['duracion_minutos'] ?? 30);
+        $expiresAt = now()->addMinutes($duracion);
+
+        Cache::put($this->anulacionGlobalToggleCacheKey(), [
+            'enabled' => true,
+            'enabled_by_user_id' => (int) $user->id,
+            'enabled_by_email' => (string) ($user->email ?? ''),
+            'motivo' => trim((string) ($validated['motivo'] ?? '')),
+            'expires_at' => $expiresAt->toIso8601String(),
+            'created_at' => now()->toIso8601String(),
+        ], $expiresAt);
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Anulacion global habilitada temporalmente.',
+            'guard' => $this->buildAnulacionGuardStatus($user),
+        ]);
+    }
+
     // =========================
     //  Anular factura
     // =========================
     public function anularFactura(Request $request, $cuf)
     {
+        $currentUser = Auth::guard('api')->user() ?? $request->user();
+        $guard = $this->buildAnulacionGuardStatus($currentUser);
+        if (($guard['allowed'] ?? false) !== true) {
+            return response()->json([
+                'message' => 'Anulacion bloqueada. Requiere autorizacion de rol superior o habilitacion global de administrador.',
+                'code' => 'ANULACION_REQUIERE_AUTORIZACION',
+                'guard' => $guard,
+            ], 423);
+        }
+
         $url = $this->ageticBaseUrl() . "/anulacion/{$cuf}";
         $requestData = $this->sufeValidator->validateAnulacionPayload($request->all());
         Log::info('Datos enviados para anulaciÃ³n de factura:', $requestData);
@@ -2005,6 +2149,66 @@ class VentaController extends Controller
                 'exception' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    private function buildAnulacionGuardStatus($user): array
+    {
+        $isSupervisor = $this->isAnulacionSupervisor($user);
+        $global = $this->globalAnulacionToggleData();
+        $globalEnabled = is_array($global) && ($global['enabled'] ?? false) === true;
+
+        $unlock = null;
+        $unlockEnabled = false;
+        if ($user && isset($user->id)) {
+            $unlock = Cache::get($this->anulacionUserUnlockCacheKey((int) $user->id));
+            $unlockEnabled = is_array($unlock);
+        }
+
+        return [
+            'requires_authorization' => true,
+            'allowed' => $isSupervisor || $globalEnabled || $unlockEnabled,
+            'allowed_by' => $isSupervisor
+                ? 'ROL_SUPERIOR'
+                : ($globalEnabled ? 'GLOBAL_SWITCH' : ($unlockEnabled ? 'SUPERVISOR_UNLOCK' : 'NONE')),
+            'is_supervisor' => $isSupervisor,
+            'global_enabled' => $globalEnabled,
+            'global' => $globalEnabled ? $global : null,
+            'user_unlock_enabled' => $unlockEnabled,
+            'user_unlock' => $unlockEnabled ? $unlock : null,
+        ];
+    }
+
+    private function globalAnulacionToggleData(): ?array
+    {
+        $data = Cache::get($this->anulacionGlobalToggleCacheKey());
+        return is_array($data) ? $data : null;
+    }
+
+    private function anulacionGlobalToggleCacheKey(): string
+    {
+        return 'ventas:anulacion:global-toggle';
+    }
+
+    private function anulacionUserUnlockCacheKey(int $userId): string
+    {
+        return "ventas:anulacion:user-unlock:{$userId}";
+    }
+
+    private function isAnulacionSupervisor($user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if (method_exists($user, 'hasRole') && ($user->hasRole('admin') || $user->hasRole('administrador') || $user->hasRole('supervisor'))) {
+            return true;
+        }
+
+        return method_exists($user, 'hasPermission') && (
+            $user->hasPermission('rbac.manage')
+            || $user->hasPermission('usuarios.manage')
+            || $user->hasPermission('ventas.manage')
+        );
     }
 
 }

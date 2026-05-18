@@ -28,10 +28,13 @@ class Usuario extends Authenticatable implements JWTSubject
 
    protected $hidden = [
       'password',
-      'confirmation_token'
+      'confirmation_token',
+      'confirmation_token_expires_at',
    ];
 
-   protected $casts = [];
+   protected $casts = [
+      'confirmation_token_expires_at' => 'datetime',
+   ];
 
    public function roles()
    {

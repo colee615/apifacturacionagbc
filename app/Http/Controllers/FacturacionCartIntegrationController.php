@@ -232,6 +232,14 @@ class FacturacionCartIntegrationController extends Controller
         });
         if ($items->isEmpty()) return response()->json(['ok' => false, 'message' => 'El borrador no tiene items para emitir.'], 422);
 
+        // Cada intento de emision usa un codigo de orden nuevo para evitar rechazos por "ya emitida".
+        $codigoOrdenIntento = $this->nextBridgeCodigoOrden();
+        DB::table('facturacion_carts')->where('id', $cart->id)->update([
+            'codigo_orden' => $codigoOrdenIntento,
+            'updated_at' => now(),
+        ]);
+        $cart->codigo_orden = $codigoOrdenIntento;
+
         $emitReq = Request::create('/api/factura-venta/emitir', 'POST', $this->payloadFromCart($cart, $items));
         $emitReq->headers->set('Accept', 'application/json');
         $emitRes = app(FacturaVentaApiController::class)->emitir($emitReq);
@@ -445,8 +453,13 @@ class FacturacionCartIntegrationController extends Controller
         })->values()->all();
 
         $codigoOrden = trim((string) ($cart->codigo_orden ?? ''));
-        if ($codigoOrden === '') $codigoOrden = 'VENT-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT);
+        if ($codigoOrden === '') $codigoOrden = $this->nextBridgeCodigoOrden();
         $fichasPostales = $this->resolveCartFichaPostalPayload($cart, $items);
+
+        $canalEmision = in_array((string) ($cart->canal_emision ?? ''), ['qr', 'factura_electronica'], true)
+            ? (string) $cart->canal_emision
+            : 'factura_electronica';
+        $motivo = $canalEmision === 'qr' ? 'qr' : 'factura electronica';
 
         return [
             'codigoOrden' => $codigoOrden,
@@ -460,10 +473,12 @@ class FacturacionCartIntegrationController extends Controller
             ],
             'origenSucursal' => ['id' => (string) $cart->origen_sucursal_id, 'codigo' => (string) $cart->origen_sucursal_codigo, 'nombre' => (string) ($cart->origen_sucursal_nombre ?? '')],
             'codigoSucursal' => $codigoSucursal, 'puntoVenta' => $puntoVenta, 'documentoSector' => 1,
+            'canalEmision' => $canalEmision,
             'municipio' => 'LA PAZ', 'departamento' => 'LA PAZ', 'telefono' => '2222222',
             'codigoCliente' => $sinCliente ? 'SN-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT) : Str::limit($this->sanitizeCodigoClienteFromDocument($doc), 35, ''),
             'razonSocial' => Str::upper($razon), 'documentoIdentidad' => $doc, 'tipoDocumentoIdentidad' => $tipo, 'correo' => $correo,
             'metodoPago' => 1, 'formatoFactura' => 'rollo', 'montoTotal' => round((float) $cart->total, 2), 'detalle' => $detalle,
+            'motivo' => $motivo,
             'fichasPostales' => $fichasPostales,
         ];
     }
@@ -507,6 +522,38 @@ class FacturacionCartIntegrationController extends Controller
             'valorUnitario' => $valorUnitario,
             'observacion' => 'Consumo postal inferido desde el carrito remoto.',
         ], fn ($value) => $value !== null);
+    }
+
+    private function nextBridgeCodigoOrden(): string
+    {
+        $next = 1;
+        $pattern = '/^V-(\d{1,12})$/';
+
+        $ventasCodes = DB::table('ventas')
+            ->whereNotNull('codigoOrden')
+            ->where('codigoOrden', 'like', 'V-%')
+            ->pluck('codigoOrden');
+
+        foreach ($ventasCodes as $code) {
+            $code = trim((string) $code);
+            if (preg_match($pattern, $code, $m)) {
+                $next = max($next, ((int) $m[1]) + 1);
+            }
+        }
+
+        $cartCodes = DB::table('facturacion_carts')
+            ->whereNotNull('codigo_orden')
+            ->where('codigo_orden', 'like', 'V-%')
+            ->pluck('codigo_orden');
+
+        foreach ($cartCodes as $code) {
+            $code = trim((string) $code);
+            if (preg_match($pattern, $code, $m)) {
+                $next = max($next, ((int) $m[1]) + 1);
+            }
+        }
+
+        return 'V-' . str_pad((string) $next, 9, '0', STR_PAD_LEFT);
     }
 
     private function buildDetalleCodigo(string $codigoPaquete, string $codigoProductoFallback): string

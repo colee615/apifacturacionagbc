@@ -38,9 +38,6 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/cart/ventas', [FacturacionCartIntegrationController::class, 'ventas']);
     Route::get('/cart/ventas/pdf', [FacturacionCartIntegrationController::class, 'ventasPdf']);
     Route::get('/cart/ventas/{cartId}', [FacturacionCartIntegrationController::class, 'show']);
-    Route::get('/ventas/reportes/kardex-usuarios', [VentaController::class, 'kardexUsuarios']);
-    Route::get('/ventas/consultar/{codigoSeguimiento}', [VentaController::class, 'consultarVenta']);
-    Route::get('/ventas/{venta}', [VentaController::class, 'show']);
     Route::get('/caja/estado', [CajaDiariaController::class, 'estado']);
     Route::post('/caja/abrir', [CajaDiariaController::class, 'abrir']);
     Route::post('/caja/cerrar', [CajaDiariaController::class, 'cerrar']);
@@ -51,6 +48,9 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/caja/fichas/asignar', [CajaDiariaController::class, 'asignarFichas']);
     Route::get('/caja/arqueos', [CajaDiariaController::class, 'arqueos']);
     Route::get('/caja/reporte-diario', [CajaDiariaController::class, 'reporteDiario']);
+    Route::get('/ventas/reportes/kardex-usuarios', [VentaController::class, 'kardexUsuarios']);
+    Route::get('/ventas/consultar/{codigoSeguimiento}', [VentaController::class, 'consultarVenta']);
+    Route::get('/ventas/{venta}', [VentaController::class, 'show']);
 });
 
 Route::middleware('factura.auth')->prefix('facturacion')->group(function () {

@@ -38,5 +38,15 @@ return [
         'integration_token' => env('FACTURACION_INTEGRATION_TOKEN', env('AGETIC_TOKEN')),
         'integration_usuario_id' => env('FACTURACION_INTEGRATION_USUARIO_ID'),
     ],
+    'qhantuy_checkout' => [
+        'base_url' => env('QHANTUY_CHECKOUT_BASE_URL', 'https://testingcheckout.qhantuy.com/external-api/v2'),
+        'token' => env('QHANTUY_CHECKOUT_TOKEN'),
+        'appkey' => env('QHANTUY_CHECKOUT_APPKEY'),
+        'callback_url' => env('QHANTUY_CHECKOUT_CALLBACK_URL'),
+        'return_url' => env('QHANTUY_CHECKOUT_RETURN_URL'),
+        'image_method' => env('QHANTUY_CHECKOUT_IMAGE_METHOD', 'URL'),
+        'currency_code' => env('QHANTUY_CHECKOUT_CURRENCY_CODE', 'BOB'),
+        'timeout' => env('QHANTUY_CHECKOUT_TIMEOUT', 30),
+    ],
 
 ];

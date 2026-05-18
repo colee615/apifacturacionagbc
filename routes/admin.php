@@ -1,18 +1,19 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\IntegrationTokenController;
 use App\Http\Controllers\CajaDiariaController;
+use App\Http\Controllers\IntegrationTokenController;
 use App\Http\Controllers\RbacController;
 use App\Http\Controllers\UsuarioController;
 use App\Http\Controllers\VentaController;
 
-Route::post('login', 'UsuarioController@login');
-Route::post('request-password-reset', [UsuarioController::class, 'requestPasswordReset']);
-Route::post('reset-password/{token}', [UsuarioController::class, 'resetPassword']);
+Route::post('login', 'UsuarioController@login')->middleware('throttle:8,1');
+Route::post('request-password-reset', [UsuarioController::class, 'requestPasswordReset'])->middleware('throttle:4,1');
+Route::post('reset-password/{token}', [UsuarioController::class, 'resetPassword'])->middleware('throttle:6,1');
 
 Route::middleware(['jwt.auth'])->group(function () {
    Route::get('me', [UsuarioController::class, 'me']);
+   Route::post('logout', [UsuarioController::class, 'logout']);
    Route::get('/ventas', 'VentaController@index')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/kardex-usuarios', 'VentaController@kardexUsuarios')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/kardex-pdf', 'VentaController@reporteKardexPdf')->middleware('permission:ventas.read');
@@ -25,6 +26,10 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::post('/ventas/contingencia-cafc-seleccion', 'VentaController@emitirContingenciaCafcSeleccionadas')->middleware('permission:ventas.write');
    Route::get('/ventas/consultar-paquete/{codigoSeguimientoPaquete}', 'VentaController@consultarPaquete')->middleware('permission:ventas.read');
    Route::get('/ventas/consultar/{codigoSeguimiento}', 'VentaController@consultarVenta')->middleware('permission:ventas.read');
+   Route::get('/ventas/anulacion/guard-status', 'VentaController@anulacionGuardStatus')->middleware('permission:ventas.read');
+   Route::post('/ventas/anulacion/autorizar', 'VentaController@autorizarAnulacion')->middleware('permission:ventas.write');
+   Route::delete('/ventas/anulacion/autorizar', 'VentaController@revocarAutorizacionAnulacion')->middleware('permission:ventas.write');
+   Route::post('/ventas/anulacion/guard/toggle', 'VentaController@toggleAnulacionGuard')->middleware('permission:rbac.manage');
    Route::patch('/ventas/anular/{cuf}', 'VentaController@anularFactura')->middleware('permission:ventas.write');
    Route::get('/ventas/{venta}', 'VentaController@show')->middleware('permission:ventas.read');
 

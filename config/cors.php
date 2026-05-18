@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 
 return [
 
@@ -6,22 +6,25 @@ return [
     |--------------------------------------------------------------------------
     | Cross-Origin Resource Sharing (CORS) Configuration
     |--------------------------------------------------------------------------
-    |
-    | Here you may configure your settings for cross-origin resource sharing
-    | or "CORS". This determines what cross-origin operations may execute
-    | in web browsers. You are free to adjust these settings as needed.
-    |
-    | To learn more: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-    |
     */
 
-   'paths' => ['api/*', 'login', 'logout'],
-   'allowed_methods' => ['*'], // Permitir todos los métodos
-   'allowed_origins' => ['*'], // Permitir todos los orígenes
+   'paths' => ['api/*', 'admin/*', 'login', 'logout'],
+
+   'allowed_methods' => ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+
+   'allowed_origins' => array_values(array_filter(array_map(
+      'trim',
+      explode(',', env('CORS_ALLOWED_ORIGINS', 'https://safe.correos.gob.bo,http://localhost:3000,http://127.0.0.1:3000'))
+   ))),
+
    'allowed_origins_patterns' => [],
-   'allowed_headers' => ['*'],
-   'exposed_headers' => [],
-   'max_age' => 0,
-   'supports_credentials' => false,
+
+   'allowed_headers' => ['Content-Type', 'Accept', 'Authorization', 'X-Requested-With', 'Application'],
+
+   'exposed_headers' => ['Authorization'],
+
+   'max_age' => 3600,
+
+   'supports_credentials' => (bool) env('CORS_SUPPORTS_CREDENTIALS', false),
 
 ];

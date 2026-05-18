@@ -24,7 +24,7 @@ Artisan::command('inspire', function () {
 Artisan::command('app:reset-db-admin 
     {--admin-name=Administrador}
     {--admin-email=admin@agbc.local}
-    {--admin-password=admin123}', function () {
+    {--admin-password=}', function () {
    $this->warn('Este comando eliminara todos los datos y recreara la base desde cero.');
 
    if (!$this->confirm('Deseas continuar?', true)) {
@@ -34,10 +34,17 @@ Artisan::command('app:reset-db-admin
 
    $this->call('migrate:fresh', ['--force' => true]);
 
+   $adminPassword = (string) $this->option('admin-password');
+
+   if ($adminPassword === '') {
+      $adminPassword = \Illuminate\Support\Str::password(18, true, true, true, false);
+      $this->warn('No se proporciono --admin-password. Se genero una contraseña aleatoria segura.');
+   }
+
    $usuario = Usuario::create([
       'name' => (string) $this->option('admin-name'),
       'email' => (string) $this->option('admin-email'),
-      'password' => Hash::make((string) $this->option('admin-password')),
+      'password' => Hash::make($adminPassword),
       'estado' => 1,
    ]);
 
@@ -50,7 +57,8 @@ Artisan::command('app:reset-db-admin
    $this->newLine();
    $this->info('Base reiniciada correctamente.');
    $this->line('Admin creado: ' . $usuario->email . ' (ID ' . $usuario->id . ')');
-   $this->line('Password: ' . (string) $this->option('admin-password'));
+   $this->line('Password temporal: ' . $adminPassword);
+   $this->warn('Cambia esta contraseña inmediatamente despues del primer ingreso.');
 
    return self::SUCCESS;
 })->purpose('Recrea la base de datos y deja un unico administrador inicial');

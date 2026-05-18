@@ -8,6 +8,8 @@ use App\Models\Usuario;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Jenssegers\Agent\Agent;
 use Tymon\JWTAuth\Exceptions\JWTException;
@@ -15,6 +17,17 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 
 class UsuarioController extends Controller
 {
+   private const PASSWORD_RULES = [
+      'required',
+      'string',
+      'min:10',
+      'max:64',
+      'regex:/[a-z]/',
+      'regex:/[A-Z]/',
+      'regex:/[0-9]/',
+      'regex:/[^A-Za-z0-9]/',
+   ];
+
    public function index()
    {
       return Usuario::with(['roles:id,name,slug'])->get();
@@ -27,7 +40,7 @@ class UsuarioController extends Controller
          'email' => 'required|string|email|unique:usuarios',
          'alias' => 'nullable|string|max:80|unique:usuarios,alias',
          'numero_carnet' => 'nullable|string|max:40',
-         'password' => 'required',
+         'password' => self::PASSWORD_RULES,
          'role_ids' => 'nullable|array',
          'role_ids.*' => 'integer|exists:roles,id',
       ]);
@@ -75,6 +88,9 @@ class UsuarioController extends Controller
       $usuario->numero_carnet = $request->filled('numero_carnet') ? strtoupper(trim((string) $request->numero_carnet)) : null;
 
       if (isset($request->password) && !empty($request->password)) {
+         $request->validate([
+            'password' => self::PASSWORD_RULES,
+         ]);
          $usuario->password = Hash::make($request->password);
       }
       $usuario->save();
@@ -90,16 +106,13 @@ class UsuarioController extends Controller
    {
       $request->validate([
          'email' => 'required|email',
-    'password' => 'required',
+         'password' => 'required|string',
       ]);
 
-      $usuario = Usuario::where('email', $request->email)->first();
+      $email = strtolower(trim((string) $request->email));
+      $usuario = Usuario::where('email', $email)->first();
 
-      if (!$usuario) {
-         return response()->json(['error' => 'El correo electronico no esta registrado'], 400);
-      }
-
-      if (!Hash::check($request->password, $usuario->password)) {
+      if (!$usuario || (int) $usuario->estado !== 1 || !Hash::check((string) $request->password, (string) $usuario->password)) {
          return response()->json(['error' => 'Credenciales incorrectas'], 401);
       }
 
@@ -145,39 +158,88 @@ class UsuarioController extends Controller
       ]);
    }
 
+   public function logout()
+   {
+      try {
+         $token = JWTAuth::getToken();
+         if ($token) {
+            JWTAuth::invalidate($token);
+         }
+      } catch (\Throwable $e) {
+         Log::warning('Logout JWT invalidate warning', ['message' => $e->getMessage()]);
+      }
+
+      return response()->json([
+         'message' => 'Sesion cerrada correctamente',
+      ]);
+   }
+
    public function requestPasswordReset(Request $request)
    {
       $request->validate([
          'email' => 'required|email',
       ]);
 
-      $usuario = Usuario::where('email', $request->email)->first();
-      if (!$usuario) {
-         return response()->json(['error' => 'Usuario no encontrado'], 404);
+      $email = strtolower(trim((string) $request->email));
+      $usuario = Usuario::where('email', $email)->where('estado', 1)->first();
+      $plainTextToken = null;
+
+      if ($usuario) {
+         $plainTextToken = Str::random(64);
+         $usuario->confirmation_token = hash('sha256', $plainTextToken);
+         $usuario->confirmation_token_expires_at = now()->addMinutes((int) config('auth.passwords.usuarios.expire', 60));
+         $usuario->save();
+
+         try {
+            Mail::raw(
+               "Se solicito restablecer tu contraseña.\n\nToken: {$plainTextToken}\n\nEste token expirara en 60 minutos.",
+               function ($message) use ($usuario) {
+                  $message->to($usuario->email)
+                     ->subject('Recuperacion de contraseña - AGBc');
+               }
+            );
+         } catch (\Throwable $e) {
+            Log::warning('No se pudo enviar correo de recuperacion', [
+               'usuario_id' => $usuario->id,
+               'email' => $usuario->email,
+               'error' => $e->getMessage(),
+            ]);
+         }
       }
 
-      $usuario->confirmation_token = Str::random(40);
-      $usuario->save();
+      $payload = [
+         'message' => 'Si el correo existe en el sistema, se ha generado el proceso de recuperacion.',
+      ];
 
-      return response()->json([
-         'message' => 'Token de recuperacion generado correctamente',
-         'token' => $usuario->confirmation_token,
-      ]);
+      // Solo para desarrollo local controlado, evita exponer tokens en produccion.
+      if (app()->environment('local') || (bool) config('app.debug')) {
+         $payload['reset_token'] = $plainTextToken;
+      }
+
+      return response()->json($payload);
    }
 
    public function resetPassword(Request $request, $token)
    {
       $request->validate([
-         'password' => 'required|string|min:6',
+         'password' => self::PASSWORD_RULES,
       ]);
 
-      $usuario = Usuario::where('confirmation_token', $token)->first();
+      $tokenHash = hash('sha256', (string) $token);
+      $usuario = Usuario::where('confirmation_token', $tokenHash)
+         ->where(function ($query) {
+            $query->whereNull('confirmation_token_expires_at')
+               ->orWhere('confirmation_token_expires_at', '>=', now());
+         })
+         ->first();
+
       if (!$usuario) {
-         return response()->json(['error' => 'Token invalido'], 404);
+         return response()->json(['error' => 'Token invalido o expirado'], 404);
       }
 
       $usuario->password = Hash::make($request->password);
       $usuario->confirmation_token = null;
+      $usuario->confirmation_token_expires_at = null;
       $usuario->save();
 
       return response()->json(['message' => 'Contrasena actualizada correctamente']);

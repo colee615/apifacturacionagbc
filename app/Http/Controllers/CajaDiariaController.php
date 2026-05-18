@@ -122,7 +122,7 @@ class CajaDiariaController extends Controller
 
         $montoApertura = round((float) ($validated['montoApertura'] ?? 0), 2);
 
-        $caja = CajaDiaria::query()->create([
+        $caja = CajaDiaria::query()->create($this->filterCajaDiariaColumns([
             'usuario_id' => $usuarioId,
             'usuario_nombre' => $usuarioNombre,
             'usuario_email' => $usuarioEmail,
@@ -144,7 +144,7 @@ class CajaDiariaController extends Controller
             'monto_fichas_cierre_esperado' => round((float) ($stock['montoDisponible'] ?? $montoFichasApertura), 2),
             'observacion_apertura' => isset($validated['observacion']) ? trim((string) $validated['observacion']) : null,
             'abierta_en' => now(),
-        ]);
+        ]));
 
         return response()->json([
             'ok' => true,
@@ -152,6 +152,21 @@ class CajaDiariaController extends Controller
             'caja' => $this->cajaPayload($caja),
             'stockFichas' => $stock,
         ], 201);
+    }
+
+    private function filterCajaDiariaColumns(array $payload): array
+    {
+        static $columns = null;
+
+        if ($columns === null) {
+            $columns = array_flip(Schema::getColumnListing('cajas_diarias'));
+        }
+
+        return array_filter(
+            $payload,
+            static fn (string $column): bool => isset($columns[$column]),
+            ARRAY_FILTER_USE_KEY
+        );
     }
 
     public function cerrar(Request $request)
