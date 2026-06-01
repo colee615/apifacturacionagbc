@@ -6,8 +6,10 @@ use Dompdf\Dompdf;
 use Dompdf\Options;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response as HttpResponse;
@@ -240,11 +242,18 @@ class FacturacionCartIntegrationController extends Controller
         ]);
         $cart->codigo_orden = $codigoOrdenIntento;
 
-        $emitReq = Request::create('/api/factura-venta/emitir', 'POST', $this->payloadFromCart($cart, $items));
-        $emitReq->headers->set('Accept', 'application/json');
-        $emitRes = app(FacturaVentaApiController::class)->emitir($emitReq);
-        $body = json_decode($emitRes->getContent(), true);
-        if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
+        $canalEmision = (string) ($cart->canal_emision ?? 'factura_electronica');
+        if ($canalEmision === 'qr') {
+            $body = $this->emitirQrCheckout($cart, $items);
+            $emitStatusCode = 200;
+        } else {
+            $emitReq = Request::create('/api/factura-venta/emitir', 'POST', $this->payloadFromCart($cart, $items));
+            $emitReq->headers->set('Accept', 'application/json');
+            $emitRes = app(FacturaVentaApiController::class)->emitir($emitReq);
+            $body = json_decode($emitRes->getContent(), true);
+            if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
+            $emitStatusCode = $emitRes->getStatusCode();
+        }
 
         $ok = (bool) ($body['ok'] ?? false);
         $codigoOrdenEmitido = trim((string) ($body['codigoOrden'] ?? ''));
@@ -271,7 +280,102 @@ class FacturacionCartIntegrationController extends Controller
             'updated_at' => now(),
         ]);
 
-        return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $emitRes->getStatusCode()]);
+        return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $emitStatusCode]);
+    }
+
+    private function emitirQrCheckout(object $cart, $items): array
+    {
+        $baseUrl = rtrim((string) config('services.qhantuy_checkout.base_url'), '/');
+        $token = trim((string) config('services.qhantuy_checkout.token'));
+        $appkey = trim((string) config('services.qhantuy_checkout.appkey'));
+        if ($baseUrl === '' || $token === '' || $appkey === '') {
+            Log::warning('FacturacionCart QR config incompleta', [
+                'cart_id' => (int) $cart->id,
+                'has_base_url' => $baseUrl !== '',
+                'has_token' => $token !== '',
+                'has_appkey' => $appkey !== '',
+            ]);
+            return ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Falta configuraciÃ³n Qhantuy en backend puente.'];
+        }
+
+        $detail = collect($items)->map(function ($i) {
+            return [
+                'name' => (string) ($i->titulo ?? 'Servicio'),
+                'quantity' => max(1, (int) ($i->cantidad ?? 1)),
+                'price' => round((float) ($i->monto_base ?? 0), 2),
+            ];
+        })->values()->all();
+
+        $payload = [
+            'appkey' => $appkey,
+            'customer_email' => (string) ($cart->origen_usuario_email ?? config('services.facturacion_api.fallback_email', 'sincorreo@agbc.bo')),
+            'customer_first_name' => (string) ($cart->razon_social ?? 'CLIENTE'),
+            'customer_last_name' => '',
+            'currency_code' => (string) config('services.qhantuy_checkout.currency_code', 'BOB'),
+            'internal_code' => (string) ($cart->codigo_orden ?? ('V-' . $cart->id)),
+            'payment_method' => 'QRSIMPLE',
+            'payment_type' => 'EMBED',
+            'image_method' => (string) config('services.qhantuy_checkout.image_method', 'URL'),
+            'detail' => 'Checkout QR Bolipost',
+            'callback_url' => (string) config('services.qhantuy_checkout.callback_url'),
+            'return_url' => (string) config('services.qhantuy_checkout.return_url'),
+            'items' => $detail,
+        ];
+
+        Log::info('FacturacionCart QR emitir started', [
+            'cart_id' => (int) $cart->id,
+            'codigo_orden' => (string) ($cart->codigo_orden ?? ''),
+            'items_count' => count($detail),
+            'amount' => round((float) ($cart->total ?? 0), 2),
+            'base_url' => $baseUrl,
+        ]);
+
+        try {
+            $response = Http::withHeaders([
+                'X-API-Token' => $token,
+                'Accept' => 'application/json',
+            ])->timeout((int) config('services.qhantuy_checkout.timeout', 30))
+                ->post($baseUrl . '/checkout', $payload);
+        } catch (\Throwable $e) {
+            Log::error('FacturacionCart QR emitir connection error', [
+                'cart_id' => (int) $cart->id,
+                'message' => $e->getMessage(),
+            ]);
+            return ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'No se pudo conectar con Qhantuy.'];
+        }
+
+        $json = $response->json();
+        if (!is_array($json)) {
+            Log::warning('FacturacionCart QR emitir invalid response', [
+                'cart_id' => (int) $cart->id,
+                'status' => $response->status(),
+                'body' => (string) $response->body(),
+            ]);
+            return ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta invÃ¡lida de Qhantuy.'];
+        }
+
+        Log::info('FacturacionCart QR emitir response', [
+            'cart_id' => (int) $cart->id,
+            'status' => $response->status(),
+            'process' => (bool) ($json['process'] ?? false),
+            'transaction_id' => (string) ($json['transaction_id'] ?? ''),
+            'payment_status' => (string) ($json['payment_status'] ?? ''),
+        ]);
+
+        $ok = (bool) ($json['process'] ?? false);
+        return [
+            'ok' => $ok,
+            'estado' => $ok ? 'PENDIENTE' : 'RECHAZADA',
+            'mensaje' => (string) ($json['message'] ?? ($ok ? 'QR generado correctamente.' : 'No se pudo generar QR.')),
+            'codigoOrden' => (string) ($cart->codigo_orden ?? ''),
+            'codigoSeguimiento' => (string) ($json['transaction_id'] ?? ''),
+            'factura' => [
+                'qrImage' => (string) ($json['image_data'] ?? ''),
+                'paymentUrl' => (string) ($json['payment_url'] ?? ''),
+                'paymentStatus' => (string) ($json['payment_status'] ?? ''),
+            ],
+            'raw' => $json,
+        ];
     }
 
     public function consultar(Request $request): JsonResponse
@@ -282,11 +386,17 @@ class FacturacionCartIntegrationController extends Controller
         $cart = $q->orderByDesc('emitido_en')->orderByDesc('id')->first();
         if (!$cart || trim((string) $cart->codigo_seguimiento) === '') return response()->json(['ok' => false, 'message' => 'No existe una emision previa para consultar.'], 422);
 
-        $cReq = Request::create('/api/factura-venta/consultar/' . urlencode((string) $cart->codigo_seguimiento), 'GET');
-        $cReq->headers->set('Accept', 'application/json');
-        $cRes = app(FacturaVentaApiController::class)->consultar($cReq, (string) $cart->codigo_seguimiento);
-        $body = json_decode($cRes->getContent(), true);
-        if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
+        $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
+        if ($canalEmision === 'qr') {
+            [$body, $statusCode] = $this->consultarQrCheckout((string) $cart->codigo_seguimiento);
+        } else {
+            $cReq = Request::create('/api/factura-venta/consultar/' . urlencode((string) $cart->codigo_seguimiento), 'GET');
+            $cReq->headers->set('Accept', 'application/json');
+            $cRes = app(FacturaVentaApiController::class)->consultar($cReq, (string) $cart->codigo_seguimiento);
+            $body = json_decode($cRes->getContent(), true);
+            if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
+            $statusCode = $cRes->getStatusCode();
+        }
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'estado_emision' => (string) ($body['estado'] ?? ($cart->estado_emision ?? 'ERROR')),
@@ -295,9 +405,77 @@ class FacturacionCartIntegrationController extends Controller
             'updated_at' => now(),
         ]);
 
-        return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $cRes->getStatusCode()]);
+        return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $statusCode]);
     }
 
+    private function consultarQrCheckout(string $paymentId): array
+    {
+        $baseUrl = rtrim((string) config('services.qhantuy_checkout.base_url'), '/');
+        $token = trim((string) config('services.qhantuy_checkout.token'));
+        $appkey = trim((string) config('services.qhantuy_checkout.appkey'));
+
+        if ($baseUrl === '' || $token === '' || $appkey === '') {
+            return [[
+                'ok' => false,
+                'estado' => 'ERROR',
+                'mensaje' => 'Falta configuracion QPOS para consultar pagos.',
+            ], 500];
+        }
+
+        try {
+            $response = Http::withHeaders([
+                'X-API-Token' => $token,
+                'Accept' => 'application/json',
+            ])->timeout((int) config('services.qhantuy_checkout.timeout', 30))
+                ->post($baseUrl . '/check-payments', [
+                    'appkey' => $appkey,
+                    'payment_ids' => [$paymentId],
+                ]);
+        } catch (\Throwable $e) {
+            return [[
+                'ok' => false,
+                'estado' => 'ERROR',
+                'mensaje' => 'No se pudo consultar pago QR.',
+                'razon' => $e->getMessage(),
+            ], 500];
+        }
+
+        $json = $response->json();
+        if (!is_array($json)) {
+            return [[
+                'ok' => false,
+                'estado' => 'ERROR',
+                'mensaje' => 'Respuesta invalida de QPOS al consultar pago.',
+            ], $response->status()];
+        }
+
+        $paymentStatus = strtolower(trim((string) (
+            data_get($json, 'data.0.payment_status')
+            ?? data_get($json, 'payments.0.payment_status')
+            ?? data_get($json, 'payment_status')
+            ?? ''
+        )));
+
+        $estado = match ($paymentStatus) {
+            'paid', 'completed', 'approved', 'success', 'successful' => 'FACTURADA',
+            'rejected', 'failed', 'cancelled', 'canceled', 'expired' => 'RECHAZADA',
+            default => 'PENDIENTE',
+        };
+
+        return [[
+            'ok' => $estado !== 'RECHAZADA',
+            'estado' => $estado,
+            'mensaje' => (string) (
+                data_get($json, 'message')
+                ?? ($estado === 'FACTURADA' ? 'Pago QR confirmado.' : 'Pago QR aun pendiente.')
+            ),
+            'codigoSeguimiento' => $paymentId,
+            'factura' => [
+                'paymentStatus' => $paymentStatus,
+            ],
+            'raw' => $json,
+        ], $response->status()];
+    }
     public function ventas(Request $request): JsonResponse
     {
         $v = $request->validate([
@@ -720,3 +898,4 @@ class FacturacionCartIntegrationController extends Controller
             ->values();
     }
 }
+
