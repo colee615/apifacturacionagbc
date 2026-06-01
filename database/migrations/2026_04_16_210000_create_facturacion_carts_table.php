@@ -22,7 +22,7 @@ return new class extends Migration
             $table->string('origen_sucursal_nombre')->nullable();
             $table->string('estado', 20)->default('borrador')->index();
             $table->string('modalidad_facturacion', 20)->default('con_datos');
-            $table->string('canal_emision', 20)->default('qr');
+            $table->string('canal_emision', 20)->default('factura_electronica');
             $table->string('tipo_documento', 20)->nullable();
             $table->string('numero_documento', 80)->nullable();
             $table->string('complemento_documento', 30)->nullable();

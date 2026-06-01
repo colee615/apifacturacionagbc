@@ -3,6 +3,7 @@
 use App\Http\Controllers\FacturaVentaApiController;
 use App\Http\Controllers\FacturacionCartIntegrationController;
 use App\Http\Controllers\CajaDiariaController;
+use App\Http\Controllers\QhantuyQrController;
 use App\Http\Controllers\VentaController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -51,6 +52,8 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/ventas/reportes/kardex-usuarios', [VentaController::class, 'kardexUsuarios']);
     Route::get('/ventas/consultar/{codigoSeguimiento}', [VentaController::class, 'consultarVenta']);
     Route::get('/ventas/{venta}', [VentaController::class, 'show']);
+    Route::post('/qr/checkout', [QhantuyQrController::class, 'checkout']);
+    Route::post('/qr/check-payments', [QhantuyQrController::class, 'checkPayments']);
 });
 
 Route::middleware('factura.auth')->prefix('facturacion')->group(function () {
@@ -58,3 +61,5 @@ Route::middleware('factura.auth')->prefix('facturacion')->group(function () {
     Route::patch('/anulacion/{cuf}', [FacturaVentaApiController::class, 'anular']);
     Route::post('/contingencia', [FacturaVentaApiController::class, 'contingenciaCafc']);
 });
+
+Route::get('/qhantuy/callback', [QhantuyQrController::class, 'callback']);

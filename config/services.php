@@ -40,13 +40,9 @@ return [
     ],
     'qhantuy_checkout' => [
         'base_url' => env('QHANTUY_CHECKOUT_BASE_URL', 'https://testingcheckout.qhantuy.com/external-api/v2'),
+        'check_payments_url' => env('QHANTUY_CHECK_PAYMENTS_URL', 'https://testingcheckout.qhantuy.com/external-api/check-payments'),
         'token' => env('QHANTUY_CHECKOUT_TOKEN'),
         'appkey' => env('QHANTUY_CHECKOUT_APPKEY'),
-        'callback_url' => env('QHANTUY_CHECKOUT_CALLBACK_URL'),
-        'return_url' => env('QHANTUY_CHECKOUT_RETURN_URL'),
-        'image_method' => env('QHANTUY_CHECKOUT_IMAGE_METHOD', 'URL'),
-        'currency_code' => env('QHANTUY_CHECKOUT_CURRENCY_CODE', 'BOB'),
-        'timeout' => env('QHANTUY_CHECKOUT_TIMEOUT', 30),
+        'ssl_verify' => env('QHANTUY_CHECKOUT_SSL_VERIFY', true),
     ],
-
 ];

@@ -4,7 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Models\Notificacione;
 use App\Models\Venta;
-use App\Support\FichaPostalStockService;
 use App\Support\SufeSectorUnoValidator;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -14,7 +13,6 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class FacturaVentaApiController extends Controller
@@ -22,8 +20,7 @@ class FacturaVentaApiController extends Controller
     private const DEBUG_RESPONSE_QUERY_VALUES = ['1', 'true', 'yes', 'on'];
 
     public function __construct(
-        private readonly SufeSectorUnoValidator $sufeValidator,
-        private readonly FichaPostalStockService $fichaPostalStockService
+        private readonly SufeSectorUnoValidator $sufeValidator
     ) {
     }
 
@@ -103,91 +100,27 @@ class FacturaVentaApiController extends Controller
         $puntoVenta = (int) ($payload['puntoVenta'] ?? 0);
         $montoTotal = round((float) ($payload['montoTotal'] ?? 0), 2);
 
+        $updates = ['updated_at' => now()];
+
+        if (Schema::hasColumn('cajas_diarias', 'monto_ventas')) {
+            $updates['monto_ventas'] = DB::raw('coalesce(monto_ventas, 0) + ' . $montoTotal);
+        }
+
+        if (Schema::hasColumn('cajas_diarias', 'monto_cierre_esperado')) {
+            $updates['monto_cierre_esperado'] = DB::raw('coalesce(monto_cierre_esperado, coalesce(monto_apertura, 0)) + ' . $montoTotal);
+        }
+
+        if (Schema::hasColumn('cajas_diarias', 'cantidad_ventas')) {
+            $updates['cantidad_ventas'] = DB::raw('coalesce(cantidad_ventas, 0) + 1');
+        }
+
         DB::table('cajas_diarias')
             ->where('usuario_id', $usuarioId)
             ->whereDate('fecha_operacion', $fecha)
             ->where('estado', 'ABIERTA')
             ->where('codigo_sucursal', $codigoSucursal)
             ->where('punto_venta', $puntoVenta)
-            ->update([
-                'monto_ventas' => DB::raw('coalesce(monto_ventas, 0) + ' . $montoTotal),
-                'monto_cierre_esperado' => DB::raw('coalesce(monto_cierre_esperado, coalesce(monto_apertura, 0)) + ' . $montoTotal),
-                'cantidad_ventas' => DB::raw('coalesce(cantidad_ventas, 0) + 1'),
-                'updated_at' => now(),
-            ]);
-    }
-
-    private function registerFichaPostalConsumption(array $payload, int $ventaId): void
-    {
-        $consumo = $this->fichaPostalStockService->inferConsumptionFromPayload($payload);
-        $context = $this->fichaPostalContextFromPayload($payload);
-
-        DB::table('ventas')
-            ->where('id', $ventaId)
-            ->update([
-                'cantidad_fichas_postales' => (int) ($consumo['cantidad'] ?? 0),
-                'monto_fichas_postales' => round((float) ($consumo['montoTotal'] ?? 0), 2),
-                'valor_unitario_ficha_postal' => $consumo['valorUnitario'] ?? null,
-                'detalle_fichas_postales' => json_encode([
-                    'detalle' => $consumo['detalle'] ?? [],
-                    'observacion' => $consumo['observacion'] ?? '',
-                    'origen' => data_get($payload, 'fichasPostales', []),
-                ], JSON_UNESCAPED_UNICODE),
-                'updated_at' => now(),
-            ]);
-
-        $cajaId = $this->findOpenCajaIdFromPayload($payload);
-        if ($cajaId !== null && Schema::hasColumn('cajas_diarias', 'cantidad_fichas_consumidas')) {
-            DB::table('cajas_diarias')
-                ->where('id', $cajaId)
-                ->update([
-                    'cantidad_fichas_consumidas' => DB::raw('coalesce(cantidad_fichas_consumidas, 0) + ' . (int) ($consumo['cantidad'] ?? 0)),
-                    'monto_fichas_consumidas' => DB::raw('coalesce(monto_fichas_consumidas, 0) + ' . round((float) ($consumo['montoTotal'] ?? 0), 2)),
-                    'cantidad_fichas_cierre_esperado' => DB::raw('coalesce(cantidad_fichas_cierre_esperado, 0) - ' . (int) ($consumo['cantidad'] ?? 0)),
-                    'monto_fichas_cierre_esperado' => DB::raw('coalesce(monto_fichas_cierre_esperado, 0) - ' . round((float) ($consumo['montoTotal'] ?? 0), 2)),
-                    'updated_at' => now(),
-                ]);
-        }
-
-        $this->fichaPostalStockService->consume($context, $consumo, [
-            'venta_id' => $ventaId,
-            'caja_diaria_id' => $cajaId,
-            'codigo_orden' => (string) ($payload['codigoOrden'] ?? ''),
-            'codigo_seguimiento' => (string) ($payload['codigoSeguimiento'] ?? ''),
-        ]);
-    }
-
-    private function fichaPostalContextFromPayload(array $payload): array
-    {
-        return [
-            'usuario_id' => trim((string) data_get($payload, 'origenUsuario.id', '')),
-            'usuario_nombre' => trim((string) data_get($payload, 'origenUsuario.nombre', '')),
-            'usuario_email' => strtolower(trim((string) data_get($payload, 'origenUsuario.email', ''))),
-            'codigo_sucursal' => (int) ($payload['codigoSucursal'] ?? 0),
-            'punto_venta' => (int) ($payload['puntoVenta'] ?? 0),
-        ];
-    }
-
-    private function findOpenCajaIdFromPayload(array $payload): ?int
-    {
-        if (!Schema::hasTable('cajas_diarias')) {
-            return null;
-        }
-
-        $usuarioId = trim((string) data_get($payload, 'origenUsuario.id', ''));
-        if ($usuarioId === '') {
-            return null;
-        }
-
-        $cajaId = DB::table('cajas_diarias')
-            ->where('usuario_id', $usuarioId)
-            ->whereDate('fecha_operacion', now()->toDateString())
-            ->where('estado', 'ABIERTA')
-            ->where('codigo_sucursal', (int) ($payload['codigoSucursal'] ?? 0))
-            ->where('punto_venta', (int) ($payload['puntoVenta'] ?? 0))
-            ->value('id');
-
-        return $cajaId !== null ? (int) $cajaId : null;
+            ->update($updates);
     }
 
     private function resolveCodigoOrden(array $payload): string
@@ -213,7 +146,7 @@ class FacturaVentaApiController extends Controller
         return $codigoOrden;
     }
 
-    private function createVenta(array $payload, string $codigoOrden, string $codigoSeguimiento, array $consumoFichas): array
+    private function createVenta(array $payload, string $codigoOrden, string $codigoSeguimiento): array
     {
         $now = Date::now();
 
@@ -248,14 +181,6 @@ class FacturaVentaApiController extends Controller
             'monto_descuento_adicional' => (float) ($payload['montoDescuentoAdicional'] ?? 0),
             'motivo' => 'Integracion bolipost',
             'total' => (float) $payload['montoTotal'],
-            'cantidad_fichas_postales' => (int) ($consumoFichas['cantidad'] ?? 0),
-            'monto_fichas_postales' => round((float) ($consumoFichas['montoTotal'] ?? 0), 2),
-            'valor_unitario_ficha_postal' => $consumoFichas['valorUnitario'] ?? null,
-            'detalle_fichas_postales' => json_encode([
-                'detalle' => $consumoFichas['detalle'] ?? [],
-                'observacion' => $consumoFichas['observacion'] ?? '',
-                'origen' => data_get($payload, 'fichasPostales', []),
-            ], JSON_UNESCAPED_UNICODE),
             'codigoOrden' => $codigoOrden,
             'codigoSeguimiento' => $codigoSeguimiento,
             'estado_sufe' => 'RECEPCIONADA',
@@ -298,6 +223,7 @@ class FacturaVentaApiController extends Controller
         $clean = $payload;
 
         unset($clean['origenVenta'], $clean['origenUsuario'], $clean['origenSucursal']);
+        unset($clean['fichasPostales']);
 
         if ((int) ($clean['tipoDocumentoIdentidad'] ?? 0) !== 1 || blank($clean['complemento'] ?? null)) {
             unset($clean['complemento']);
@@ -945,11 +871,9 @@ class FacturaVentaApiController extends Controller
                 $reception = $this->resolveSuccessfulReception($payload ?? []);
                 $codigoSeguimiento = (string) data_get($reception['validated'], 'datos.codigoSeguimiento');
                 $venta = DB::transaction(function () use ($validated, $codigoOrden, $codigoSeguimiento) {
-                    $consumoFichas = $this->fichaPostalStockService->inferConsumptionFromPayload($validated);
-                    $venta = $this->createVenta($validated, $codigoOrden, $codigoSeguimiento, $consumoFichas);
+                    $venta = $this->createVenta($validated, $codigoOrden, $codigoSeguimiento);
                     $this->createDetalleVentas($venta, $validated);
                     $this->addVentaToCaja($validated);
-                    $this->registerFichaPostalConsumption($validated, (int) $venta['id']);
 
                     return $venta;
                 });
