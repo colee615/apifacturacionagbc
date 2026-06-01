@@ -31,9 +31,27 @@ class QhantuyQrController extends Controller
         return trim((string) config('services.qhantuy_checkout.token', ''));
     }
 
+    private function callbackUrl(): string
+    {
+        return trim((string) config('services.qhantuy_checkout.callback_url', ''));
+    }
+
+    private function imageMethod(): string
+    {
+        $value = strtoupper(trim((string) config('services.qhantuy_checkout.image_method', 'URL')));
+        return in_array($value, ['URL', 'BASE64'], true) ? $value : 'URL';
+    }
+
+    private function currencyCode(): string
+    {
+        $value = strtoupper(trim((string) config('services.qhantuy_checkout.currency_code', 'BOB')));
+        return $value !== '' ? $value : 'BOB';
+    }
+
     private function qhantuyClient()
     {
         $verify = filter_var(config('services.qhantuy_checkout.ssl_verify', true), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? true;
+        $timeout = max(10, (int) config('services.qhantuy_checkout.timeout', 45));
 
         return Http::withHeaders([
             'X-API-Token' => $this->token(),
@@ -44,7 +62,7 @@ class QhantuyQrController extends Controller
             'force_ip_resolve' => 'v4',
             'http_version' => 1.1,
         ])->connectTimeout(15)
-            ->timeout(45)
+            ->timeout($timeout)
             ->retry(2, 600, fn ($e) => $e instanceof ConnectionException);
     }
 
@@ -65,7 +83,7 @@ class QhantuyQrController extends Controller
             'image_method' => ['nullable', 'string', 'in:URL,BASE64'],
         ]);
 
-        if ($this->appkey() === '' || $this->token() === '' || $this->checkoutBaseUrl() === '') {
+        if ($this->appkey() === '' || $this->token() === '' || $this->checkoutBaseUrl() === '' || $this->callbackUrl() === '') {
             return response()->json([
                 'ok' => false,
                 'message' => 'Configuracion Qhantuy incompleta en SAFE.',
@@ -77,11 +95,11 @@ class QhantuyQrController extends Controller
             'customer_email' => strtolower(trim((string) $validated['customer_email'])),
             'customer_first_name' => trim((string) $validated['customer_first_name']),
             'customer_last_name' => trim((string) $validated['customer_last_name']),
-            'currency_code' => 'BOB',
+            'currency_code' => $this->currencyCode(),
             'internal_code' => trim((string) $validated['internal_code']),
-            'callback_url' => trim((string) $validated['callback_url']),
+            'callback_url' => $this->callbackUrl(),
             'payment_method' => 'QRSIMPLE',
-            'image_method' => trim((string) ($validated['image_method'] ?? 'URL')),
+            'image_method' => $this->imageMethod(),
             'detail' => trim((string) $validated['detail']),
             'items' => collect($validated['items'])->map(function ($item) {
                 return [
@@ -109,7 +127,7 @@ class QhantuyQrController extends Controller
             $transactionId = data_get($body, 'transaction_id');
             $paymentStatus = strtolower((string) data_get($body, 'payment_status', 'holding'));
             $amount = round((float) data_get($body, 'checkout_amount', collect($payload['items'])->sum(fn ($i) => $i['quantity'] * $i['price'])), 2);
-            $currency = strtoupper((string) data_get($body, 'checkout_currency', 'BOB'));
+            $currency = strtoupper((string) data_get($body, 'checkout_currency', $this->currencyCode()));
             $imageData = (string) data_get($body, 'image_data', '');
 
             DB::table('qhantuy_qr_payments')->updateOrInsert(
@@ -281,7 +299,7 @@ class QhantuyQrController extends Controller
             $transactionId = (int) data_get($body, 'id', $paymentIds[0]);
             $status = strtolower((string) data_get($body, 'payment_status', 'holding'));
             $amount = round((float) data_get($body, 'checkout_amount', 0), 2);
-            $currency = strtoupper((string) data_get($body, 'checkout_currency', 'BOB'));
+            $currency = strtoupper((string) data_get($body, 'checkout_currency', $this->currencyCode()));
             $qrUrl = (string) data_get($body, 'qr_url', '');
 
             $target = $row ?: DB::table('qhantuy_qr_payments')->where('transaction_id', $transactionId)->first();
