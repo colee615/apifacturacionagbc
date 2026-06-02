@@ -11,6 +11,40 @@ use Illuminate\Support\Facades\Log;
 
 class QhantuyQrController extends Controller
 {
+    private function syncCartPaymentState(string $internalCode, string $paymentStatus, ?int $transactionId = null, ?string $message = null): void
+    {
+        $status = strtolower(trim($paymentStatus));
+        $estadoPago = match ($status) {
+            'success', 'paid', 'completed' => 'pagado',
+            'cancelled', 'rejected', 'failed', 'expired' => 'cancelado',
+            default => 'pendiente',
+        };
+
+        $estadoEmision = match ($estadoPago) {
+            'pagado' => 'PAGADO',
+            'cancelado' => 'RECHAZADA',
+            default => 'PENDIENTE',
+        };
+
+        $updates = [
+            'metodo_pago' => 'qr',
+            'estado_pago' => $estadoPago,
+            'estado_emision' => $estadoEmision,
+            'updated_at' => now(),
+        ];
+
+        if ($transactionId !== null && $transactionId > 0) {
+            $updates['codigo_seguimiento'] = (string) $transactionId;
+        }
+        if ($message !== null && trim($message) !== '') {
+            $updates['mensaje_emision'] = trim($message);
+        }
+
+        DB::table('facturacion_carts')
+            ->where('codigo_orden', $internalCode)
+            ->where('estado', 'borrador')
+            ->update($updates);
+    }
     private function checkoutBaseUrl(): string
     {
         return rtrim((string) config('services.qhantuy_checkout.base_url', ''), '/');
@@ -233,12 +267,21 @@ class QhantuyQrController extends Controller
                 'updated_at' => now(),
             ]);
 
+        $this->syncCartPaymentState(
+            $internalCode,
+            $status,
+            $incomingTxn,
+            (string) ($validated['message'] ?? '')
+        );
+
         return response()->json([
             'ok' => true,
             'internal_code' => $internalCode,
             'transaction_id' => $incomingTxn,
             'payment_status' => $status,
-            'message' => 'Callback procesado.',
+            'message' => $status === 'success'
+                ? 'Pago QR confirmado. Preventa marcada como pagada.'
+                : 'Callback procesado. Preventa actualizada.',
         ]);
     }
 
@@ -273,11 +316,21 @@ class QhantuyQrController extends Controller
             }
         }
 
+        if (!$row && $paymentIds !== []) {
+            $row = DB::table('qhantuy_qr_payments')
+                ->where('transaction_id', (int) $paymentIds[0])
+                ->first();
+        }
+
         if ($paymentIds === []) {
             return response()->json([
                 'ok' => false,
                 'message' => 'Debes enviar payment_ids o internal_code con transaction_id registrado.',
             ], 422);
+        }
+
+        if ($row && $this->shouldUseCachedCheckResponse($row)) {
+            return response()->json($this->buildCachedCheckPaymentsResponse($row));
         }
 
         try {
@@ -296,21 +349,47 @@ class QhantuyQrController extends Controller
                 ], $response->status());
             }
 
-            $transactionId = (int) data_get($body, 'id', $paymentIds[0]);
-            $status = strtolower((string) data_get($body, 'payment_status', 'holding'));
-            $amount = round((float) data_get($body, 'checkout_amount', 0), 2);
-            $currency = strtoupper((string) data_get($body, 'checkout_currency', $this->currencyCode()));
-            $qrUrl = (string) data_get($body, 'qr_url', '');
+            $firstItem = data_get($body, 'items.0');
+            $source = is_array($firstItem) ? $firstItem : (is_array($body) ? $body : []);
+
+            $transactionId = (int) (
+                data_get($source, 'id')
+                ?? data_get($body, 'id')
+                ?? $paymentIds[0]
+            );
+            $status = strtolower(trim((string) (
+                $source['payment_status'] ?? $source['payment_status '] ?? data_get($body, 'payment_status', 'holding')
+            )));
+            $amount = round((float) (
+                data_get($source, 'checkout_amount')
+                ?? data_get($body, 'checkout_amount')
+                ?? 0
+            ), 2);
+            $currency = strtoupper(trim((string) (
+                data_get($source, 'checkout_currency')
+                ?? data_get($body, 'checkout_currency')
+                ?? $this->currencyCode()
+            )));
+            $qrUrl = trim((string) (
+                data_get($source, 'qr_url')
+                ?? data_get($body, 'qr_url')
+                ?? ''
+            ));
 
             $target = $row ?: DB::table('qhantuy_qr_payments')->where('transaction_id', $transactionId)->first();
             if ($target) {
+                $resolvedImageData = trim((string) ($target->image_data ?? ''));
+                if ($resolvedImageData === '' && $qrUrl !== '') {
+                    $resolvedImageData = $qrUrl;
+                }
+
                 DB::table('qhantuy_qr_payments')
                     ->where('id', $target->id)
                     ->update([
                         'transaction_id' => $transactionId,
                         'checkout_amount' => $amount > 0 ? $amount : $target->checkout_amount,
                         'checkout_currency' => $currency !== '' ? $currency : $target->checkout_currency,
-                        'image_data' => $qrUrl !== '' ? $qrUrl : $target->image_data,
+                        'image_data' => $resolvedImageData !== '' ? $resolvedImageData : $target->image_data,
                         'payment_status' => $status,
                         'raw_check_response' => json_encode($body, JSON_UNESCAPED_UNICODE),
                         'last_message' => (string) data_get($body, 'message', ''),
@@ -318,6 +397,13 @@ class QhantuyQrController extends Controller
                         'cancelled_at' => $status === 'cancelled' ? now() : $target->cancelled_at,
                         'updated_at' => now(),
                     ]);
+
+                $this->syncCartPaymentState(
+                    (string) ($target->internal_code ?? ''),
+                    $status,
+                    $transactionId,
+                    (string) data_get($body, 'message', '')
+                );
             }
 
             return response()->json([
@@ -327,10 +413,31 @@ class QhantuyQrController extends Controller
                 'checkout_amount' => $amount,
                 'checkout_currency' => $currency,
                 'qr_url' => $qrUrl,
+                'image_data' => ($target->image_data ?? null) ?: $qrUrl,
                 'payment_status' => $status,
+                'estado_pago' => match ($status) {
+                    'success', 'paid', 'completed' => 'pagado',
+                    'cancelled', 'rejected', 'failed', 'expired' => 'cancelado',
+                    default => 'pendiente',
+                },
                 'qhantuy' => $body,
             ]);
         } catch (\Throwable $e) {
+            if (str_contains($e->getMessage(), '429') && $row) {
+                Log::warning('Qhantuy check-payments rate limited. Se devolvera estado cacheado.', [
+                    'transaction_id' => $row->transaction_id ?? null,
+                    'internal_code' => $row->internal_code ?? null,
+                ]);
+
+                return response()->json(
+                    $this->buildCachedCheckPaymentsResponse(
+                        $row,
+                        'Qhantuy limito temporalmente las consultas. Se muestra el ultimo estado disponible.'
+                    ),
+                    200
+                );
+            }
+
             Log::error('Qhantuy check-payments unexpected error', ['msg' => $e->getMessage()]);
             return response()->json([
                 'ok' => false,
@@ -338,5 +445,43 @@ class QhantuyQrController extends Controller
                 'detail' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    private function shouldUseCachedCheckResponse(object $row): bool
+    {
+        if (empty($row->updated_at)) {
+            return false;
+        }
+
+        try {
+            $updatedAt = \Illuminate\Support\Carbon::parse((string) $row->updated_at);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return now()->diffInSeconds($updatedAt) < 15;
+    }
+
+    private function buildCachedCheckPaymentsResponse(object $row, ?string $message = null): array
+    {
+        $raw = json_decode((string) ($row->raw_check_response ?? ''), true);
+        $status = strtolower((string) ($row->payment_status ?? 'holding'));
+
+        return [
+            'ok' => true,
+            'message' => $message ?: ((string) ($row->last_message ?? '') ?: 'Estado QR recuperado desde cache reciente.'),
+            'transaction_id' => (int) ($row->transaction_id ?? 0),
+            'checkout_amount' => round((float) ($row->checkout_amount ?? 0), 2),
+            'checkout_currency' => strtoupper((string) ($row->checkout_currency ?? $this->currencyCode())),
+            'qr_url' => (string) ($row->image_data ?? ''),
+            'image_data' => (string) ($row->image_data ?? ''),
+            'payment_status' => $status,
+            'estado_pago' => match ($status) {
+                'success', 'paid', 'completed' => 'pagado',
+                'cancelled', 'rejected', 'failed', 'expired' => 'cancelado',
+                default => 'pendiente',
+            },
+            'qhantuy' => is_array($raw) ? $raw : null,
+        ];
     }
 }

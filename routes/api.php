@@ -34,6 +34,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::put('/cart/items/{itemId}', [FacturacionCartIntegrationController::class, 'updateItem']);
     Route::delete('/cart/items/{itemId}', [FacturacionCartIntegrationController::class, 'removeItem']);
     Route::post('/cart/clear', [FacturacionCartIntegrationController::class, 'clear']);
+    Route::post('/cart/payment', [FacturacionCartIntegrationController::class, 'payment']);
     Route::post('/cart/emitir', [FacturacionCartIntegrationController::class, 'emitir']);
     Route::post('/cart/consultar', [FacturacionCartIntegrationController::class, 'consultar']);
     Route::get('/cart/ventas', [FacturacionCartIntegrationController::class, 'ventas']);

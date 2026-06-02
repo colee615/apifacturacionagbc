@@ -15,6 +15,8 @@ use Symfony\Component\HttpFoundation\Response as HttpResponse;
 class FacturacionCartIntegrationController extends Controller
 {
     private const DEFAULT_BILLING_EMAIL = 'safe@correos.gob.bo';
+    private const PAYMENT_METHODS = ['efectivo', 'qr'];
+    private const PAYMENT_STATES = ['pendiente', 'pagado', 'fallido', 'cancelado'];
 
     public function context(Request $request): JsonResponse
     {
@@ -59,6 +61,8 @@ class FacturacionCartIntegrationController extends Controller
         $canal = in_array((string) ($v['canal_emision'] ?? ''), ['factura_electronica', 'qr'], true)
             ? (string) $v['canal_emision']
             : 'factura_electronica';
+        $metodoPago = $canal === 'qr' ? 'qr' : 'efectivo';
+        $estadoPago = $canal === 'qr' ? 'pendiente' : 'pagado';
 
         $cartId = $this->ensureDraft((string) $v['origen_usuario_id'], array_merge([
             'origen_usuario_nombre' => $this->nullBlank($v['origen_usuario_nombre'] ?? null),
@@ -68,6 +72,8 @@ class FacturacionCartIntegrationController extends Controller
             'origen_sucursal_nombre' => $this->nullBlank($v['origen_sucursal_nombre'] ?? null),
             'modalidad_facturacion' => $mode,
             'canal_emision' => $canal,
+            'metodo_pago' => $metodoPago,
+            'estado_pago' => $estadoPago,
             'tipo_documento' => $tipo,
             'numero_documento' => $numero,
             'complemento_documento' => $complemento,
@@ -228,30 +234,94 @@ class FacturacionCartIntegrationController extends Controller
         return response()->json(['ok' => true, 'cart' => $this->cartById((int) $draft->id)]);
     }
 
+    public function payment(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'origen_usuario_id' => 'required|string|max:60',
+            'metodo_pago' => 'required|in:efectivo,qr',
+            'estado_pago' => 'nullable|in:pendiente,pagado,fallido,cancelado',
+        ]);
+
+        $cart = DB::table('facturacion_carts')
+            ->where('origen_usuario_id', (string) $v['origen_usuario_id'])
+            ->where('estado', 'borrador')
+            ->latest('id')
+            ->first();
+
+        if (!$cart) {
+            return response()->json(['ok' => false, 'message' => 'No se encontro un borrador de facturacion activo.'], 422);
+        }
+
+        $metodoPago = (string) $v['metodo_pago'];
+        $estadoPago = (string) ($v['estado_pago'] ?? ($metodoPago === 'efectivo' ? 'pagado' : 'pendiente'));
+
+        DB::table('facturacion_carts')->where('id', $cart->id)->update([
+            'metodo_pago' => $metodoPago,
+            'estado_pago' => $estadoPago,
+            'updated_at' => now(),
+        ]);
+
+        return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id)]);
+    }
+
     public function emitir(Request $request): JsonResponse
     {
-        $userId = (string) $request->validate(['origen_usuario_id' => 'required|string|max:60'])['origen_usuario_id'];
+        $validated = $request->validate([
+            'origen_usuario_id' => 'required|string|max:60',
+            'modalidad_facturacion' => 'nullable|in:con_datos,sin_cliente',
+            'canal_emision' => 'nullable|in:factura_electronica,qr',
+            'tipo_documento' => 'nullable|string|max:20',
+            'numero_documento' => 'nullable|string|max:80',
+            'complemento_documento' => 'nullable|string|max:30',
+            'razon_social' => 'nullable|string|max:255',
+            'correo_facturacion' => 'nullable|email|max:50',
+        ]);
+        $userId = (string) $validated['origen_usuario_id'];
         $cart = DB::table('facturacion_carts')->where('origen_usuario_id', $userId)->where('estado', 'borrador')->latest('id')->first();
         if (!$cart) return response()->json(['ok' => false, 'message' => 'No se encontro un borrador de facturacion activo.'], 422);
+
+        $overrideCanal = in_array((string) ($validated['canal_emision'] ?? ''), ['factura_electronica', 'qr'], true)
+            ? (string) $validated['canal_emision']
+            : strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
+        if (!in_array($overrideCanal, ['factura_electronica', 'qr'], true)) {
+            $overrideCanal = 'factura_electronica';
+        }
+
+        $overrideMode = in_array((string) ($validated['modalidad_facturacion'] ?? ''), ['con_datos', 'sin_cliente'], true)
+            ? (string) $validated['modalidad_facturacion']
+            : (string) ($cart->modalidad_facturacion ?? 'con_datos');
+
+        DB::table('facturacion_carts')->where('id', $cart->id)->update([
+            'modalidad_facturacion' => $overrideMode,
+            'canal_emision' => $overrideCanal,
+            'metodo_pago' => $overrideCanal === 'qr' ? 'qr' : 'efectivo',
+            'estado_pago' => $overrideCanal === 'qr' ? 'pendiente' : 'pagado',
+            'tipo_documento' => $validated['tipo_documento'] ?? $cart->tipo_documento,
+            'numero_documento' => $validated['numero_documento'] ?? $cart->numero_documento,
+            'complemento_documento' => $validated['complemento_documento'] ?? $cart->complemento_documento,
+            'razon_social' => isset($validated['razon_social']) ? Str::upper((string) $validated['razon_social']) : $cart->razon_social,
+            'correo_facturacion' => $validated['correo_facturacion'] ?? $cart->correo_facturacion,
+            'updated_at' => now(),
+        ]);
+        $cart = DB::table('facturacion_carts')->where('id', $cart->id)->first();
 
         $items = DB::table('facturacion_cart_items')->where('cart_id', $cart->id)->orderBy('id')->get()->map(function ($i) {
             $i->resumen_origen = $this->decode((string) ($i->resumen_origen ?? ''));
             return $i;
         });
         if ($items->isEmpty()) return response()->json(['ok' => false, 'message' => 'El borrador no tiene items para emitir.'], 422);
+        $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
+        if (!in_array($canalEmision, ['factura_electronica', 'qr'], true)) {
+            $canalEmision = 'factura_electronica';
+        }
 
         // Cada intento de emision usa un codigo de orden nuevo para evitar rechazos por "ya emitida".
-        $codigoOrdenIntento = $this->nextBridgeCodigoOrden();
+        $codigoOrdenIntento = $this->nextBridgeCodigoOrden($canalEmision);
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
             'updated_at' => now(),
         ]);
         $cart->codigo_orden = $codigoOrdenIntento;
-
-        $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
-        if (!in_array($canalEmision, ['factura_electronica', 'qr'], true)) {
-            $canalEmision = 'factura_electronica';
-        }
 
         if ($canalEmision === 'qr') {
             $emitReq = Request::create('/api/factura-venta/qr/checkout', 'POST', $this->qrCheckoutPayloadFromCart($cart, $items));
@@ -516,7 +586,7 @@ class FacturacionCartIntegrationController extends Controller
         })->values()->all();
 
         $codigoOrden = trim((string) ($cart->codigo_orden ?? ''));
-        if ($codigoOrden === '') $codigoOrden = $this->nextBridgeCodigoOrden();
+        if ($codigoOrden === '') $codigoOrden = $this->nextBridgeCodigoOrden('factura_electronica');
 
         $canalEmision = 'factura_electronica';
         $motivo = 'factura electronica';
@@ -537,7 +607,7 @@ class FacturacionCartIntegrationController extends Controller
             'municipio' => 'LA PAZ', 'departamento' => 'LA PAZ', 'telefono' => '2222222',
             'codigoCliente' => $sinCliente ? 'SN-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT) : Str::limit($this->sanitizeCodigoClienteFromDocument($doc), 35, ''),
             'razonSocial' => Str::upper($razon), 'documentoIdentidad' => $doc, 'tipoDocumentoIdentidad' => $tipo, 'correo' => $correo,
-            'metodoPago' => 1, 'formatoFactura' => 'rollo', 'montoTotal' => round((float) $cart->total, 2), 'detalle' => $detalle,
+            'metodoPago' => strtolower((string) ($cart->metodo_pago ?? 'efectivo')) === 'qr' ? 5 : 1, 'formatoFactura' => 'rollo', 'montoTotal' => round((float) $cart->total, 2), 'detalle' => $detalle,
             'motivo' => $motivo,
         ];
     }
@@ -546,7 +616,7 @@ class FacturacionCartIntegrationController extends Controller
     {
         $codigoOrden = trim((string) ($cart->codigo_orden ?? ''));
         if ($codigoOrden === '') {
-            $codigoOrden = $this->nextBridgeCodigoOrden();
+            $codigoOrden = $this->nextBridgeCodigoOrden('qr');
         }
 
         $correo = trim((string) ($cart->correo_facturacion ?? ''));
@@ -562,9 +632,15 @@ class FacturacionCartIntegrationController extends Controller
         $itemsPayload = collect($items)->map(function ($i) {
             $nombre = trim((string) ($i->titulo ?? $i->nombre_servicio ?? 'Servicio postal'));
             $cantidad = max(1, (int) ($i->cantidad ?? 1));
-            $precio = round((float) ($i->monto_base ?? 0), 2);
+            $totalLinea = round((float) ($i->total_linea ?? 0), 2);
+            $montoBase = round((float) ($i->monto_base ?? 0), 2);
+            $montoExtras = round((float) ($i->monto_extras ?? 0), 2);
+            $precio = round($totalLinea / max(1, $cantidad), 2);
             if ($precio <= 0) {
-                $precio = round((float) (($i->total_linea ?? 0) / max(1, $cantidad)), 2);
+                $precio = round(($montoBase + $montoExtras) / max(1, $cantidad), 2);
+            }
+            if ($precio <= 0) {
+                $precio = $montoBase;
             }
             if ($precio <= 0) {
                 $precio = 1.00;
@@ -600,14 +676,20 @@ class FacturacionCartIntegrationController extends Controller
         };
     }
 
-    private function nextBridgeCodigoOrden(): string
+    private function nextBridgeCodigoOrden(string $canalEmision = 'factura_electronica'): string
     {
+        $canalEmision = strtolower(trim($canalEmision));
+        if (!in_array($canalEmision, ['factura_electronica', 'qr'], true)) {
+            $canalEmision = 'factura_electronica';
+        }
+
+        $prefix = $canalEmision === 'qr' ? 'VQ-' : 'VF-';
         $next = 1;
-        $pattern = '/^V-(\d{1,12})$/';
+        $pattern = '/^' . preg_quote($prefix, '/') . '(\d{1,12})$/';
 
         $ventasCodes = DB::table('ventas')
             ->whereNotNull('codigoOrden')
-            ->where('codigoOrden', 'like', 'V-%')
+            ->where('codigoOrden', 'like', $prefix . '%')
             ->pluck('codigoOrden');
 
         foreach ($ventasCodes as $code) {
@@ -619,7 +701,7 @@ class FacturacionCartIntegrationController extends Controller
 
         $cartCodes = DB::table('facturacion_carts')
             ->whereNotNull('codigo_orden')
-            ->where('codigo_orden', 'like', 'V-%')
+            ->where('codigo_orden', 'like', $prefix . '%')
             ->pluck('codigo_orden');
 
         foreach ($cartCodes as $code) {
@@ -629,7 +711,7 @@ class FacturacionCartIntegrationController extends Controller
             }
         }
 
-        return 'V-' . str_pad((string) $next, 9, '0', STR_PAD_LEFT);
+        return $prefix . str_pad((string) $next, 9, '0', STR_PAD_LEFT);
     }
 
     private function buildDetalleCodigo(string $codigoPaquete, string $codigoProductoFallback): string
@@ -671,7 +753,7 @@ class FacturacionCartIntegrationController extends Controller
         $items = DB::table('facturacion_cart_items')->where('cart_id', $id)->orderBy('id')->get()->map(function ($i) {
             return ['id' => (int) $i->id, 'cart_id' => (int) $i->cart_id, 'origen_tipo' => (string) $i->origen_tipo, 'origen_id' => (int) $i->origen_id, 'codigo' => $i->codigo, 'titulo' => $i->titulo, 'nombre_servicio' => $i->nombre_servicio, 'nombre_destinatario' => $i->nombre_destinatario, 'servicios_extra' => $this->decode((string) ($i->servicios_extra ?? '')), 'resumen_origen' => $this->decode((string) ($i->resumen_origen ?? '')), 'cantidad' => (int) $i->cantidad, 'monto_base' => (float) $i->monto_base, 'monto_extras' => (float) $i->monto_extras, 'total_linea' => (float) $i->total_linea];
         })->values()->all();
-        return ['id' => (int) $c->id, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'tipo_documento' => $c->tipo_documento, 'numero_documento' => $c->numero_documento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $c->razon_social, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $c->codigo_orden, 'codigo_seguimiento' => $c->codigo_seguimiento, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $this->decode((string) ($c->respuesta_emision ?? '')), 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'items' => $items];
+        return ['id' => (int) $c->id, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $c->tipo_documento, 'numero_documento' => $c->numero_documento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $c->razon_social, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $c->codigo_orden, 'codigo_seguimiento' => $c->codigo_seguimiento, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $this->decode((string) ($c->respuesta_emision ?? '')), 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'items' => $items];
     }
 
     private function ensureDraft(string $userId, array $updates): int
@@ -681,7 +763,7 @@ class FacturacionCartIntegrationController extends Controller
             DB::table('facturacion_carts')->where('id', $draft->id)->update(array_merge($updates, ['updated_at' => now()]));
             return (int) $draft->id;
         }
-        return (int) DB::table('facturacion_carts')->insertGetId(array_merge(['origen_usuario_id' => $userId, 'estado' => 'borrador', 'modalidad_facturacion' => 'con_datos', 'canal_emision' => 'factura_electronica', 'cantidad_items' => 0, 'subtotal' => 0, 'total_extras' => 0, 'total' => 0, 'abierto_en' => now(), 'created_at' => now(), 'updated_at' => now()], $updates));
+        return (int) DB::table('facturacion_carts')->insertGetId(array_merge(['origen_usuario_id' => $userId, 'estado' => 'borrador', 'modalidad_facturacion' => 'con_datos', 'canal_emision' => 'factura_electronica', 'metodo_pago' => 'efectivo', 'estado_pago' => 'pendiente', 'cantidad_items' => 0, 'subtotal' => 0, 'total_extras' => 0, 'total' => 0, 'abierto_en' => now(), 'created_at' => now(), 'updated_at' => now()], $updates));
     }
 
     private function recalc(int $cartId): void
