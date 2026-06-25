@@ -41,7 +41,7 @@
 <body>
    <div class="container">
       <img src="https://trackingbo.correos.gob.bo:8100/images/AGBClogo1.png" alt="Company Logo" class="logo">
-      <h1>Bienvenido Correos de Bolivia.</h1>
+      <h1>Bienvenido a Correos de Bolivia.</h1>
       <p>Estamos trabajando para ofrecerle el mejor servicio.</p>
    </div>
 </body>
