@@ -40,7 +40,7 @@
 
 <body>
    <div class="container">
-      <img src="https://correos.gob.bo/wp-content/uploads/2024/07/images-k9zsGpqit-transformed__1_-removebg-preview-1.png" alt="Company Logo" class="logo">
+      <img src="https://trackingbo.correos.gob.bo:8100/images/AGBClogo1.png" alt="Company Logo" class="logo">
       <h1>Bienvenido a la Agencia Boliviana De Correos (AGBC).</h1>
       <p>Estamos trabajando para ofrecerle el mejor servicio.</p>
    </div>
