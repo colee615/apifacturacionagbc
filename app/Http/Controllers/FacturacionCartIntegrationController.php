@@ -806,7 +806,7 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         $prefix = $canalEmision === 'qr' ? 'VQ-' : 'VF-';
-        $padLength = 10;
+        $padLength = 11;
         $next = 1;
         $pattern = '/^' . preg_quote($prefix, '/') . '(\d{' . $padLength . '})$/';
 

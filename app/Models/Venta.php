@@ -11,7 +11,7 @@ class Venta extends Model
 
    public const CODIGO_ORDEN_PREFIX = 'VENTA-';
    public const CODIGO_ORDEN_OFICIAL_PREFIX = 'OFI-';
-   public const CODIGO_ORDEN_PAD = 8;
+   public const CODIGO_ORDEN_PAD = 9;
 
    public function detalleVentas()
    {
