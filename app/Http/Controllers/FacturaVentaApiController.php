@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Notificacione;
 use App\Models\Venta;
 use App\Support\SufeSectorUnoValidator;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Request;
@@ -95,6 +96,14 @@ class FacturaVentaApiController extends Controller
             return;
         }
 
+        $metodoPago = (int) ($payload['metodoPago'] ?? 1);
+        $origenVentaTipo = strtoupper(trim((string) data_get($payload, 'origenVenta.tipo', '')));
+        $isOfficial = $origenVentaTipo === 'OFICIAL';
+        $isQr = $metodoPago === 5;
+        if ($isOfficial || $isQr) {
+            return;
+        }
+
         $fecha = now()->toDateString();
         $codigoSucursal = (int) ($payload['codigoSucursal'] ?? 0);
         $puntoVenta = (int) ($payload['puntoVenta'] ?? 0);
@@ -126,13 +135,18 @@ class FacturaVentaApiController extends Controller
     private function resolveCodigoOrden(array $payload): string
     {
         $codigoOrdenRecibido = trim((string) ($payload['codigoOrden'] ?? ''));
+        $isOficial = strtoupper((string) ($payload['estado_sufe'] ?? '')) === 'REGISTRADA_OFICIAL'
+            || strtoupper((string) data_get($payload, 'origenVenta.tipo', '')) === 'OFICIAL';
         $codigoOrden = $codigoOrdenRecibido !== ''
             ? $codigoOrdenRecibido
-            : Venta::nextCodigoOrden();
+            : ($isOficial ? Venta::nextCodigoOrdenOficial() : Venta::nextCodigoOrden());
 
         // Normaliza formatos tipo "venta-1", "VENTA-0001", etc. al formato canónico.
         if (preg_match('/^venta-(\d+)$/i', $codigoOrden, $matches)) {
             $codigoOrden = Venta::formatCodigoOrdenFromNumber((int) $matches[1]);
+        }
+        if (preg_match('/^ofi-(\d+)$/i', $codigoOrden, $matches)) {
+            $codigoOrden = Venta::formatCodigoOrdenFromNumberWithPrefix((int) $matches[1], Venta::CODIGO_ORDEN_OFICIAL_PREFIX);
         }
 
         $exists = DB::table('ventas')
@@ -140,13 +154,19 @@ class FacturaVentaApiController extends Controller
             ->exists();
 
         if ($exists) {
-            $codigoOrden = Venta::nextCodigoOrden();
+            $codigoOrden = $isOficial ? Venta::nextCodigoOrdenOficial() : Venta::nextCodigoOrden();
         }
 
         return $codigoOrden;
     }
 
-    private function createVenta(array $payload, string $codigoOrden, string $codigoSeguimiento): array
+    private function createVenta(
+        array $payload,
+        string $codigoOrden,
+        string $codigoSeguimiento,
+        string $estadoSufe = 'RECEPCIONADA',
+        string $motivo = 'Integracion bolipost'
+    ): array
     {
         $now = Date::now();
 
@@ -165,25 +185,25 @@ class FacturaVentaApiController extends Controller
             'codigoSucursal' => (int) $payload['codigoSucursal'],
             'puntoVenta' => (int) $payload['puntoVenta'],
             'documentoSector' => (int) $payload['documentoSector'],
-            'municipio' => $payload['municipio'],
+            'municipio' => $payload['municipio'] ?? 'LA PAZ',
             'departamento' => $payload['departamento'] ?? null,
-            'telefono' => $payload['telefono'],
-            'codigoCliente' => (string) $payload['codigoCliente'],
-            'razonSocial' => $payload['razonSocial'],
-            'documentoIdentidad' => $payload['documentoIdentidad'],
-            'tipoDocumentoIdentidad' => (int) $payload['tipoDocumentoIdentidad'],
+            'telefono' => $payload['telefono'] ?? '2222222',
+            'codigoCliente' => isset($payload['codigoCliente']) ? (string) $payload['codigoCliente'] : null,
+            'razonSocial' => $payload['razonSocial'] ?? null,
+            'documentoIdentidad' => $payload['documentoIdentidad'] ?? null,
+            'tipoDocumentoIdentidad' => isset($payload['tipoDocumentoIdentidad']) ? (int) $payload['tipoDocumentoIdentidad'] : null,
             'complemento' => (int) $payload['tipoDocumentoIdentidad'] === 1
                 ? ($payload['complemento'] ?? null)
                 : null,
-            'correo' => $payload['correo'],
-            'metodoPago' => (int) $payload['metodoPago'],
-            'formatoFactura' => $payload['formatoFactura'],
+            'correo' => $payload['correo'] ?? null,
+            'metodoPago' => isset($payload['metodoPago']) ? (int) $payload['metodoPago'] : null,
+            'formatoFactura' => $payload['formatoFactura'] ?? null,
             'monto_descuento_adicional' => (float) ($payload['montoDescuentoAdicional'] ?? 0),
-            'motivo' => 'Integracion bolipost',
+            'motivo' => $motivo,
             'total' => (float) $payload['montoTotal'],
             'codigoOrden' => $codigoOrden,
             'codigoSeguimiento' => $codigoSeguimiento,
-            'estado_sufe' => 'RECEPCIONADA',
+            'estado_sufe' => $estadoSufe,
             'numero_factura' => null,
             'estado' => 1,
             'created_at' => $now,
@@ -216,6 +236,79 @@ class FacturaVentaApiController extends Controller
                 'updated_at' => $now,
             ]);
         }
+    }
+
+    private function createOfficialTrackingCode(): string
+    {
+        return 'oficial-' . now()->format('YmdHisv') . '-' . bin2hex(random_bytes(4));
+    }
+
+    public function registrarOficial(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'origenVenta.id' => ['required', 'string', 'max:100'],
+            'origenVenta.tipo' => ['required', 'string', 'max:100'],
+            'origenUsuario.id' => ['required', 'string', 'max:100'],
+            'origenUsuario.nombre' => ['nullable', 'string', 'max:255'],
+            'origenUsuario.email' => ['nullable', 'string', 'max:255'],
+            'origenUsuario.alias' => ['nullable', 'string', 'max:80'],
+            'origenUsuario.carnet' => ['nullable', 'string', 'max:40'],
+            'origenSucursal.id' => ['required', 'string', 'max:100'],
+            'origenSucursal.codigo' => ['required', 'string', 'max:100'],
+            'origenSucursal.nombre' => ['nullable', 'string', 'max:255'],
+            'codigoSucursal' => ['required', 'integer', 'min:0'],
+            'puntoVenta' => ['required', 'integer', 'min:0'],
+            'documentoSector' => ['required', 'integer', 'min:0'],
+            'municipio' => ['nullable', 'string', 'max:120'],
+            'departamento' => ['nullable', 'string', 'max:120'],
+            'telefono' => ['nullable', 'string', 'max:60'],
+            'codigoCliente' => ['nullable', 'string', 'max:50'],
+            'razonSocial' => ['nullable', 'string', 'max:255'],
+            'documentoIdentidad' => ['nullable', 'string', 'max:80'],
+            'tipoDocumentoIdentidad' => ['nullable', 'integer', 'min:1'],
+            'complemento' => ['nullable', 'string', 'max:30'],
+            'correo' => ['nullable', 'email', 'max:255'],
+            'metodoPago' => ['nullable', 'integer', 'min:0'],
+            'formatoFactura' => ['nullable', 'string', 'max:30'],
+            'montoTotal' => ['required', 'numeric', 'min:0'],
+            'detalle' => ['required', 'array', 'min:1'],
+            'detalle.*.actividadEconomica' => ['nullable', 'string', 'max:20'],
+            'detalle.*.codigoSin' => ['nullable', 'string', 'max:20'],
+            'detalle.*.codigo' => ['nullable', 'string', 'max:120'],
+            'detalle.*.descripcion' => ['nullable', 'string', 'max:255'],
+            'detalle.*.unidadMedida' => ['nullable', 'integer', 'min:1'],
+            'detalle.*.precioUnitario' => ['nullable', 'numeric', 'min:0'],
+            'detalle.*.cantidad' => ['required', 'numeric', 'gt:0'],
+        ]);
+
+        $this->assertFacturaVentaSector($validated);
+        $this->assertCajaAbierta($validated);
+
+        $validated['estado_sufe'] = 'REGISTRADA_OFICIAL';
+        $validated['origenVenta']['tipo'] = 'OFICIAL';
+        $codigoOrden = $this->resolveCodigoOrden($validated);
+        $codigoSeguimiento = $this->createOfficialTrackingCode();
+
+        $venta = DB::transaction(function () use ($validated, $codigoOrden, $codigoSeguimiento) {
+            $venta = $this->createVenta(
+                $validated,
+                $codigoOrden,
+                $codigoSeguimiento,
+                'REGISTRADA_OFICIAL',
+                'Registro oficial sin facturacion electronica'
+            );
+            $this->createDetalleVentas($venta, $validated);
+            $this->addVentaToCaja($validated);
+
+            return $venta;
+        });
+
+        return response()->json([
+            'ok' => true,
+            'estado' => 'REGISTRADA_OFICIAL',
+            'message' => 'Venta OFICIAL registrada correctamente sin pasar por carrito.',
+            'venta' => $venta,
+        ], 201);
     }
 
     private function sanitizePayloadForAgetic(array $payload): array

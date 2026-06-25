@@ -10,7 +10,8 @@ class Venta extends Model
    use HasFactory;
 
    public const CODIGO_ORDEN_PREFIX = 'VENTA-';
-   public const CODIGO_ORDEN_PAD = 7;
+   public const CODIGO_ORDEN_OFICIAL_PREFIX = 'OFI-';
+   public const CODIGO_ORDEN_PAD = 8;
 
    public function detalleVentas()
    {
@@ -35,18 +36,33 @@ class Venta extends Model
       return self::CODIGO_ORDEN_PREFIX . str_pad((string) max($number, 1), self::CODIGO_ORDEN_PAD, '0', STR_PAD_LEFT);
    }
 
+   public static function formatCodigoOrdenFromNumberWithPrefix(int $number, string $prefix): string
+   {
+      return $prefix . str_pad((string) max($number, 1), self::CODIGO_ORDEN_PAD, '0', STR_PAD_LEFT);
+   }
+
    public static function nextCodigoOrden(): string
    {
+      return static::nextCodigoOrdenByPrefix(self::CODIGO_ORDEN_PREFIX);
+   }
+
+   public static function nextCodigoOrdenOficial(): string
+   {
+      return static::nextCodigoOrdenByPrefix(self::CODIGO_ORDEN_OFICIAL_PREFIX);
+   }
+
+   public static function nextCodigoOrdenByPrefix(string $prefix): string
+   {
       $latestCode = (string) static::query()
-         ->where('codigoOrden', 'like', self::CODIGO_ORDEN_PREFIX . '%')
+         ->where('codigoOrden', 'like', $prefix . '%')
          ->latest('id')
          ->value('codigoOrden');
 
       $nextNumber = 1;
-      if ($latestCode !== '' && preg_match('/^' . preg_quote(self::CODIGO_ORDEN_PREFIX, '/') . '(\d+)$/', $latestCode, $matches)) {
+      if ($latestCode !== '' && preg_match('/^' . preg_quote($prefix, '/') . '(\d{' . self::CODIGO_ORDEN_PAD . '})$/', $latestCode, $matches)) {
          $nextNumber = ((int) $matches[1]) + 1;
       }
 
-      return static::formatCodigoOrdenFromNumber($nextNumber);
+      return static::formatCodigoOrdenFromNumberWithPrefix($nextNumber, $prefix);
    }
 }

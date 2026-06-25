@@ -25,6 +25,7 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 
 Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/emitir', [FacturaVentaApiController::class, 'emitir']);
+    Route::post('/registrar-oficial', [FacturaVentaApiController::class, 'registrarOficial']);
     Route::patch('/anular/{cuf}', [FacturaVentaApiController::class, 'anular']);
     Route::get('/consultar/{codigoSeguimiento}', [FacturaVentaApiController::class, 'consultar']);
     Route::get('/pdf/{codigoSeguimiento}', [FacturaVentaApiController::class, 'pdf']);
@@ -51,6 +52,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/caja/arqueos', [CajaDiariaController::class, 'arqueos']);
     Route::get('/caja/reporte-diario', [CajaDiariaController::class, 'reporteDiario']);
     Route::get('/ventas/reportes/kardex-usuarios', [VentaController::class, 'kardexUsuarios']);
+    Route::get('/ventas/reportes/sucursales', [VentaController::class, 'reporteSucursales']);
     Route::get('/ventas/consultar/{codigoSeguimiento}', [VentaController::class, 'consultarVenta']);
     Route::get('/ventas/{venta}', [VentaController::class, 'show']);
     Route::post('/qr/checkout', [QhantuyQrController::class, 'checkout']);

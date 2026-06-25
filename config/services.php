@@ -46,6 +46,7 @@ return [
         'callback_url' => env('QHANTUY_CHECKOUT_CALLBACK_URL'),
         'image_method' => env('QHANTUY_CHECKOUT_IMAGE_METHOD', 'URL'),
         'currency_code' => env('QHANTUY_CHECKOUT_CURRENCY_CODE', 'BOB'),
+        'connect_timeout' => env('QHANTUY_CHECKOUT_CONNECT_TIMEOUT', 15),
         'timeout' => env('QHANTUY_CHECKOUT_TIMEOUT', 45),
         'ssl_verify' => env('QHANTUY_CHECKOUT_SSL_VERIFY', true),
     ],
