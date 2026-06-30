@@ -231,14 +231,14 @@
         @empty
             @for($i = 0; $i < 14; $i++)
                 <tr>
-                    <td>&nbsp;</td>
+                    <td class="center">{{ $i + 1 }}</td>
+                    <td class="center">prueba</td>
+                    <td>prueba</td>
+                    <td>prueba</td>
+                    <td>prueba</td>
                     <td></td>
                     <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
+                    <td class="center">prueba</td>
                     <td></td>
                 </tr>
             @endfor
@@ -247,13 +247,13 @@
             @for($i = $rows->count(); $i < 14; $i++)
                 <tr>
                     <td class="center">{{ $i + 1 }}</td>
+                    <td class="center">prueba</td>
+                    <td>prueba</td>
+                    <td>prueba</td>
+                    <td>prueba</td>
                     <td></td>
                     <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
+                    <td class="center">prueba</td>
                     <td></td>
                 </tr>
             @endfor
