@@ -791,8 +791,8 @@ class FacturacionCartIntegrationController extends Controller
     private function mapQrPaymentStatusToPaymentState(string $status): string
     {
         return match (strtolower(trim($status))) {
-            'success', 'paid', 'completed' => 'pagado',
-            'cancelled', 'rejected', 'failed', 'expired' => 'cancelado',
+            'success', 'successful', 'succeeded', 'paid', 'completed', 'approved', 'confirmed' => 'pagado',
+            'cancelled', 'canceled', 'rejected', 'failed', 'failure', 'expired', 'error' => 'cancelado',
             default => 'pendiente',
         };
     }
