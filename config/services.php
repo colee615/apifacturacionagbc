@@ -43,6 +43,7 @@ return [
         'check_payments_url' => env('QHANTUY_CHECK_PAYMENTS_URL', 'https://testingcheckout.qhantuy.com/external-api/check-payments'),
         'token' => env('QHANTUY_CHECKOUT_TOKEN'),
         'appkey' => env('QHANTUY_CHECKOUT_APPKEY'),
+        'profile_code' => env('QHANTUY_CHECKOUT_PROFILE_CODE'),
         'callback_url' => env('QHANTUY_CHECKOUT_CALLBACK_URL'),
         'image_method' => env('QHANTUY_CHECKOUT_IMAGE_METHOD', 'URL'),
         'currency_code' => env('QHANTUY_CHECKOUT_CURRENCY_CODE', 'BOB'),

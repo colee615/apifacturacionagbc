@@ -11,6 +11,24 @@ use Illuminate\Support\Facades\Log;
 
 class QhantuyQrController extends Controller
 {
+    private function normalizeQrPaymentStatus(?string $status): string
+    {
+        return match (strtolower(trim((string) $status))) {
+            'success', 'successful', 'succeeded', 'paid', 'completed', 'approved', 'confirmed' => 'success',
+            'cancelled', 'canceled', 'rejected', 'failed', 'failure', 'expired', 'error' => 'cancelled',
+            default => 'holding',
+        };
+    }
+
+    private function qrPaymentStateFromStatus(?string $status): string
+    {
+        return match ($this->normalizeQrPaymentStatus($status)) {
+            'success' => 'pagado',
+            'cancelled' => 'cancelado',
+            default => 'pendiente',
+        };
+    }
+
     private function syncCartPaymentState(string $internalCode, string $paymentStatus, ?int $transactionId = null, ?string $message = null): void
     {
         $cart = DB::table('facturacion_carts')
@@ -22,12 +40,8 @@ class QhantuyQrController extends Controller
             return;
         }
 
-        $status = strtolower(trim($paymentStatus));
-        $estadoPago = match ($status) {
-            'success', 'paid', 'completed' => 'pagado',
-            'cancelled', 'rejected', 'failed', 'expired' => 'cancelado',
-            default => 'pendiente',
-        };
+        $status = $this->normalizeQrPaymentStatus($paymentStatus);
+        $estadoPago = $this->qrPaymentStateFromStatus($status);
 
         $updates = [
             'metodo_pago' => 'qr',
@@ -61,6 +75,19 @@ class QhantuyQrController extends Controller
         return rtrim((string) config('services.qhantuy_checkout.base_url', ''), '/');
     }
 
+    private function checkoutUrl(): string
+    {
+        $base = $this->checkoutBaseUrl();
+
+        if ($base === '') {
+            return '';
+        }
+
+        return str_ends_with(strtolower($base), '/checkout')
+            ? $base
+            : $base . '/checkout';
+    }
+
     private function checkPaymentsUrl(): string
     {
         return (string) config('services.qhantuy_checkout.check_payments_url', '');
@@ -79,6 +106,11 @@ class QhantuyQrController extends Controller
     private function callbackUrl(): string
     {
         return trim((string) config('services.qhantuy_checkout.callback_url', ''));
+    }
+
+    private function profileCode(): string
+    {
+        return trim((string) config('services.qhantuy_checkout.profile_code', ''));
     }
 
     private function imageMethod(): string
@@ -112,6 +144,29 @@ class QhantuyQrController extends Controller
             ->retry(2, 600, fn ($e) => $e instanceof ConnectionException);
     }
 
+    private function maskedCheckoutConfig(): array
+    {
+        $token = $this->token();
+        $appkey = $this->appkey();
+
+        return [
+            'checkout_url' => $this->checkoutUrl(),
+            'check_payments_url' => $this->checkPaymentsUrl(),
+            'callback_url' => $this->callbackUrl(),
+            'currency_code' => $this->currencyCode(),
+            'image_method' => $this->imageMethod(),
+            'ssl_verify' => filter_var(config('services.qhantuy_checkout.ssl_verify', true), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? true,
+            'connect_timeout' => (int) config('services.qhantuy_checkout.connect_timeout', 15),
+            'timeout' => (int) config('services.qhantuy_checkout.timeout', 45),
+            'has_token' => $token !== '',
+            'token_prefix' => $token !== '' ? substr($token, 0, 6) : '',
+            'has_appkey' => $appkey !== '',
+            'appkey_prefix' => $appkey !== '' ? substr($appkey, 0, 8) : '',
+            'has_profile_code' => $this->profileCode() !== '',
+            'profile_code_prefix' => $this->profileCode() !== '' ? substr($this->profileCode(), 0, 8) : '',
+        ];
+    }
+
     public function checkout(Request $request)
     {
         $validated = $request->validate([
@@ -130,7 +185,19 @@ class QhantuyQrController extends Controller
             'image_method' => ['nullable', 'string', 'in:URL,BASE64'],
         ]);
 
+        Log::info('Qhantuy checkout request received', [
+            'internal_code' => (string) ($validated['internal_code'] ?? ''),
+            'request_keys' => array_keys($validated),
+            'items_count' => count((array) ($validated['items'] ?? [])),
+            'config' => $this->maskedCheckoutConfig(),
+        ]);
+
         if ($this->appkey() === '' || $this->token() === '' || $this->checkoutBaseUrl() === '' || $this->callbackUrl() === '') {
+            Log::error('Qhantuy checkout missing configuration', [
+                'internal_code' => (string) ($validated['internal_code'] ?? ''),
+                'config' => $this->maskedCheckoutConfig(),
+            ]);
+
             return response()->json([
                 'ok' => false,
                 'message' => 'Configuracion Qhantuy incompleta en SAFE.',
@@ -158,9 +225,24 @@ class QhantuyQrController extends Controller
             })->values()->all(),
         ];
 
+        Log::info('Qhantuy checkout payload prepared', [
+            'internal_code' => $payload['internal_code'],
+            'url' => $this->checkoutUrl(),
+            'payload' => $payload,
+        ]);
+
         try {
-            $response = $this->qhantuyClient()->post($this->checkoutBaseUrl() . '/checkout', $payload);
+            $response = $this->qhantuyClient()->post($this->checkoutUrl(), $payload);
             $body = $response->json();
+
+            Log::info('Qhantuy checkout response received', [
+                'internal_code' => $payload['internal_code'],
+                'status' => $response->status(),
+                'successful' => $response->successful(),
+                'headers' => $response->headers(),
+                'raw_body' => $response->body(),
+                'json_body' => $body,
+            ]);
 
             if (!$response->successful()) {
                 Log::warning('Qhantuy checkout rejected', ['status' => $response->status(), 'body' => $body, 'internal_code' => $payload['internal_code']]);
@@ -175,11 +257,13 @@ class QhantuyQrController extends Controller
             $transactionId = data_get($body, 'transaction_id')
                 ?? data_get($body, 'id')
                 ?? data_get($body, 'items.0.id');
-            $paymentStatus = strtolower((string) (
+            $paymentStatus = $this->normalizeQrPaymentStatus(
                 data_get($body, 'payment_status')
                 ?? data_get($body, 'items.0.payment_status')
+                ?? data_get($body, 'status')
+                ?? data_get($body, 'items.0.status')
                 ?? 'holding'
-            ));
+            );
             $amount = round((float) data_get($body, 'checkout_amount', collect($payload['items'])->sum(fn ($i) => $i['quantity'] * $i['price'])), 2);
             $currency = strtoupper((string) data_get($body, 'checkout_currency', $this->currencyCode()));
             $imageData = trim((string) (
@@ -209,6 +293,15 @@ class QhantuyQrController extends Controller
                 ]
             );
 
+            Log::info('Qhantuy checkout persisted', [
+                'internal_code' => $payload['internal_code'],
+                'transaction_id' => $transactionId,
+                'payment_status' => $paymentStatus,
+                'checkout_amount' => $amount,
+                'checkout_currency' => $currency,
+                'has_image_data' => $imageData !== '',
+            ]);
+
             return response()->json([
                 'ok' => true,
                 'message' => (string) data_get($body, 'message', 'Orden QR generada.'),
@@ -228,11 +321,14 @@ class QhantuyQrController extends Controller
         } catch (ConnectionException $e) {
             Log::error('Qhantuy checkout connection error', [
                 'url' => $this->checkoutBaseUrl() . '/checkout',
+                'normalized_url' => $this->checkoutUrl(),
                 'connect_timeout' => (int) config('services.qhantuy_checkout.connect_timeout', 15),
                 'timeout' => (int) config('services.qhantuy_checkout.timeout', 45),
                 'ssl_verify' => filter_var(config('services.qhantuy_checkout.ssl_verify', true), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? true,
                 'msg' => $e->getMessage(),
                 'internal_code' => $payload['internal_code'],
+                'payload' => $payload,
+                'config' => $this->maskedCheckoutConfig(),
             ]);
 
             return response()->json([
@@ -241,13 +337,28 @@ class QhantuyQrController extends Controller
                 'detail' => $e->getMessage(),
             ], 504);
         } catch (RequestException $e) {
+            Log::error('Qhantuy checkout request exception', [
+                'internal_code' => $payload['internal_code'],
+                'msg' => $e->getMessage(),
+                'payload' => $payload,
+                'config' => $this->maskedCheckoutConfig(),
+                'response_status' => $e->response?->status(),
+                'response_body' => $e->response?->body(),
+            ]);
+
             return response()->json([
                 'ok' => false,
                 'message' => 'Error remoto al crear checkout QR.',
                 'detail' => $e->getMessage(),
             ], 502);
         } catch (\Throwable $e) {
-            Log::error('Qhantuy checkout unexpected error', ['msg' => $e->getMessage()]);
+            Log::error('Qhantuy checkout unexpected error', [
+                'internal_code' => $payload['internal_code'] ?? '',
+                'msg' => $e->getMessage(),
+                'payload' => $payload ?? null,
+                'config' => $this->maskedCheckoutConfig(),
+                'trace_head' => substr($e->getTraceAsString(), 0, 2000),
+            ]);
             return response()->json([
                 'ok' => false,
                 'message' => 'Error inesperado al crear checkout QR.',
@@ -258,35 +369,67 @@ class QhantuyQrController extends Controller
 
     public function callback(Request $request)
     {
+        Log::info('Qhantuy callback received', [
+            'method' => $request->method(),
+            'query' => $request->query(),
+            'full_url' => $request->fullUrl(),
+        ]);
+
         $validated = $request->validate([
             'transaction_id' => ['required', 'numeric'],
             'profile_code' => ['required', 'string', 'max:200'],
             'message' => ['nullable', 'string', 'max:500'],
             'internal_code' => ['required', 'string', 'max:120'],
             'checkout_amount' => ['required', 'numeric', 'gte:0'],
-            'checkout_currency_code' => ['required', 'string', 'in:BOB'],
+            'checkout_currency_code' => ['nullable', 'string', 'in:BOB'],
+            'checkout_currency' => ['nullable', 'string', 'in:BOB'],
             'status' => ['required', 'string', 'in:success,cancelled'],
         ]);
 
         $internalCode = trim((string) $validated['internal_code']);
         $row = DB::table('qhantuy_qr_payments')->where('internal_code', $internalCode)->first();
         if (!$row) {
+            Log::warning('Qhantuy callback ignored because internal_code was not found', [
+                'internal_code' => $internalCode,
+                'transaction_id' => $validated['transaction_id'] ?? null,
+            ]);
+
             return response()->json([
                 'ok' => false,
                 'message' => 'Internal code no registrado.',
             ], 404);
         }
 
-        if (trim((string) $validated['profile_code']) !== $this->appkey()) {
+        $expectedProfileCode = $this->profileCode();
+        if ($expectedProfileCode !== '' && trim((string) $validated['profile_code']) !== $expectedProfileCode) {
+            Log::warning('Qhantuy callback rejected due to invalid profile_code', [
+                'internal_code' => $internalCode,
+                'profile_code_prefix' => substr((string) $validated['profile_code'], 0, 8),
+                'expected_profile_code_prefix' => substr($expectedProfileCode, 0, 8),
+            ]);
+
             return response()->json([
                 'ok' => false,
                 'message' => 'profile_code invalido.',
             ], 422);
         }
 
+        if ($expectedProfileCode === '') {
+            Log::warning('Qhantuy callback received without configured profile_code in SAFE', [
+                'internal_code' => $internalCode,
+                'profile_code_prefix' => substr((string) $validated['profile_code'], 0, 8),
+            ]);
+        }
+
         $incomingAmount = round((float) $validated['checkout_amount'], 2);
         $storedAmount = round((float) ($row->checkout_amount ?? 0), 2);
         if ($storedAmount > 0 && abs($incomingAmount - $storedAmount) > 0.00001) {
+            Log::warning('Qhantuy callback rejected due to amount mismatch', [
+                'internal_code' => $internalCode,
+                'incoming_amount' => $incomingAmount,
+                'stored_amount' => $storedAmount,
+            ]);
+
             return response()->json([
                 'ok' => false,
                 'message' => 'Monto no coincide con la venta registrada.',
@@ -295,13 +438,19 @@ class QhantuyQrController extends Controller
 
         $incomingTxn = (int) $validated['transaction_id'];
         if (!empty($row->transaction_id) && (int) $row->transaction_id !== $incomingTxn) {
+            Log::warning('Qhantuy callback rejected due to transaction mismatch', [
+                'internal_code' => $internalCode,
+                'incoming_transaction_id' => $incomingTxn,
+                'stored_transaction_id' => (int) ($row->transaction_id ?? 0),
+            ]);
+
             return response()->json([
                 'ok' => false,
                 'message' => 'transaction_id no coincide con la venta registrada.',
             ], 422);
         }
 
-        $status = strtolower((string) $validated['status']);
+        $status = $this->normalizeQrPaymentStatus((string) $validated['status']);
         DB::table('qhantuy_qr_payments')
             ->where('id', $row->id)
             ->update([
@@ -321,6 +470,12 @@ class QhantuyQrController extends Controller
             (string) ($validated['message'] ?? '')
         );
 
+        Log::info('Qhantuy callback applied successfully', [
+            'internal_code' => $internalCode,
+            'transaction_id' => $incomingTxn,
+            'normalized_status' => $status,
+        ]);
+
         return response()->json([
             'ok' => true,
             'internal_code' => $internalCode,
@@ -338,6 +493,12 @@ class QhantuyQrController extends Controller
             'payment_ids' => ['nullable', 'array', 'min:1'],
             'payment_ids.*' => ['numeric'],
             'internal_code' => ['nullable', 'string', 'max:120'],
+        ]);
+
+        Log::info('Qhantuy check-payments requested', [
+            'payment_ids' => (array) ($validated['payment_ids'] ?? []),
+            'internal_code' => (string) ($validated['internal_code'] ?? ''),
+            'config' => $this->maskedCheckoutConfig(),
         ]);
 
         if ($this->appkey() === '' || $this->token() === '' || $this->checkPaymentsUrl() === '') {
@@ -377,6 +538,12 @@ class QhantuyQrController extends Controller
         }
 
         if ($row && $this->shouldUseCachedCheckResponse($row)) {
+            Log::info('Qhantuy check-payments resolved from cache', [
+                'transaction_id' => $row->transaction_id ?? null,
+                'internal_code' => $row->internal_code ?? null,
+                'payment_status' => $row->payment_status ?? null,
+            ]);
+
             return response()->json($this->buildCachedCheckPaymentsResponse($row));
         }
 
@@ -386,6 +553,14 @@ class QhantuyQrController extends Controller
                 'payment_ids' => $paymentIds,
             ]);
             $body = $response->json();
+
+            Log::info('Qhantuy check-payments response received', [
+                'payment_ids' => $paymentIds,
+                'status' => $response->status(),
+                'successful' => $response->successful(),
+                'raw_body' => $response->body(),
+                'json_body' => $body,
+            ]);
 
             if (!$response->successful()) {
                 return response()->json([
@@ -399,14 +574,27 @@ class QhantuyQrController extends Controller
             $firstItem = data_get($body, 'items.0');
             $source = is_array($firstItem) ? $firstItem : (is_array($body) ? $body : []);
 
+            if (is_array($body) && array_key_exists('items', $body) && empty((array) $body['items'])) {
+                Log::warning('Qhantuy check-payments returned empty items list', [
+                    'payment_ids' => $paymentIds,
+                    'body' => $body,
+                    'internal_code' => $row->internal_code ?? ($validated['internal_code'] ?? null),
+                ]);
+            }
+
             $transactionId = (int) (
                 data_get($source, 'id')
                 ?? data_get($body, 'id')
                 ?? $paymentIds[0]
             );
-            $status = strtolower(trim((string) (
-                $source['payment_status'] ?? $source['payment_status '] ?? data_get($body, 'payment_status', 'holding')
-            )));
+            $status = $this->normalizeQrPaymentStatus(
+                $source['payment_status']
+                ?? $source['payment_status ']
+                ?? data_get($body, 'payment_status')
+                ?? $source['status']
+                ?? data_get($body, 'status')
+                ?? 'holding'
+            );
             $amount = round((float) (
                 data_get($source, 'checkout_amount')
                 ?? data_get($body, 'checkout_amount')
@@ -462,11 +650,7 @@ class QhantuyQrController extends Controller
                 'qr_url' => $qrUrl,
                 'image_data' => ($target->image_data ?? null) ?: $qrUrl,
                 'payment_status' => $status,
-                'estado_pago' => match ($status) {
-                    'success', 'paid', 'completed' => 'pagado',
-                    'cancelled', 'rejected', 'failed', 'expired' => 'cancelado',
-                    default => 'pendiente',
-                },
+                'estado_pago' => $this->qrPaymentStateFromStatus($status),
                 'qhantuy' => $body,
             ]);
         } catch (\Throwable $e) {
@@ -506,13 +690,16 @@ class QhantuyQrController extends Controller
             return false;
         }
 
-        return now()->diffInSeconds($updatedAt) < 15;
+        $status = $this->normalizeQrPaymentStatus((string) ($row->payment_status ?? 'holding'));
+        $cacheSeconds = $status === 'holding' ? 3 : 20;
+
+        return abs(now()->diffInSeconds($updatedAt, false)) < $cacheSeconds;
     }
 
     private function buildCachedCheckPaymentsResponse(object $row, ?string $message = null): array
     {
         $raw = json_decode((string) ($row->raw_check_response ?? ''), true);
-        $status = strtolower((string) ($row->payment_status ?? 'holding'));
+        $status = $this->normalizeQrPaymentStatus((string) ($row->payment_status ?? 'holding'));
 
         return [
             'ok' => true,
@@ -523,11 +710,7 @@ class QhantuyQrController extends Controller
             'qr_url' => (string) ($row->image_data ?? ''),
             'image_data' => (string) ($row->image_data ?? ''),
             'payment_status' => $status,
-            'estado_pago' => match ($status) {
-                'success', 'paid', 'completed' => 'pagado',
-                'cancelled', 'rejected', 'failed', 'expired' => 'cancelado',
-                default => 'pendiente',
-            },
+            'estado_pago' => $this->qrPaymentStateFromStatus($status),
             'qhantuy' => is_array($raw) ? $raw : null,
         ];
     }
