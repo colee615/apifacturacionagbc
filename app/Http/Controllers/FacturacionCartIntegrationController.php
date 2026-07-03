@@ -845,6 +845,11 @@ class FacturacionCartIntegrationController extends Controller
             ];
         })->values()->all();
 
+        $conceptCode = trim((string) data_get(collect($items)->first(), 'codigo', ''));
+        if ($conceptCode === '') {
+            $conceptCode = trim((string) $codigoOrden);
+        }
+
         return [
             'customer_email' => $correo,
             'customer_first_name' => Str::limit($firstName, 120, ''),
@@ -854,7 +859,7 @@ class FacturacionCartIntegrationController extends Controller
             'callback_url' => (string) config('services.qhantuy_checkout.callback_url', url('/api/qhantuy/callback')),
             'payment_method' => 'QRSIMPLE',
             'image_method' => (string) config('services.qhantuy_checkout.image_method', 'URL'),
-            'detail' => 'Pago QR de venta ' . $codigoOrden,
+            'detail' => 'Pago venta qr - ' . Str::limit($conceptCode, 80, ''),
             'items' => $itemsPayload,
         ];
     }
