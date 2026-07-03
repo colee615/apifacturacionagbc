@@ -42,17 +42,13 @@ class QhantuyQrController extends Controller
 
         $status = $this->normalizeQrPaymentStatus($paymentStatus);
         $estadoPago = $this->qrPaymentStateFromStatus($status);
-        $estadoEmisionActual = strtoupper(trim((string) ($cart->estado_emision ?? '')));
 
         $updates = [
             'metodo_pago' => 'qr',
             'estado_pago' => $estadoPago,
+            'estado_emision' => 'NO_APLICA',
             'updated_at' => now(),
         ];
-
-        if (in_array($estadoEmisionActual, ['', 'NO_APLICA'], true)) {
-            $updates['estado_emision'] = 'NO_APLICA';
-        }
 
         if ($estadoPago === 'pagado') {
             $updates['estado'] = 'emitido';
@@ -473,14 +469,11 @@ class QhantuyQrController extends Controller
             $incomingTxn,
             (string) ($validated['message'] ?? '')
         );
-        $autoInvoice = app(FacturacionCartIntegrationController::class)
-            ->emitFacturaAutomaticaQrPorCodigo($internalCode);
 
         Log::info('Qhantuy callback applied successfully', [
             'internal_code' => $internalCode,
             'transaction_id' => $incomingTxn,
             'normalized_status' => $status,
-            'auto_invoice' => $autoInvoice['reason'] ?? null,
         ]);
 
         return response()->json([
@@ -646,11 +639,6 @@ class QhantuyQrController extends Controller
                     $transactionId,
                     (string) data_get($body, 'message', '')
                 );
-
-                if (!empty($target->internal_code)) {
-                    app(FacturacionCartIntegrationController::class)
-                        ->emitFacturaAutomaticaQrPorCodigo((string) $target->internal_code);
-                }
             }
 
             return response()->json([

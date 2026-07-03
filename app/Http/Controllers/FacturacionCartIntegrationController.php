@@ -9,7 +9,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response as HttpResponse;
@@ -27,7 +26,7 @@ class FacturacionCartIntegrationController extends Controller
         return response()->json([
             'ok' => true,
             'draft' => $this->latestCart($userId, 'borrador'),
-            'last' => $this->latestNonDraftCart($userId),
+            'last' => $this->latestCart($userId, null),
         ]);
     }
 
@@ -424,10 +423,6 @@ class FacturacionCartIntegrationController extends Controller
             'updated_at' => now(),
         ]);
 
-        if ($ok && $canalEmision === 'qr') {
-            $this->createFreshDraftAfterQrEmission($cart);
-        }
-
         return response()->json(['ok' => $ok, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $emitStatusCode]);
         } finally {
             optional($lock)->release();
@@ -450,27 +445,6 @@ class FacturacionCartIntegrationController extends Controller
 
         $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
         if ($canalEmision === 'qr') {
-            $autoInvoice = $this->emitFacturaAutomaticaQrPorCodigo((string) ($cart->codigo_orden ?? ''));
-            if (!empty($autoInvoice['cart']) && is_array($autoInvoice['cart'])) {
-                $cart = (object) $autoInvoice['cart'];
-            } else {
-                $cart = DB::table('facturacion_carts')->where('id', (int) $cart->id)->first() ?: $cart;
-            }
-
-            if ($this->shouldConsultFiscalForQrCart($cart)) {
-                $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? $cart->codigo_seguimiento ?? ''));
-                if ($codigoSeguimientoFiscal === '') {
-                    return response()->json([
-                        'ok' => false,
-                        'message' => 'El pago QR fue confirmado, pero aun no existe seguimiento fiscal para consultar.',
-                    ], 409);
-                }
-
-                $cReq = Request::create('/api/factura-venta/consultar/' . urlencode($codigoSeguimientoFiscal), 'GET');
-                $cReq->headers->set('Accept', 'application/json');
-                $cReq->headers->set('X-Bridge-Debug', 'true');
-                $cRes = app(FacturaVentaApiController::class)->consultar($cReq, $codigoSeguimientoFiscal);
-            } else {
             $transactionId = (int) trim((string) ($cart->qr_transaction_id ?? $cart->codigo_seguimiento ?? ''));
             if ($transactionId <= 0) {
                 return response()->json(['ok' => false, 'message' => 'No existe transaction_id QR para consultar.'], 422);
@@ -481,7 +455,6 @@ class FacturacionCartIntegrationController extends Controller
             ]);
             $cReq->headers->set('Accept', 'application/json');
             $cRes = app(QhantuyQrController::class)->checkPayments($cReq);
-            }
         } else {
             $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? $cart->codigo_seguimiento ?? ''));
             if ($codigoSeguimientoFiscal === '') {
@@ -495,9 +468,9 @@ class FacturacionCartIntegrationController extends Controller
         $body = json_decode($cRes->getContent(), true);
         if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
         $statusCode = $cRes->getStatusCode();
-        if ($canalEmision === 'qr' && !$this->shouldConsultFiscalForQrCart($cart)) {
+        if ($canalEmision === 'qr') {
             $body['estado'] = $this->mapQrPaymentStatusToEmissionState((string) ($body['payment_status'] ?? 'holding'));
-            $body['mensaje'] = (string) ($body['message'] ?? 'Estado QR actualizado. Si el pago se confirma, la factura se emitira automaticamente.');
+            $body['mensaje'] = (string) ($body['message'] ?? 'Estado QR actualizado. Sin factura fiscal automatica.');
         }
 
         $updates = [
@@ -532,56 +505,7 @@ class FacturacionCartIntegrationController extends Controller
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update($updates);
 
-        if ($canalEmision === 'qr' && strtolower((string) ($updates['estado_pago'] ?? '')) === 'pagado') {
-            $autoInvoice = $this->emitFacturaAutomaticaQrPorCodigo((string) ($cart->codigo_orden ?? ''));
-            $freshCart = DB::table('facturacion_carts')->where('id', (int) $cart->id)->first();
-
-            if ($freshCart && $this->shouldConsultFiscalForQrCart($freshCart)) {
-                $codigoSeguimientoFiscal = trim((string) ($freshCart->codigo_seguimiento_fiscal ?? $freshCart->codigo_seguimiento ?? ''));
-                if ($codigoSeguimientoFiscal !== '') {
-                    $fiscalReq = Request::create('/api/factura-venta/consultar/' . urlencode($codigoSeguimientoFiscal), 'GET');
-                    $fiscalReq->headers->set('Accept', 'application/json');
-                    $fiscalReq->headers->set('X-Bridge-Debug', 'true');
-                    $fiscalRes = app(FacturaVentaApiController::class)->consultar($fiscalReq, $codigoSeguimientoFiscal);
-                    $fiscalBody = json_decode($fiscalRes->getContent(), true);
-
-                    if (is_array($fiscalBody)) {
-                        return response()->json([
-                            'ok' => true,
-                            'cart' => $this->cartById((int) $freshCart->id),
-                            'respuesta' => $fiscalBody,
-                            'status_code' => $fiscalRes->getStatusCode(),
-                            'auto_invoice' => $autoInvoice['reason'] ?? null,
-                        ]);
-                    }
-                }
-            }
-        }
-
         return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $statusCode]);
-    }
-
-    public function emitFacturaAutomaticaQrPorCodigo(string $internalCode): array
-    {
-        $internalCode = trim($internalCode);
-        if ($internalCode === '') {
-            Log::warning('Autoemision fiscal QR omitida: internal_code vacio.');
-            return ['ok' => false, 'skipped' => true, 'reason' => 'missing_internal_code'];
-        }
-
-        $cart = DB::table('facturacion_carts')
-            ->where('codigo_orden', $internalCode)
-            ->orderByDesc('id')
-            ->first();
-
-        if (!$cart) {
-            Log::warning('Autoemision fiscal QR omitida: carrito no encontrado.', [
-                'internal_code' => $internalCode,
-            ]);
-            return ['ok' => false, 'skipped' => true, 'reason' => 'cart_not_found'];
-        }
-
-        return $this->emitFacturaAutomaticaQr($cart);
     }
 
     public function ventas(Request $request): JsonResponse
@@ -878,146 +802,6 @@ class FacturacionCartIntegrationController extends Controller
         };
     }
 
-    private function emitFacturaAutomaticaQr(object $cart): array
-    {
-        if (!$this->shouldEmitFiscalForPaidQrCart($cart)) {
-            Log::info('Autoemision fiscal QR omitida por estado no elegible.', [
-                'cart_id' => $cart->id ?? null,
-                'codigo_orden' => $cart->codigo_orden ?? null,
-                'estado_pago' => $cart->estado_pago ?? null,
-                'estado_emision' => $cart->estado_emision ?? null,
-            ]);
-            return [
-                'ok' => true,
-                'skipped' => true,
-                'reason' => 'not_eligible',
-                'cart' => $this->cartById((int) ($cart->id ?? 0)),
-            ];
-        }
-
-        $cartId = (int) ($cart->id ?? 0);
-        if ($cartId <= 0) {
-            return ['ok' => false, 'skipped' => true, 'reason' => 'invalid_cart'];
-        }
-
-        $lock = Cache::lock($this->qrFiscalEmitLockKey($cartId), 45);
-        if (!$lock->get()) {
-            Log::info('Autoemision fiscal QR omitida por lock activo.', [
-                'cart_id' => $cartId,
-                'codigo_orden' => $cart->codigo_orden ?? null,
-            ]);
-            return [
-                'ok' => true,
-                'skipped' => true,
-                'reason' => 'locked',
-                'cart' => $this->cartById($cartId),
-            ];
-        }
-
-        try {
-            $freshCart = DB::table('facturacion_carts')->where('id', $cartId)->first();
-            if (!$freshCart || !$this->shouldEmitFiscalForPaidQrCart($freshCart)) {
-                Log::info('Autoemision fiscal QR omitida tras recarga de carrito.', [
-                    'cart_id' => $cartId,
-                    'codigo_orden' => $cart->codigo_orden ?? null,
-                ]);
-                return [
-                    'ok' => true,
-                    'skipped' => true,
-                    'reason' => 'already_processed',
-                    'cart' => $this->cartById($cartId),
-                ];
-            }
-
-            $items = DB::table('facturacion_cart_items')
-                ->where('cart_id', $cartId)
-                ->orderBy('id')
-                ->get()
-                ->map(function ($i) {
-                    $i->resumen_origen = $this->decode((string) ($i->resumen_origen ?? ''));
-                    return $i;
-                });
-
-            if ($items->isEmpty()) {
-                DB::table('facturacion_carts')->where('id', $cartId)->update([
-                    'estado_emision' => 'ERROR',
-                    'mensaje_emision' => 'La venta QR fue pagada, pero no tiene items para emitir factura.',
-                    'updated_at' => now(),
-                ]);
-
-                Log::warning('Autoemision fiscal QR fallida: carrito sin items.', [
-                    'cart_id' => $cartId,
-                    'codigo_orden' => $freshCart->codigo_orden ?? null,
-                ]);
-
-                return [
-                    'ok' => false,
-                    'skipped' => false,
-                    'reason' => 'missing_items',
-                    'cart' => $this->cartById($cartId),
-                ];
-            }
-
-            DB::table('facturacion_carts')->where('id', $cartId)->update([
-                'mensaje_emision' => 'Pago QR confirmado. Emitiendo factura electronica...',
-                'updated_at' => now(),
-            ]);
-
-            $emitReq = Request::create('/api/factura-venta/emitir', 'POST', $this->payloadFromCart($freshCart, $items));
-            $emitReq->headers->set('Accept', 'application/json');
-            $emitReq->headers->set('X-Bridge-Debug', 'true');
-            $emitRes = app(FacturaVentaApiController::class)->emitir($emitReq);
-
-            $body = json_decode($emitRes->getContent(), true);
-            if (!is_array($body)) {
-                $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta fiscal no valida.'];
-            }
-
-            $codigoSeguimientoFiscal = trim((string) (
-                $body['codigoSeguimiento']
-                ?? data_get($body, 'sefe.datos.codigoSeguimiento', '')
-            ));
-            $estadoEmision = (string) ($body['estado'] ?? 'ERROR');
-            $mensajeEmision = (string) ($body['mensaje'] ?? $body['message'] ?? '');
-            $previousResponse = $this->decode((string) ($freshCart->respuesta_emision ?? ''));
-
-            $mergedResponse = $body;
-            if ($previousResponse !== []) {
-                $mergedResponse['qr_checkout'] = $previousResponse;
-            }
-
-            DB::table('facturacion_carts')->where('id', $cartId)->update([
-                'codigo_seguimiento' => $codigoSeguimientoFiscal !== '' ? $codigoSeguimientoFiscal : ($freshCart->codigo_seguimiento ?? null),
-                'codigo_seguimiento_fiscal' => $codigoSeguimientoFiscal !== '' ? $codigoSeguimientoFiscal : ($freshCart->codigo_seguimiento_fiscal ?? null),
-                'estado_emision' => $estadoEmision,
-                'mensaje_emision' => $mensajeEmision,
-                'respuesta_emision' => json_encode($mergedResponse, JSON_UNESCAPED_UNICODE),
-                'estado' => 'emitido',
-                'emitido_en' => $freshCart->emitido_en ?? now(),
-                'cerrado_en' => $freshCart->cerrado_en ?? now(),
-                'updated_at' => now(),
-            ]);
-
-            Log::info('Factura automatica emitida para venta QR pagada.', [
-                'cart_id' => $cartId,
-                'codigo_orden' => $freshCart->codigo_orden ?? null,
-                'codigo_seguimiento_fiscal' => $codigoSeguimientoFiscal,
-                'estado_emision' => $estadoEmision,
-            ]);
-
-            return [
-                'ok' => (bool) ($body['ok'] ?? false),
-                'skipped' => false,
-                'reason' => 'emitted',
-                'cart' => $this->cartById($cartId),
-                'respuesta' => $body,
-                'status_code' => $emitRes->getStatusCode(),
-            ];
-        } finally {
-            optional($lock)->release();
-        }
-    }
-
 
     private function nextBridgeCodigoOrden(string $canalEmision = 'factura_electronica'): string
     {
@@ -1026,46 +810,36 @@ class FacturacionCartIntegrationController extends Controller
             $canalEmision = 'factura_electronica';
         }
 
-        $prefix = $canalEmision === 'qr' ? 'VQ-' : 'VF-';
+        $prefix = $canalEmision === 'qr' ? 'VQ-' : 'VFp';
         $padLength = 11;
+        $next = 1;
         $pattern = '/^' . preg_quote($prefix, '/') . '(\d{' . $padLength . '})$/';
-        $lock = Cache::lock('facturacion-cart-codigo-orden:' . $prefix, 10);
 
-        if (!$lock->get()) {
-            return $prefix . str_pad((string) random_int(1, (10 ** $padLength) - 1), $padLength, '0', STR_PAD_LEFT);
+        $ventasCodes = DB::table('ventas')
+            ->whereNotNull('codigoOrden')
+            ->where('codigoOrden', 'like', $prefix . '%')
+            ->pluck('codigoOrden');
+
+        foreach ($ventasCodes as $code) {
+            $code = trim((string) $code);
+            if (preg_match($pattern, $code, $m)) {
+                $next = max($next, ((int) $m[1]) + 1);
+            }
         }
 
-        try {
-            $next = 1;
+        $cartCodes = DB::table('facturacion_carts')
+            ->whereNotNull('codigo_orden')
+            ->where('codigo_orden', 'like', $prefix . '%')
+            ->pluck('codigo_orden');
 
-            $ventasCodes = DB::table('ventas')
-                ->whereNotNull('codigoOrden')
-                ->where('codigoOrden', 'like', $prefix . '%')
-                ->pluck('codigoOrden');
-
-            foreach ($ventasCodes as $code) {
-                $code = trim((string) $code);
-                if (preg_match($pattern, $code, $m)) {
-                    $next = max($next, ((int) $m[1]) + 1);
-                }
+        foreach ($cartCodes as $code) {
+            $code = trim((string) $code);
+            if (preg_match($pattern, $code, $m)) {
+                $next = max($next, ((int) $m[1]) + 1);
             }
-
-            $cartCodes = DB::table('facturacion_carts')
-                ->whereNotNull('codigo_orden')
-                ->where('codigo_orden', 'like', $prefix . '%')
-                ->pluck('codigo_orden');
-
-            foreach ($cartCodes as $code) {
-                $code = trim((string) $code);
-                if (preg_match($pattern, $code, $m)) {
-                    $next = max($next, ((int) $m[1]) + 1);
-                }
-            }
-
-            return $prefix . str_pad((string) $next, $padLength, '0', STR_PAD_LEFT);
-        } finally {
-            optional($lock)->release();
         }
+
+        return $prefix . str_pad((string) $next, $padLength, '0', STR_PAD_LEFT);
     }
 
     private function buildDetalleCodigo(string $codigoPaquete, string $codigoProductoFallback): string
@@ -1100,18 +874,6 @@ class FacturacionCartIntegrationController extends Controller
         return $row ? $this->cartById((int) $row->id) : null;
     }
 
-    private function latestNonDraftCart(string $userId): ?array
-    {
-        $row = DB::table('facturacion_carts')
-            ->where('origen_usuario_id', $userId)
-            ->where('estado', '<>', 'borrador')
-            ->orderByDesc('emitido_en')
-            ->orderByDesc('id')
-            ->first();
-
-        return $row ? $this->cartById((int) $row->id) : null;
-    }
-
     private function cartById(int $id): ?array
     {
         $c = DB::table('facturacion_carts')->where('id', $id)->first();
@@ -1130,54 +892,6 @@ class FacturacionCartIntegrationController extends Controller
             return (int) $draft->id;
         }
         return (int) DB::table('facturacion_carts')->insertGetId(array_merge(['origen_usuario_id' => $userId, 'estado' => 'borrador', 'modalidad_facturacion' => 'con_datos', 'canal_emision' => 'factura_electronica', 'metodo_pago' => 'efectivo', 'estado_pago' => 'pendiente', 'cantidad_items' => 0, 'subtotal' => 0, 'total_extras' => 0, 'total' => 0, 'abierto_en' => now(), 'created_at' => now(), 'updated_at' => now()], $updates));
-    }
-
-    private function createFreshDraftAfterQrEmission(object $cart): void
-    {
-        $userId = trim((string) ($cart->origen_usuario_id ?? ''));
-        if ($userId === '') {
-            return;
-        }
-
-        $existingDraft = DB::table('facturacion_carts')
-            ->where('origen_usuario_id', $userId)
-            ->where('estado', 'borrador')
-            ->exists();
-
-        if ($existingDraft) {
-            return;
-        }
-
-        $updates = [
-            'origen_usuario_nombre' => $this->nullBlank($cart->origen_usuario_nombre ?? null),
-            'origen_usuario_email' => $this->nullBlank($cart->origen_usuario_email ?? null),
-            'origen_sucursal_id' => $this->nullBlank($cart->origen_sucursal_id ?? null),
-            'origen_sucursal_codigo' => $this->nullBlank($cart->origen_sucursal_codigo ?? null),
-            'origen_sucursal_nombre' => $this->nullBlank($cart->origen_sucursal_nombre ?? null),
-            'modalidad_facturacion' => 'con_datos',
-            'canal_emision' => 'factura_electronica',
-            'metodo_pago' => 'efectivo',
-            'estado_pago' => 'pendiente',
-            'tipo_documento' => $this->nullBlank($cart->tipo_documento ?? null),
-            'numero_documento' => $this->nullBlank($cart->numero_documento ?? null),
-            'complemento_documento' => $this->nullBlank($cart->complemento_documento ?? null),
-            'razon_social' => $this->nullBlank($cart->razon_social ?? null),
-            'correo_facturacion' => $this->nullBlank($cart->correo_facturacion ?? null),
-        ];
-
-        $updates = array_merge($updates, $this->identityColumnsForCart([
-            'origen_usuario_alias' => $cart->origen_usuario_alias ?? null,
-            'origen_usuario_carnet' => $cart->origen_usuario_carnet ?? null,
-        ]));
-
-        $draftId = $this->ensureDraft($userId, $updates);
-
-        Log::info('Se creo un nuevo borrador despues de generar un QR.', [
-            'origen_usuario_id' => $userId,
-            'venta_qr_cart_id' => $cart->id ?? null,
-            'nuevo_draft_id' => $draftId,
-            'codigo_orden_qr' => $cart->codigo_orden ?? null,
-        ]);
     }
 
     private function recalc(int $cartId): void
@@ -1298,42 +1012,6 @@ class FacturacionCartIntegrationController extends Controller
     private function emitLockKey(string $userId): string
     {
         return 'facturacion-cart-emitir:' . trim($userId);
-    }
-
-    private function qrFiscalEmitLockKey(int $cartId): string
-    {
-        return 'facturacion-cart-qr-fiscal:' . $cartId;
-    }
-
-    private function shouldEmitFiscalForPaidQrCart(object $cart): bool
-    {
-        $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? '')));
-        $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
-        $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
-        $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? ''));
-
-        if ($canalEmision !== 'qr' || $estadoPago !== 'pagado') {
-            return false;
-        }
-
-        if ($codigoSeguimientoFiscal !== '') {
-            return false;
-        }
-
-        return in_array($estadoEmision, ['', 'NO_APLICA'], true);
-    }
-
-    private function shouldConsultFiscalForQrCart(object $cart): bool
-    {
-        $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
-        $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
-        $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? $cart->codigo_seguimiento ?? ''));
-
-        if ($estadoPago !== 'pagado') {
-            return false;
-        }
-
-        return $codigoSeguimientoFiscal !== '' || !in_array($estadoEmision, ['', 'NO_APLICA'], true);
     }
 
     private function shouldReusePendingQr(object $cart): bool
