@@ -1403,8 +1403,17 @@ class VentaController extends Controller
         $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
 
         if ($canal === 'qr') {
+            if ($estadoEmision === 'FACTURADA') {
+                return ['key' => 'FACTURADA', 'label' => 'Facturada'];
+            }
+            if ($estadoEmision === 'PENDIENTE') {
+                return ['key' => 'FACTURA_EN_PROCESO', 'label' => 'Factura en proceso'];
+            }
+            if (in_array($estadoEmision, ['RECHAZADA', 'ERROR'], true)) {
+                return ['key' => $estadoEmision, 'label' => $estadoEmision === 'RECHAZADA' ? 'Factura rechazada' : 'Error de factura'];
+            }
             if ($estadoPago === 'pagado' || $estado === 'emitido') {
-                return ['key' => 'QR_PAGADO', 'label' => 'Pagado QR'];
+                return ['key' => 'QR_PAGADO', 'label' => 'Pago QR confirmado'];
             }
             if ($estadoPago === 'cancelado') {
                 return ['key' => 'QR_RECHAZADO', 'label' => 'QR rechazado'];
