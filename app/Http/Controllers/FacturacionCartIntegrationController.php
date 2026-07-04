@@ -65,6 +65,20 @@ class FacturacionCartIntegrationController extends Controller
         $metodoPago = $canal === 'qr' ? 'qr' : 'efectivo';
         $estadoPago = $canal === 'qr' ? 'pendiente' : 'pagado';
 
+        $draft = DB::table('facturacion_carts')
+            ->where('origen_usuario_id', (string) $v['origen_usuario_id'])
+            ->where('estado', 'borrador')
+            ->latest('id')
+            ->first();
+
+        if (!$draft) {
+            return response()->json([
+                'ok' => true,
+                'cart' => null,
+                'draft_missing' => true,
+            ]);
+        }
+
         $cartId = $this->ensureDraft((string) $v['origen_usuario_id'], array_merge([
             'origen_usuario_nombre' => $this->nullBlank($v['origen_usuario_nombre'] ?? null),
             'origen_usuario_email' => $this->nullBlank($v['origen_usuario_email'] ?? null),
