@@ -529,8 +529,14 @@ class FacturacionCartIntegrationController extends Controller
         if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
         $statusCode = $cRes->getStatusCode();
         if ($canalEmision === 'qr') {
-            $body['estado'] = $this->mapQrPaymentStatusToEmissionState((string) ($body['payment_status'] ?? 'holding'));
-            $body['mensaje'] = (string) ($body['message'] ?? 'Estado QR actualizado. Sin factura fiscal automatica.');
+            $resolvedPaymentStatus = (string) ($body['payment_status'] ?? 'holding');
+            $resolvedPaymentState = $this->mapQrPaymentStatusToPaymentState($resolvedPaymentStatus);
+            $body['estado'] = $this->mapQrPaymentStatusToEmissionState($resolvedPaymentStatus);
+            $body['mensaje'] = match ($resolvedPaymentState) {
+                'pagado' => 'Pago QR confirmado. Se continuara automaticamente con la factura electronica.',
+                'cancelado' => 'El pago QR no se completo o fue cancelado.',
+                default => 'QR generado. La venta sigue pendiente de pago hasta que el cliente complete la transaccion.',
+            };
         }
 
         $updates = [
@@ -594,20 +600,20 @@ class FacturacionCartIntegrationController extends Controller
             'rechazadas' => (clone $sum)->where(function ($query) {
                 $query->whereRaw("upper(coalesce(estado_emision, '')) = 'RECHAZADA'")
                     ->orWhere(function ($qr) {
-                        $qr->where('canal_emision', 'qr')
+                        $qr->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                             ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'cancelado'");
                     });
             })->count(),
-            'qrPagados' => (clone $sum)->where('canal_emision', 'qr')
+            'qrPagados' => (clone $sum)->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                 ->where('estado', 'emitido')
                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
                 ->count(),
-            'qrPendientes' => (clone $sum)->where('canal_emision', 'qr')
+            'qrPendientes' => (clone $sum)->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                 ->where('estado', 'pendiente_pago')
                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pendiente'")
                 ->count(),
             'montoQr' => (float) ((clone $sum)
-                ->where('canal_emision', 'qr')
+                ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                 ->where('estado', 'emitido')
                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
                 ->sum('total')),
@@ -665,7 +671,7 @@ class FacturacionCartIntegrationController extends Controller
                 ->filter(fn ($row) => (bool) data_get($row, 'contabiliza_en_caja', true))
                 ->sum('importe_general'), 2),
             'qr' => round((float) $rows
-                ->filter(fn ($row) => strtolower((string) data_get($row, 'canal_emision', '')) === 'qr')
+                ->filter(fn ($row) => strtolower((string) data_get($row, 'metodo_pago', '')) === 'qr')
                 ->sum('importe_general'), 2),
         ];
 
