@@ -325,13 +325,25 @@ class FacturacionCartIntegrationController extends Controller
         $overrideMode = in_array((string) ($validated['modalidad_facturacion'] ?? ''), ['con_datos', 'sin_cliente'], true)
             ? (string) $validated['modalidad_facturacion']
             : (string) ($cart->modalidad_facturacion ?? 'con_datos');
+        $preservePaidQrPayment = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
+            && strtolower(trim((string) ($cart->estado_pago ?? ''))) === 'pagado'
+            && trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+        $resolvedMetodoPago = $preservePaidQrPayment
+            ? 'qr'
+            : ($overrideCanal === 'qr' ? 'qr' : 'efectivo');
+        $resolvedEstadoPago = $preservePaidQrPayment
+            ? 'pagado'
+            : ($overrideCanal === 'qr' ? 'pendiente' : 'pagado');
+        $resolvedQrTransactionId = $preservePaidQrPayment
+            ? ($cart->qr_transaction_id ?? null)
+            : ($overrideCanal === 'qr' ? ($cart->qr_transaction_id ?? null) : null);
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'modalidad_facturacion' => $overrideMode,
             'canal_emision' => $overrideCanal,
-            'metodo_pago' => $overrideCanal === 'qr' ? 'qr' : 'efectivo',
-            'estado_pago' => $overrideCanal === 'qr' ? 'pendiente' : 'pagado',
-            'qr_transaction_id' => $overrideCanal === 'qr' ? ($cart->qr_transaction_id ?? null) : null,
+            'metodo_pago' => $resolvedMetodoPago,
+            'estado_pago' => $resolvedEstadoPago,
+            'qr_transaction_id' => $resolvedQrTransactionId,
             'codigo_seguimiento_fiscal' => $overrideCanal === 'qr' ? ($cart->codigo_seguimiento_fiscal ?? null) : null,
             'tipo_documento' => $validated['tipo_documento'] ?? $cart->tipo_documento,
             'numero_documento' => $validated['numero_documento'] ?? $cart->numero_documento,
@@ -370,7 +382,7 @@ class FacturacionCartIntegrationController extends Controller
         $codigoOrdenIntento = $this->nextBridgeCodigoOrden($canalEmision);
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
-            'qr_transaction_id' => null,
+            'qr_transaction_id' => $preservePaidQrPayment ? ($cart->qr_transaction_id ?? null) : null,
             'codigo_seguimiento' => null,
             'codigo_seguimiento_fiscal' => null,
             'emitido_en' => null,
@@ -423,7 +435,9 @@ class FacturacionCartIntegrationController extends Controller
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenEmitido,
-            'qr_transaction_id' => $canalEmision === 'qr' ? $qrTransactionId : null,
+            'qr_transaction_id' => $canalEmision === 'qr'
+                ? $qrTransactionId
+                : ($preservePaidQrPayment ? ($cart->qr_transaction_id ?? null) : null),
             'codigo_seguimiento' => $canalEmision === 'qr' ? null : $codigoSeguimientoEmitido,
             'codigo_seguimiento_fiscal' => $canalEmision === 'qr' ? null : $codigoSeguimientoEmitido,
             'estado_emision' => (string) ($body['estado'] ?? ($ok ? ($canalEmision === 'qr' ? 'NO_APLICA' : 'PENDIENTE') : 'RECHAZADA')),
@@ -432,6 +446,8 @@ class FacturacionCartIntegrationController extends Controller
             'estado' => $ok ? ($canalEmision === 'qr'
                 ? ($qrPaymentState === 'pagado' ? 'emitido' : 'pendiente_pago')
                 : 'emitido') : 'borrador',
+            'metodo_pago' => $preservePaidQrPayment ? 'qr' : ($canalEmision === 'qr' ? 'qr' : 'efectivo'),
+            'estado_pago' => $preservePaidQrPayment ? 'pagado' : ($canalEmision === 'qr' ? $qrPaymentState : 'pagado'),
             'emitido_en' => $ok && ($canalEmision !== 'qr' || $qrPaymentState === 'pagado') ? now() : null,
             'cerrado_en' => $ok && ($canalEmision !== 'qr' || $qrPaymentState === 'pagado') ? now() : null,
             'updated_at' => now(),
