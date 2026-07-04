@@ -980,20 +980,12 @@ class FacturaVentaApiController extends Controller
                     'body' => $payload,
                 ]);
 
-                $cashierContext = $this->waitForCashierOutcome($venta);
-
-                if ($cashierContext['venta'] instanceof \stdClass) {
-                    $payload = $this->bridgeConsultPayloadFromVenta(
-                        $cashierContext['venta'],
-                        $cashierContext['notificacion'],
-                        $cashierContext['consulta']
-                    );
-
-                    return response()->json(
-                        $this->formatResponseForClient($request, $payload['base'], $payload['verbose']),
-                        $response->status()
-                    );
-                }
+                Log::info('FacturaVentaApi emitir returning immediately after accepted response', [
+                    'codigoOrden' => $venta['codigoOrden'],
+                    'codigoSeguimiento' => $codigoSeguimiento,
+                    'status' => $response->status(),
+                    'is_final' => $reception['is_final'],
+                ]);
 
                 $payload = $this->emitResponsePayload($validated, $payload ?? [], $venta, $reception['is_final']);
 
