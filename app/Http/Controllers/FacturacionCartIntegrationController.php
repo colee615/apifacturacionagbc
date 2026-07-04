@@ -34,6 +34,7 @@ class FacturacionCartIntegrationController extends Controller
     {
         $v = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
+            'cart_id' => 'nullable|integer|min:1',
             'origen_usuario_nombre' => 'nullable|string|max:255',
             'origen_usuario_email' => 'nullable|string|max:255',
             'origen_usuario_alias' => 'nullable|string|max:80',
@@ -65,11 +66,14 @@ class FacturacionCartIntegrationController extends Controller
         $metodoPago = $canal === 'qr' ? 'qr' : 'efectivo';
         $estadoPago = $canal === 'qr' ? 'pendiente' : 'pagado';
 
-        $draft = DB::table('facturacion_carts')
-            ->where('origen_usuario_id', (string) $v['origen_usuario_id'])
-            ->where('estado', 'borrador')
-            ->latest('id')
-            ->first();
+        $draftQuery = DB::table('facturacion_carts')
+            ->where('origen_usuario_id', (string) $v['origen_usuario_id']);
+        if (!empty($v['cart_id'])) {
+            $draftQuery->where('id', (int) $v['cart_id']);
+        } else {
+            $draftQuery->where('estado', 'borrador');
+        }
+        $draft = $draftQuery->latest('id')->first();
 
         if (!$draft) {
             return response()->json([
@@ -79,7 +83,7 @@ class FacturacionCartIntegrationController extends Controller
             ]);
         }
 
-        $cartId = $this->ensureDraft((string) $v['origen_usuario_id'], array_merge([
+        $updates = array_merge([
             'origen_usuario_nombre' => $this->nullBlank($v['origen_usuario_nombre'] ?? null),
             'origen_usuario_email' => $this->nullBlank($v['origen_usuario_email'] ?? null),
             'origen_sucursal_id' => $this->nullBlank($v['origen_sucursal_id'] ?? null),
@@ -94,7 +98,17 @@ class FacturacionCartIntegrationController extends Controller
             'complemento_documento' => $complemento,
             'razon_social' => $razon,
             'correo_facturacion' => $correoFacturacion,
-        ], $this->identityColumnsForCart($v)));
+        ], $this->identityColumnsForCart($v));
+
+        if (!empty($v['cart_id'])) {
+            DB::table('facturacion_carts')
+                ->where('id', (int) $draft->id)
+                ->update(array_merge($updates, ['updated_at' => now()]));
+
+            return response()->json(['ok' => true, 'cart' => $this->cartById((int) $draft->id)]);
+        }
+
+        $cartId = $this->ensureDraft((string) $v['origen_usuario_id'], $updates);
 
         return response()->json(['ok' => true, 'cart' => $this->cartById($cartId)]);
     }
@@ -283,6 +297,7 @@ class FacturacionCartIntegrationController extends Controller
     {
         $validated = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
+            'cart_id' => 'nullable|integer|min:1',
             'modalidad_facturacion' => 'nullable|in:con_datos,sin_cliente',
             'canal_emision' => 'nullable|in:factura_electronica,qr',
             'tipo_documento' => 'nullable|string|max:20',
@@ -301,18 +316,33 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         try {
-        $cart = DB::table('facturacion_carts')
-            ->where('origen_usuario_id', $userId)
-            ->where(function ($query) {
+        $cartId = isset($validated['cart_id']) ? (int) $validated['cart_id'] : 0;
+        $cartQuery = DB::table('facturacion_carts')
+            ->where('origen_usuario_id', $userId);
+
+        if ($cartId > 0) {
+            $cartQuery->where('id', $cartId)
+                ->where(function ($query) {
+                    $query->where('estado', 'borrador')
+                        ->orWhere(function ($qr) {
+                            $qr->where('canal_emision', 'qr')
+                                ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
+                                ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
+                                ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('NO_APLICA','PENDIENTE','ERROR','RECHAZADA')");
+                        });
+                });
+        } else {
+            $cartQuery->where(function ($query) {
                 $query->where('estado', 'borrador')
                     ->orWhere(function ($qr) {
                         $qr->where('estado', 'pendiente_pago')
                             ->where('canal_emision', 'qr')
                             ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) <> 'pagado'");
                     });
-            })
-            ->latest('id')
-            ->first();
+            });
+        }
+
+        $cart = $cartQuery->latest('id')->first();
         if (!$cart) return response()->json(['ok' => false, 'message' => 'No se encontro un borrador de facturacion activo.'], 422);
 
         $overrideCanal = in_array((string) ($validated['canal_emision'] ?? ''), ['factura_electronica', 'qr'], true)
