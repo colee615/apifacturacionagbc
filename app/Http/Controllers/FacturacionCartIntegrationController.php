@@ -192,6 +192,10 @@ class FacturacionCartIntegrationController extends Controller
             'direccion' => 'nullable|string|max:255',
             'ciudad' => 'nullable|string|max:255',
             'peso' => 'nullable|numeric|min:0',
+            'precio' => 'nullable|numeric|min:0',
+            'monto_base' => 'nullable|numeric|min:0',
+            'monto_extras' => 'nullable|numeric|min:0',
+            'total_linea' => 'nullable|numeric|min:0',
             'actividad_economica' => 'nullable|string|max:20',
             'codigo_sin' => 'nullable|string|max:50',
             'codigo_producto' => 'nullable|string|max:50',
@@ -223,12 +227,29 @@ class FacturacionCartIntegrationController extends Controller
         $r['descripcion_servicio'] = trim((string) ($v['descripcion_servicio'] ?? ($r['descripcion_servicio'] ?? '')));
         $r['unidad_medida'] = isset($v['unidad_medida']) ? (int) $v['unidad_medida'] : ($r['unidad_medida'] ?? null);
 
+        $cantidad = max(1, (int) ($row->cantidad ?? 1));
+        $montoExtras = isset($v['monto_extras']) ? round((float) $v['monto_extras'], 2) : round((float) ($row->monto_extras ?? 0), 2);
+        $montoBase = isset($v['precio'])
+            ? round((float) $v['precio'], 2)
+            : (isset($v['monto_base']) ? round((float) $v['monto_base'], 2) : round((float) ($row->monto_base ?? 0), 2));
+        $totalLinea = isset($v['total_linea'])
+            ? round((float) $v['total_linea'], 2)
+            : round((($montoBase + $montoExtras) * $cantidad), 2);
+
+        $r['precio'] = $montoBase;
+        $r['monto_base'] = $montoBase;
+        $r['monto_extras'] = $montoExtras;
+        $r['total_linea'] = $totalLinea;
+
         DB::table('facturacion_cart_items')->where('id', $itemId)->update([
             'codigo' => trim((string) $v['codigo']),
             'titulo' => trim((string) $v['titulo']),
             'nombre_servicio' => $this->nullBlank($v['nombre_servicio'] ?? null),
             'nombre_destinatario' => $this->nullBlank($v['nombre_destinatario'] ?? null),
             'resumen_origen' => json_encode($r, JSON_UNESCAPED_UNICODE),
+            'monto_base' => $montoBase,
+            'monto_extras' => $montoExtras,
+            'total_linea' => $totalLinea,
             'updated_at' => now(),
         ]);
 

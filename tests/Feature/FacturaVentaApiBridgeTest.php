@@ -480,6 +480,81 @@ class FacturaVentaApiBridgeTest extends TestCase
             ]);
     }
 
+    public function test_update_item_persists_new_price_and_recalculates_cart_total(): void
+    {
+        $cartId = (int) DB::table('facturacion_carts')->insertGetId([
+            'origen_usuario_id' => 'operador-test',
+            'origen_usuario_nombre' => 'Operador Bolipost',
+            'origen_usuario_email' => 'operador@test.com',
+            'origen_sucursal_id' => '0',
+            'origen_sucursal_codigo' => '0',
+            'origen_sucursal_nombre' => 'Sucursal Test',
+            'estado' => 'borrador',
+            'modalidad_facturacion' => 'con_datos',
+            'canal_emision' => 'factura_electronica',
+            'metodo_pago' => 'efectivo',
+            'estado_pago' => 'pendiente',
+            'cantidad_items' => 1,
+            'subtotal' => 5,
+            'total_extras' => 0,
+            'total' => 5,
+            'abierto_en' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $itemId = (int) DB::table('facturacion_cart_items')->insertGetId([
+            'cart_id' => $cartId,
+            'origen_tipo' => 'App\\Models\\PaqueteCerti',
+            'origen_id' => 10,
+            'codigo' => 'RC659028552MX',
+            'titulo' => 'CERTIFICADAS',
+            'nombre_servicio' => 'CERTIFICADAS',
+            'nombre_destinatario' => 'FERMIN EMILIO SOSARODRIGUEZ',
+            'servicios_extra' => json_encode([]),
+            'resumen_origen' => json_encode([
+                'codigo' => 'RC659028552MX',
+                'peso' => 0.145,
+            ]),
+            'cantidad' => 1,
+            'monto_base' => 5,
+            'monto_extras' => 0,
+            'total_linea' => 5,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer test-bridge-token',
+            'Accept' => 'application/json',
+        ])->putJson('/api/factura-venta/cart/items/' . $itemId, [
+            'origen_usuario_id' => 'operador-test',
+            'codigo' => 'RC659028552MX',
+            'titulo' => 'CERTIFICADAS',
+            'precio' => 10,
+            'nombre_servicio' => 'CERTIFICADAS',
+            'nombre_destinatario' => 'FERMIN EMILIO SOSARODRIGUEZ',
+        ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('ok', true);
+        $response->assertJsonPath('cart.total', 10);
+        $response->assertJsonPath('cart.subtotal', 10);
+        $response->assertJsonPath('cart.items.0.monto_base', 10);
+        $response->assertJsonPath('cart.items.0.total_linea', 10);
+
+        $this->assertDatabaseHas('facturacion_cart_items', [
+            'id' => $itemId,
+            'monto_base' => 10,
+            'total_linea' => 10,
+        ]);
+        $this->assertDatabaseHas('facturacion_carts', [
+            'id' => $cartId,
+            'subtotal' => 10,
+            'total' => 10,
+        ]);
+    }
+
     private function insertProcessedVenta(string $codigoOrden, string $codigoSeguimiento, string $cuf): int
     {
         return (int) DB::table('ventas')->insertGetId([
