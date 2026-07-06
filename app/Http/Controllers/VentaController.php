@@ -1328,6 +1328,70 @@ class VentaController extends Controller
         ]);
     }
 
+    public function reporteSucursalesUsuarios(Request $request)
+    {
+        $request->validate([
+            'codigoSucursal' => ['required', 'integer', 'min:0'],
+            'puntoVenta' => ['required', 'integer', 'min:0'],
+            'q' => ['nullable', 'string', 'max:100'],
+            'limite' => ['nullable', 'integer', 'min:1', 'max:500'],
+        ]);
+
+        $filters = $this->requestIdentityFilters($request);
+        $filters['codigoSucursal'] = (int) $request->query('codigoSucursal');
+        $filters['puntoVenta'] = (int) $request->query('puntoVenta');
+        $filters['q'] = trim((string) $request->query('q', '')) ?: null;
+
+        $usuarios = (clone $this->buildVentaReportQuery($filters))
+            ->selectRaw(
+                '
+                    coalesce(nullif(origen_usuario_id, \'\'), \'SIN-USUARIO\') as usuario_id,
+                    max(coalesce(nullif(origen_usuario_nombre, \'\'), \'Sin usuario\')) as usuario_nombre,
+                    ' . ($this->hasOrigenUsuarioEmailColumn() ? "max(nullif(origen_usuario_email, '')) as usuario_email," : "null as usuario_email,") . '
+                    ' . ($this->hasOrigenUsuarioAliasColumn() ? "max(nullif(origen_usuario_alias, '')) as usuario_alias," : "null as usuario_alias,") . '
+                    ' . ($this->hasOrigenUsuarioCarnetColumn() ? "max(nullif(origen_usuario_carnet, '')) as usuario_carnet," : "null as usuario_carnet,") . '
+                    max(coalesce(nullif(origen_sucursal_nombre, \'\'), concat(\'Sucursal \', "codigoSucursal", \' / PV \', "puntoVenta"), \'Sin sucursal\')) as sucursal_nombre,
+                    count(*) as cantidad_ventas,
+                    coalesce(sum(total), 0) as total_vendido,
+                    min(created_at) as primera_venta,
+                    max(created_at) as ultima_venta
+                '
+            )
+            ->groupByRaw(
+                'coalesce(nullif(origen_usuario_id, \'\'), \'SIN-USUARIO\'), "codigoSucursal", "puntoVenta"'
+            )
+            ->orderByDesc('cantidad_ventas')
+            ->orderBy('usuario_nombre')
+            ->get();
+
+        return response()->json([
+            'filters' => $filters,
+            'sucursal' => [
+                'codigoSucursal' => (int) $filters['codigoSucursal'],
+                'puntoVenta' => (int) $filters['puntoVenta'],
+            ],
+            'resumen' => [
+                'usuarios' => $usuarios->count(),
+                'ventas' => (int) $usuarios->sum('cantidad_ventas'),
+                'totalVendido' => (float) $usuarios->sum(fn ($row) => (float) $row->total_vendido),
+            ],
+            'usuarios' => $usuarios->map(function ($row) {
+                return [
+                    'usuarioId' => $row->usuario_id,
+                    'usuarioNombre' => $row->usuario_nombre,
+                    'usuarioEmail' => $row->usuario_email,
+                    'usuarioAlias' => $row->usuario_alias,
+                    'usuarioCarnet' => $row->usuario_carnet,
+                    'sucursalNombre' => $row->sucursal_nombre,
+                    'cantidadVentas' => (int) $row->cantidad_ventas,
+                    'totalVendido' => (float) $row->total_vendido,
+                    'primeraVenta' => $row->primera_venta,
+                    'ultimaVenta' => $row->ultima_venta,
+                ];
+            })->values(),
+        ]);
+    }
+
     private function buildFacturacionCartReportQuery(array $filters)
     {
         $query = DB::table('facturacion_carts');
