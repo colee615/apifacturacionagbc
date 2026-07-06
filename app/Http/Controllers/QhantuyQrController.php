@@ -185,7 +185,7 @@ class QhantuyQrController extends Controller
             'image_method' => ['nullable', 'string', 'in:URL,BASE64'],
         ]);
 
-        Log::info('Qhantuy checkout request received', [
+        Log::debug('Qhantuy checkout request received', [
             'internal_code' => (string) ($validated['internal_code'] ?? ''),
             'request_keys' => array_keys($validated),
             'items_count' => count((array) ($validated['items'] ?? [])),
@@ -225,7 +225,7 @@ class QhantuyQrController extends Controller
             })->values()->all(),
         ];
 
-        Log::info('Qhantuy checkout payload prepared', [
+        Log::debug('Qhantuy checkout payload prepared', [
             'internal_code' => $payload['internal_code'],
             'url' => $this->checkoutUrl(),
             'payload' => $payload,
@@ -235,7 +235,7 @@ class QhantuyQrController extends Controller
             $response = $this->qhantuyClient()->post($this->checkoutUrl(), $payload);
             $body = $response->json();
 
-            Log::info('Qhantuy checkout response received', [
+            Log::debug('Qhantuy checkout response received', [
                 'internal_code' => $payload['internal_code'],
                 'status' => $response->status(),
                 'successful' => $response->successful(),
@@ -293,7 +293,7 @@ class QhantuyQrController extends Controller
                 ]
             );
 
-            Log::info('Qhantuy checkout persisted', [
+            Log::debug('Qhantuy checkout persisted', [
                 'internal_code' => $payload['internal_code'],
                 'transaction_id' => $transactionId,
                 'payment_status' => $paymentStatus,
@@ -369,7 +369,7 @@ class QhantuyQrController extends Controller
 
     public function callback(Request $request)
     {
-        Log::info('Qhantuy callback received', [
+        Log::debug('Qhantuy callback received', [
             'method' => $request->method(),
             'query' => $request->query(),
             'full_url' => $request->fullUrl(),
@@ -470,7 +470,7 @@ class QhantuyQrController extends Controller
             (string) ($validated['message'] ?? '')
         );
 
-        Log::info('Qhantuy callback applied successfully', [
+        Log::debug('Qhantuy callback applied successfully', [
             'internal_code' => $internalCode,
             'transaction_id' => $incomingTxn,
             'normalized_status' => $status,
@@ -495,7 +495,7 @@ class QhantuyQrController extends Controller
             'internal_code' => ['nullable', 'string', 'max:120'],
         ]);
 
-        Log::info('Qhantuy check-payments requested', [
+        Log::debug('Qhantuy check-payments requested', [
             'payment_ids' => (array) ($validated['payment_ids'] ?? []),
             'internal_code' => (string) ($validated['internal_code'] ?? ''),
             'config' => $this->maskedCheckoutConfig(),
@@ -538,7 +538,7 @@ class QhantuyQrController extends Controller
         }
 
         if ($row && $this->shouldUseCachedCheckResponse($row)) {
-            Log::info('Qhantuy check-payments resolved from cache', [
+            Log::debug('Qhantuy check-payments resolved from cache', [
                 'transaction_id' => $row->transaction_id ?? null,
                 'internal_code' => $row->internal_code ?? null,
                 'payment_status' => $row->payment_status ?? null,
@@ -554,7 +554,7 @@ class QhantuyQrController extends Controller
             ]);
             $body = $response->json();
 
-            Log::info('Qhantuy check-payments response received', [
+            Log::debug('Qhantuy check-payments response received', [
                 'payment_ids' => $paymentIds,
                 'status' => $response->status(),
                 'successful' => $response->successful(),

@@ -34,6 +34,7 @@ class FacturacionCartIntegrationController extends Controller
     {
         $v = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
+            'cart_id' => 'nullable|integer|min:1',
             'origen_usuario_nombre' => 'nullable|string|max:255',
             'origen_usuario_email' => 'nullable|string|max:255',
             'origen_usuario_alias' => 'nullable|string|max:80',
@@ -65,7 +66,24 @@ class FacturacionCartIntegrationController extends Controller
         $metodoPago = $canal === 'qr' ? 'qr' : 'efectivo';
         $estadoPago = $canal === 'qr' ? 'pendiente' : 'pagado';
 
-        $cartId = $this->ensureDraft((string) $v['origen_usuario_id'], array_merge([
+        $draftQuery = DB::table('facturacion_carts')
+            ->where('origen_usuario_id', (string) $v['origen_usuario_id']);
+        if (!empty($v['cart_id'])) {
+            $draftQuery->where('id', (int) $v['cart_id']);
+        } else {
+            $draftQuery->where('estado', 'borrador');
+        }
+        $draft = $draftQuery->latest('id')->first();
+
+        if (!$draft) {
+            return response()->json([
+                'ok' => true,
+                'cart' => null,
+                'draft_missing' => true,
+            ]);
+        }
+
+        $updates = array_merge([
             'origen_usuario_nombre' => $this->nullBlank($v['origen_usuario_nombre'] ?? null),
             'origen_usuario_email' => $this->nullBlank($v['origen_usuario_email'] ?? null),
             'origen_sucursal_id' => $this->nullBlank($v['origen_sucursal_id'] ?? null),
@@ -80,7 +98,17 @@ class FacturacionCartIntegrationController extends Controller
             'complemento_documento' => $complemento,
             'razon_social' => $razon,
             'correo_facturacion' => $correoFacturacion,
-        ], $this->identityColumnsForCart($v)));
+        ], $this->identityColumnsForCart($v));
+
+        if (!empty($v['cart_id'])) {
+            DB::table('facturacion_carts')
+                ->where('id', (int) $draft->id)
+                ->update(array_merge($updates, ['updated_at' => now()]));
+
+            return response()->json(['ok' => true, 'cart' => $this->cartById((int) $draft->id)]);
+        }
+
+        $cartId = $this->ensureDraft((string) $v['origen_usuario_id'], $updates);
 
         return response()->json(['ok' => true, 'cart' => $this->cartById($cartId)]);
     }
@@ -269,6 +297,7 @@ class FacturacionCartIntegrationController extends Controller
     {
         $validated = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
+            'cart_id' => 'nullable|integer|min:1',
             'modalidad_facturacion' => 'nullable|in:con_datos,sin_cliente',
             'canal_emision' => 'nullable|in:factura_electronica,qr',
             'tipo_documento' => 'nullable|string|max:20',
@@ -287,18 +316,33 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         try {
-        $cart = DB::table('facturacion_carts')
-            ->where('origen_usuario_id', $userId)
-            ->where(function ($query) {
+        $cartId = isset($validated['cart_id']) ? (int) $validated['cart_id'] : 0;
+        $cartQuery = DB::table('facturacion_carts')
+            ->where('origen_usuario_id', $userId);
+
+        if ($cartId > 0) {
+            $cartQuery->where('id', $cartId)
+                ->where(function ($query) {
+                    $query->where('estado', 'borrador')
+                        ->orWhere(function ($qr) {
+                            $qr->where('canal_emision', 'qr')
+                                ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
+                                ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
+                                ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('NO_APLICA','PENDIENTE','ERROR','RECHAZADA')");
+                        });
+                });
+        } else {
+            $cartQuery->where(function ($query) {
                 $query->where('estado', 'borrador')
                     ->orWhere(function ($qr) {
                         $qr->where('estado', 'pendiente_pago')
                             ->where('canal_emision', 'qr')
                             ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) <> 'pagado'");
                     });
-            })
-            ->latest('id')
-            ->first();
+            });
+        }
+
+        $cart = $cartQuery->latest('id')->first();
         if (!$cart) return response()->json(['ok' => false, 'message' => 'No se encontro un borrador de facturacion activo.'], 422);
 
         $overrideCanal = in_array((string) ($validated['canal_emision'] ?? ''), ['factura_electronica', 'qr'], true)
@@ -311,13 +355,25 @@ class FacturacionCartIntegrationController extends Controller
         $overrideMode = in_array((string) ($validated['modalidad_facturacion'] ?? ''), ['con_datos', 'sin_cliente'], true)
             ? (string) $validated['modalidad_facturacion']
             : (string) ($cart->modalidad_facturacion ?? 'con_datos');
+        $preservePaidQrPayment = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
+            && strtolower(trim((string) ($cart->estado_pago ?? ''))) === 'pagado'
+            && trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+        $resolvedMetodoPago = $preservePaidQrPayment
+            ? 'qr'
+            : ($overrideCanal === 'qr' ? 'qr' : 'efectivo');
+        $resolvedEstadoPago = $preservePaidQrPayment
+            ? 'pagado'
+            : ($overrideCanal === 'qr' ? 'pendiente' : 'pagado');
+        $resolvedQrTransactionId = $preservePaidQrPayment
+            ? ($cart->qr_transaction_id ?? null)
+            : ($overrideCanal === 'qr' ? ($cart->qr_transaction_id ?? null) : null);
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'modalidad_facturacion' => $overrideMode,
             'canal_emision' => $overrideCanal,
-            'metodo_pago' => $overrideCanal === 'qr' ? 'qr' : 'efectivo',
-            'estado_pago' => $overrideCanal === 'qr' ? 'pendiente' : 'pagado',
-            'qr_transaction_id' => $overrideCanal === 'qr' ? ($cart->qr_transaction_id ?? null) : null,
+            'metodo_pago' => $resolvedMetodoPago,
+            'estado_pago' => $resolvedEstadoPago,
+            'qr_transaction_id' => $resolvedQrTransactionId,
             'codigo_seguimiento_fiscal' => $overrideCanal === 'qr' ? ($cart->codigo_seguimiento_fiscal ?? null) : null,
             'tipo_documento' => $validated['tipo_documento'] ?? $cart->tipo_documento,
             'numero_documento' => $validated['numero_documento'] ?? $cart->numero_documento,
@@ -356,7 +412,7 @@ class FacturacionCartIntegrationController extends Controller
         $codigoOrdenIntento = $this->nextBridgeCodigoOrden($canalEmision);
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
-            'qr_transaction_id' => null,
+            'qr_transaction_id' => $preservePaidQrPayment ? ($cart->qr_transaction_id ?? null) : null,
             'codigo_seguimiento' => null,
             'codigo_seguimiento_fiscal' => null,
             'emitido_en' => null,
@@ -409,7 +465,9 @@ class FacturacionCartIntegrationController extends Controller
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenEmitido,
-            'qr_transaction_id' => $canalEmision === 'qr' ? $qrTransactionId : null,
+            'qr_transaction_id' => $canalEmision === 'qr'
+                ? $qrTransactionId
+                : ($preservePaidQrPayment ? ($cart->qr_transaction_id ?? null) : null),
             'codigo_seguimiento' => $canalEmision === 'qr' ? null : $codigoSeguimientoEmitido,
             'codigo_seguimiento_fiscal' => $canalEmision === 'qr' ? null : $codigoSeguimientoEmitido,
             'estado_emision' => (string) ($body['estado'] ?? ($ok ? ($canalEmision === 'qr' ? 'NO_APLICA' : 'PENDIENTE') : 'RECHAZADA')),
@@ -418,6 +476,8 @@ class FacturacionCartIntegrationController extends Controller
             'estado' => $ok ? ($canalEmision === 'qr'
                 ? ($qrPaymentState === 'pagado' ? 'emitido' : 'pendiente_pago')
                 : 'emitido') : 'borrador',
+            'metodo_pago' => $preservePaidQrPayment ? 'qr' : ($canalEmision === 'qr' ? 'qr' : 'efectivo'),
+            'estado_pago' => $preservePaidQrPayment ? 'pagado' : ($canalEmision === 'qr' ? $qrPaymentState : 'pagado'),
             'emitido_en' => $ok && ($canalEmision !== 'qr' || $qrPaymentState === 'pagado') ? now() : null,
             'cerrado_en' => $ok && ($canalEmision !== 'qr' || $qrPaymentState === 'pagado') ? now() : null,
             'updated_at' => now(),
@@ -469,8 +529,14 @@ class FacturacionCartIntegrationController extends Controller
         if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
         $statusCode = $cRes->getStatusCode();
         if ($canalEmision === 'qr') {
-            $body['estado'] = $this->mapQrPaymentStatusToEmissionState((string) ($body['payment_status'] ?? 'holding'));
-            $body['mensaje'] = (string) ($body['message'] ?? 'Estado QR actualizado. Sin factura fiscal automatica.');
+            $resolvedPaymentStatus = (string) ($body['payment_status'] ?? 'holding');
+            $resolvedPaymentState = $this->mapQrPaymentStatusToPaymentState($resolvedPaymentStatus);
+            $body['estado'] = $this->mapQrPaymentStatusToEmissionState($resolvedPaymentStatus);
+            $body['mensaje'] = match ($resolvedPaymentState) {
+                'pagado' => 'Pago QR confirmado. Se continuara automaticamente con la factura electronica.',
+                'cancelado' => 'El pago QR no se completo o fue cancelado.',
+                default => 'QR generado. La venta sigue pendiente de pago hasta que el cliente complete la transaccion.',
+            };
         }
 
         $updates = [
@@ -534,20 +600,20 @@ class FacturacionCartIntegrationController extends Controller
             'rechazadas' => (clone $sum)->where(function ($query) {
                 $query->whereRaw("upper(coalesce(estado_emision, '')) = 'RECHAZADA'")
                     ->orWhere(function ($qr) {
-                        $qr->where('canal_emision', 'qr')
+                        $qr->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                             ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'cancelado'");
                     });
             })->count(),
-            'qrPagados' => (clone $sum)->where('canal_emision', 'qr')
+            'qrPagados' => (clone $sum)->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                 ->where('estado', 'emitido')
                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
                 ->count(),
-            'qrPendientes' => (clone $sum)->where('canal_emision', 'qr')
+            'qrPendientes' => (clone $sum)->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                 ->where('estado', 'pendiente_pago')
                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pendiente'")
                 ->count(),
             'montoQr' => (float) ((clone $sum)
-                ->where('canal_emision', 'qr')
+                ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                 ->where('estado', 'emitido')
                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
                 ->sum('total')),
@@ -605,7 +671,7 @@ class FacturacionCartIntegrationController extends Controller
                 ->filter(fn ($row) => (bool) data_get($row, 'contabiliza_en_caja', true))
                 ->sum('importe_general'), 2),
             'qr' => round((float) $rows
-                ->filter(fn ($row) => strtolower((string) data_get($row, 'canal_emision', '')) === 'qr')
+                ->filter(fn ($row) => strtolower((string) data_get($row, 'metodo_pago', '')) === 'qr')
                 ->sum('importe_general'), 2),
         ];
 
@@ -812,6 +878,7 @@ class FacturacionCartIntegrationController extends Controller
 
         $prefix = $canalEmision === 'qr' ? 'VQ-' : 'prueba-';
         $padLength = $canalEmision === 'qr' ? 11 : 5;
+        $padLength = $canalEmision === 'qr' ? 11 : 6;
         $next = 1;
         $pattern = '/^' . preg_quote($prefix, '/') . '(\d{' . $padLength . '})$/';
 

@@ -905,7 +905,7 @@ class FacturaVentaApiController extends Controller
         $codigoOrdenRecibido = (string) ($requestData['codigoOrden'] ?? '');
         $codigoOrden = $codigoOrdenRecibido;
 
-        Log::info('FacturaVentaApi emitir started', [
+        Log::debug('FacturaVentaApi emitir started', [
             'codigoOrden_recibido' => $codigoOrdenRecibido,
             'ip' => $request->ip(),
             'payload_keys' => array_keys($requestData),
@@ -921,7 +921,7 @@ class FacturaVentaApiController extends Controller
                 ]);
             }
 
-            Log::info('FacturaVentaApi emitir payload validated', [
+            Log::debug('FacturaVentaApi emitir payload validated', [
                 'codigoOrden_recibido' => $codigoOrdenRecibido,
                 'detalle_count' => $detalleCountOriginal,
                 'detalle_count_consolidado' => count($validated['detalle'] ?? []),
@@ -931,12 +931,12 @@ class FacturaVentaApiController extends Controller
             ]);
             $this->assertFacturaVentaSector($validated);
             $this->assertCajaAbierta($validated);
-            Log::info('FacturaVentaApi emitir sector validated', [
+            Log::debug('FacturaVentaApi emitir sector validated', [
                 'codigoOrden_recibido' => $codigoOrdenRecibido,
                 'documentoSector' => $validated['documentoSector'] ?? null,
             ]);
 
-            Log::info('FacturaVentaApi emitir snapshot prepared', [
+            Log::debug('FacturaVentaApi emitir snapshot prepared', [
                 'codigoOrden_recibido' => $codigoOrdenRecibido,
                 'codigoCliente' => $validated['codigoCliente'] ?? null,
                 'razonSocial' => $validated['razonSocial'] ?? null,
@@ -944,14 +944,14 @@ class FacturaVentaApiController extends Controller
                 'origen_usuario_nombre' => data_get($validated, 'origenUsuario.nombre'),
             ]);
             $codigoOrden = $this->resolveCodigoOrden($validated);
-            Log::info('FacturaVentaApi emitir codigoOrden resolved', [
+            Log::debug('FacturaVentaApi emitir codigoOrden resolved', [
                 'codigoOrden' => $codigoOrden,
                 'codigoOrden_recibido' => $codigoOrdenRecibido,
             ]);
             $requestPayload = $this->sanitizePayloadForAgetic($validated);
             $requestPayload['codigoOrden'] = $codigoOrden;
 
-            Log::info('FacturaVentaApi emitir request', $requestPayload);
+            Log::debug('FacturaVentaApi emitir request', $requestPayload);
 
             $response = $this->ageticClient()->post(
                 $this->ageticBaseUrl() . '/facturacion/emision/individual',
@@ -971,7 +971,7 @@ class FacturaVentaApiController extends Controller
                     return $venta;
                 });
 
-                Log::info('FacturaVentaApi emitir response accepted', [
+                Log::debug('FacturaVentaApi emitir response accepted', [
                     'status' => $response->status(),
                     'codigoOrden' => $venta['codigoOrden'],
                     'codigoSeguimiento' => $codigoSeguimiento,
@@ -980,20 +980,12 @@ class FacturaVentaApiController extends Controller
                     'body' => $payload,
                 ]);
 
-                $cashierContext = $this->waitForCashierOutcome($venta);
-
-                if ($cashierContext['venta'] instanceof \stdClass) {
-                    $payload = $this->bridgeConsultPayloadFromVenta(
-                        $cashierContext['venta'],
-                        $cashierContext['notificacion'],
-                        $cashierContext['consulta']
-                    );
-
-                    return response()->json(
-                        $this->formatResponseForClient($request, $payload['base'], $payload['verbose']),
-                        $response->status()
-                    );
-                }
+                Log::debug('FacturaVentaApi emitir returning immediately after accepted response', [
+                    'codigoOrden' => $venta['codigoOrden'],
+                    'codigoSeguimiento' => $codigoSeguimiento,
+                    'status' => $response->status(),
+                    'is_final' => $reception['is_final'],
+                ]);
 
                 $payload = $this->emitResponsePayload($validated, $payload ?? [], $venta, $reception['is_final']);
 
@@ -1274,7 +1266,7 @@ class FacturaVentaApiController extends Controller
         $tipo = $request->query('tipo');
         $url = $this->ageticBaseUrl() . "/consulta/{$codigoSeguimiento}";
 
-        Log::info('FacturaVentaApi consultar started', [
+        Log::debug('FacturaVentaApi consultar started', [
             'codigoSeguimiento' => $codigoSeguimiento,
             'tipo' => $tipo,
         ]);
@@ -1345,7 +1337,7 @@ class FacturaVentaApiController extends Controller
                     ]);
                 }
 
-                Log::info('FacturaVentaApi consultar response accepted', [
+                Log::debug('FacturaVentaApi consultar response accepted', [
                     'codigoSeguimiento' => $codigoSeguimiento,
                     'status' => $response->status(),
                     'body' => $validatedConsulta,
