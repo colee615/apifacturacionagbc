@@ -930,9 +930,8 @@ class FacturacionCartIntegrationController extends Controller
             $canalEmision = 'factura_electronica';
         }
 
-        $prefix = $canalEmision === 'qr' ? 'VQ-' : 'ppf-';
-        $padLength = $canalEmision === 'qr' ? 11 : 5;
-        $padLength = $canalEmision === 'qr' ? 11 : 6;
+        $prefix = $canalEmision === 'qr' ? 'VQ-' : 'V-';
+        $padLength = 11;
         $next = 1;
         $pattern = '/^' . preg_quote($prefix, '/') . '(\d{' . $padLength . '})$/';
 
