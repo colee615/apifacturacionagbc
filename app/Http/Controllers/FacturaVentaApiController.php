@@ -160,6 +160,65 @@ class FacturaVentaApiController extends Controller
         return $codigoOrden;
     }
 
+    private function resolveSucursalContext(array $payload): array
+    {
+        $codigoSucursal = (int) ($payload['codigoSucursal'] ?? 0);
+        $puntoVenta = (int) ($payload['puntoVenta'] ?? 0);
+        $sucursalId = trim((string) data_get($payload, 'origenSucursal.id', ''));
+        $sucursalCodigo = trim((string) data_get($payload, 'origenSucursal.codigo', ''));
+        $sucursalNombre = trim((string) data_get($payload, 'origenSucursal.nombre', ''));
+        $municipio = trim((string) ($payload['municipio'] ?? ''));
+        $departamento = trim((string) ($payload['departamento'] ?? ''));
+
+        $sucursal = null;
+        if (Schema::hasTable('sucursales')) {
+            $sucursal = DB::table('sucursales')
+                ->select('nombre', 'municipio', 'departamento', 'codigosucursal')
+                ->where('codigosucursal', $codigoSucursal)
+                ->first();
+        }
+
+        if ($sucursalCodigo === '') {
+            $sucursalCodigo = (string) $codigoSucursal;
+        }
+
+        if ($sucursalId === '') {
+            $sucursalId = (string) $puntoVenta;
+        }
+
+        if ($sucursalNombre === '') {
+            $sucursalNombre = trim((string) ($sucursal->nombre ?? ''));
+        }
+
+        if ($sucursalNombre === '') {
+            $sucursalNombre = 'Sucursal ' . $codigoSucursal . ' / PV ' . $puntoVenta;
+        }
+
+        if ($municipio === '') {
+            $municipio = trim((string) ($sucursal->municipio ?? ''));
+        }
+
+        if ($departamento === '') {
+            $departamento = trim((string) ($sucursal->departamento ?? ''));
+        }
+
+        if ($municipio === '') {
+            $municipio = 'LA PAZ';
+        }
+
+        if ($departamento === '') {
+            $departamento = $municipio;
+        }
+
+        return [
+            'id' => $sucursalId,
+            'codigo' => $sucursalCodigo,
+            'nombre' => $sucursalNombre,
+            'municipio' => $municipio,
+            'departamento' => $departamento,
+        ];
+    }
+
     private function createVenta(
         array $payload,
         string $codigoOrden,
@@ -169,6 +228,7 @@ class FacturaVentaApiController extends Controller
     ): array
     {
         $now = Date::now();
+        $sucursal = $this->resolveSucursalContext($payload);
 
         $ventaId = DB::table('ventas')->insertGetId([
             'origen_sistema' => 'BOLIPOST',
@@ -179,14 +239,14 @@ class FacturaVentaApiController extends Controller
             'origen_usuario_email' => data_get($payload, 'origenUsuario.email'),
             'origen_usuario_alias' => data_get($payload, 'origenUsuario.alias'),
             'origen_usuario_carnet' => data_get($payload, 'origenUsuario.carnet'),
-            'origen_sucursal_id' => data_get($payload, 'origenSucursal.id'),
-            'origen_sucursal_codigo' => data_get($payload, 'origenSucursal.codigo'),
-            'origen_sucursal_nombre' => data_get($payload, 'origenSucursal.nombre'),
+            'origen_sucursal_id' => $sucursal['id'],
+            'origen_sucursal_codigo' => $sucursal['codigo'],
+            'origen_sucursal_nombre' => $sucursal['nombre'],
             'codigoSucursal' => (int) $payload['codigoSucursal'],
             'puntoVenta' => (int) $payload['puntoVenta'],
             'documentoSector' => (int) $payload['documentoSector'],
-            'municipio' => $payload['municipio'] ?? 'LA PAZ',
-            'departamento' => $payload['departamento'] ?? null,
+            'municipio' => $sucursal['municipio'],
+            'departamento' => $sucursal['departamento'],
             'telefono' => $payload['telefono'] ?? '2222222',
             'codigoCliente' => isset($payload['codigoCliente']) ? (string) $payload['codigoCliente'] : null,
             'razonSocial' => $payload['razonSocial'] ?? null,

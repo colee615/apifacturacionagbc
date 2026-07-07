@@ -744,6 +744,117 @@ class VentaController extends Controller
         ];
     }
 
+    private function detalleMapsFromRows($ventasRows): array
+    {
+        $ventaIds = collect($ventasRows)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $detalleVentasMap = [];
+        if ($ventaIds !== []) {
+            $detalleVentasMap = DB::table('detalle_ventas')
+                ->whereIn('venta_id', $ventaIds)
+                ->orderBy('id')
+                ->get(['venta_id', 'id', 'codigo', 'descripcion', 'cantidad', 'precio'])
+                ->groupBy('venta_id')
+                ->map(function ($items) {
+                    return collect($items)->map(function ($item) {
+                        $cantidad = (float) ($item->cantidad ?? 1);
+                        $base = (float) ($item->precio ?? 0);
+
+                        return [
+                            'id' => (int) ($item->id ?? 0),
+                            'codigo' => (string) ($item->codigo ?? ''),
+                            'descripcion' => (string) ($item->descripcion ?? 'Sin detalle'),
+                            'titulo' => (string) ($item->descripcion ?? 'Sin detalle'),
+                            'nombre_servicio' => (string) ($item->descripcion ?? 'Sin detalle'),
+                            'nombre_destinatario' => null,
+                            'origen_tipo' => 'detalle_venta',
+                            'resumen_origen' => [],
+                            'cantidad' => $cantidad,
+                            'precio' => $base,
+                            'monto_base' => $base,
+                            'monto_extras' => 0.0,
+                            'total_linea' => round($cantidad * $base, 2),
+                        ];
+                    })->values()->all();
+                })
+                ->toArray();
+        }
+
+        $cartIds = collect($ventasRows)
+            ->filter(fn ($venta) => in_array((string) ($venta->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true))
+            ->pluck('origen_venta_id')
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $cartItemsMap = [];
+        if ($cartIds !== [] && Schema::hasTable('facturacion_cart_items')) {
+            $cartItemsMap = DB::table('facturacion_cart_items')
+                ->whereIn('cart_id', $cartIds)
+                ->orderBy('id')
+                ->get([
+                    'cart_id',
+                    'id',
+                    'codigo',
+                    'titulo',
+                    'nombre_servicio',
+                    'nombre_destinatario',
+                    'origen_tipo',
+                    'resumen_origen',
+                    'cantidad',
+                    'monto_base',
+                    'monto_extras',
+                    'total_linea',
+                ])
+                ->groupBy('cart_id')
+                ->map(function ($items) {
+                    return collect($items)->map(function ($item) {
+                        $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
+                        if (!is_array($resumen)) {
+                            $resumen = [];
+                        }
+
+                        $cantidad = (float) ($item->cantidad ?? 1);
+                        $base = (float) ($item->monto_base ?? 0);
+                        $extras = (float) ($item->monto_extras ?? 0);
+                        $totalLinea = (float) ($item->total_linea ?? round(($base + $extras) * max(1, $cantidad), 2));
+                        $titulo = trim((string) ($item->titulo ?? ''));
+                        $servicio = trim((string) ($item->nombre_servicio ?? ''));
+
+                        return [
+                            'id' => (int) ($item->id ?? 0),
+                            'codigo' => (string) (($item->codigo ?? '') !== '' ? $item->codigo : ('ITEM-' . (int) $item->id)),
+                            'descripcion' => (string) ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle')),
+                            'titulo' => (string) ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle')),
+                            'nombre_servicio' => (string) ($servicio !== '' ? $servicio : $titulo),
+                            'nombre_destinatario' => (string) ($item->nombre_destinatario ?? ''),
+                            'origen_tipo' => (string) ($item->origen_tipo ?? ''),
+                            'resumen_origen' => $resumen,
+                            'cantidad' => $cantidad,
+                            'precio' => $base,
+                            'monto_base' => $base,
+                            'monto_extras' => $extras,
+                            'total_linea' => $totalLinea,
+                        ];
+                    })->values()->all();
+                })
+                ->toArray();
+        }
+
+        return [
+            'detalle' => $detalleVentasMap,
+            'cart' => $cartItemsMap,
+        ];
+    }
+
     public function kardexUsuarios(Request $request)
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
@@ -807,14 +918,21 @@ class VentaController extends Controller
             $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($detalleRows->pluck('codigoSeguimiento')->all());
             $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($detalleRows);
             $itemsCountMaps = $this->itemsCountMapsFromRows($detalleRows);
+            $detalleMaps = $this->detalleMapsFromRows($detalleRows);
 
-            $detalle = $detalleRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $itemsCountMaps) {
+            $detalle = $detalleRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $itemsCountMaps, $detalleMaps) {
                     $codigoSeguimiento = trim((string) $venta->codigoSeguimiento);
                     $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
                     $ventaId = (int) $venta->id;
                     $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
                     if ($itemsCount === 0 && $origenVentaId > 0) {
                         $itemsCount = (int) ($itemsCountMaps['cart'][$origenVentaId] ?? 0);
+                    }
+                    $cartItems = collect($detalleMaps['cart'][$origenVentaId] ?? []);
+                    $detalleItems = collect($detalleMaps['detalle'][$ventaId] ?? []);
+                    $items = $cartItems->isNotEmpty() ? $cartItems : $detalleItems;
+                    if ($itemsCount === 0) {
+                        $itemsCount = $items->count();
                     }
                     return [
                         'id' => $venta->id,
@@ -834,6 +952,7 @@ class VentaController extends Controller
                         'codigoCliente' => $venta->codigoCliente,
                         'total' => (float) $venta->total,
                         'itemsCount' => $itemsCount,
+                        'detalle' => $items->values()->all(),
                         'estadoSufe' => $venta->estado_sufe,
                         'cuf' => $venta->cuf,
                     ];

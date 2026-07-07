@@ -775,6 +775,46 @@ class FacturacionCartIntegrationController extends Controller
         return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id)]);
     }
 
+    private function resolveCartSucursalContext(object $cart, int $codigoSucursal, int $puntoVenta): array
+    {
+        $nombre = trim((string) ($cart->origen_sucursal_nombre ?? ''));
+        $municipio = '';
+        $departamento = '';
+
+        $sucursal = null;
+        if (Schema::hasTable('sucursales')) {
+            $sucursal = DB::table('sucursales')
+                ->select('nombre', 'municipio', 'departamento', 'codigosucursal')
+                ->where('codigosucursal', $codigoSucursal)
+                ->first();
+        }
+
+        if ($nombre === '') {
+            $nombre = trim((string) ($sucursal->nombre ?? ''));
+        }
+
+        if ($nombre === '') {
+            $nombre = 'Sucursal ' . $codigoSucursal . ' / PV ' . $puntoVenta;
+        }
+
+        $municipio = trim((string) ($sucursal->municipio ?? ''));
+        $departamento = trim((string) ($sucursal->departamento ?? ''));
+
+        if ($municipio === '') {
+            $municipio = 'LA PAZ';
+        }
+
+        if ($departamento === '') {
+            $departamento = $municipio;
+        }
+
+        return [
+            'nombre' => $nombre,
+            'municipio' => $municipio,
+            'departamento' => $departamento,
+        ];
+    }
+
     private function payloadFromCart(object $cart, $items): array
     {
         $sinCliente = (string) ($cart->modalidad_facturacion ?? 'con_datos') === 'sin_cliente';
@@ -794,6 +834,7 @@ class FacturacionCartIntegrationController extends Controller
         if ($codigoSucursal < 0 || $puntoVenta < 0) {
             abort(422, 'La sucursal de origen no tiene codigoSucursal/puntoVenta validos para emitir.');
         }
+        $sucursalContext = $this->resolveCartSucursalContext($cart, $codigoSucursal, $puntoVenta);
 
         $origenUsuarioEmail = trim((string) ($cart->origen_usuario_email ?? ''));
         if ($origenUsuarioEmail !== '' && !filter_var($origenUsuarioEmail, FILTER_VALIDATE_EMAIL)) {
@@ -837,10 +878,10 @@ class FacturacionCartIntegrationController extends Controller
                 'alias' => (string) ($cart->origen_usuario_alias ?? ''),
                 'carnet' => (string) ($cart->origen_usuario_carnet ?? ''),
             ],
-            'origenSucursal' => ['id' => (string) $cart->origen_sucursal_id, 'codigo' => (string) $cart->origen_sucursal_codigo, 'nombre' => (string) ($cart->origen_sucursal_nombre ?? '')],
+            'origenSucursal' => ['id' => (string) $cart->origen_sucursal_id, 'codigo' => (string) $cart->origen_sucursal_codigo, 'nombre' => $sucursalContext['nombre']],
             'codigoSucursal' => $codigoSucursal, 'puntoVenta' => $puntoVenta, 'documentoSector' => 1,
             'canalEmision' => $canalEmision,
-            'municipio' => 'LA PAZ', 'departamento' => 'LA PAZ', 'telefono' => '2222222',
+            'municipio' => $sucursalContext['municipio'], 'departamento' => $sucursalContext['departamento'], 'telefono' => '2222222',
             'codigoCliente' => $sinCliente ? 'SN-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT) : Str::limit($this->sanitizeCodigoClienteFromDocument($doc), 35, ''),
             'razonSocial' => Str::upper($razon), 'documentoIdentidad' => $doc, 'tipoDocumentoIdentidad' => $tipo, 'correo' => $correo,
             'metodoPago' => strtolower((string) ($cart->metodo_pago ?? 'efectivo')) === 'qr' ? 5 : 1, 'formatoFactura' => 'rollo', 'montoTotal' => round((float) $cart->total, 2), 'detalle' => $detalle,
