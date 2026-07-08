@@ -169,11 +169,12 @@ class FacturaVentaApiController extends Controller
         $sucursalNombre = trim((string) data_get($payload, 'origenSucursal.nombre', ''));
         $municipio = trim((string) ($payload['municipio'] ?? ''));
         $departamento = trim((string) ($payload['departamento'] ?? ''));
+        $telefono = $this->normalizeFacturaTelefono($payload['telefono'] ?? null);
 
         $sucursal = null;
         if (Schema::hasTable('sucursales')) {
             $sucursal = DB::table('sucursales')
-                ->select('nombre', 'municipio', 'departamento', 'codigosucursal')
+                ->select('nombre', 'municipio', 'departamento', 'telefono', 'codigosucursal')
                 ->where('codigosucursal', $codigoSucursal)
                 ->first();
         }
@@ -202,6 +203,10 @@ class FacturaVentaApiController extends Controller
             $departamento = trim((string) ($sucursal->departamento ?? ''));
         }
 
+        if ($telefono === '2222222') {
+            $telefono = $this->normalizeFacturaTelefono($sucursal->telefono ?? null);
+        }
+
         if ($municipio === '') {
             $municipio = 'LA PAZ';
         }
@@ -216,7 +221,32 @@ class FacturaVentaApiController extends Controller
             'nombre' => $sucursalNombre,
             'municipio' => $municipio,
             'departamento' => $departamento,
+            'telefono' => $telefono,
         ];
+    }
+
+    private function normalizeFacturaTelefono(mixed $raw): string
+    {
+        $value = trim((string) $raw);
+        if ($value === '') {
+            return '2222222';
+        }
+
+        $primary = trim((string) preg_split('/[-\/]/', $value)[0]);
+        $digits = preg_replace('/\D+/', '', $primary) ?? '';
+        if ($digits === '') {
+            $digits = preg_replace('/\D+/', '', $value) ?? '';
+        }
+
+        if (strlen($digits) > 8) {
+            $digits = substr($digits, 0, 8);
+        }
+
+        if (strlen($digits) < 7) {
+            return '2222222';
+        }
+
+        return $digits;
     }
 
     private function createVenta(
@@ -247,7 +277,7 @@ class FacturaVentaApiController extends Controller
             'documentoSector' => (int) $payload['documentoSector'],
             'municipio' => $sucursal['municipio'],
             'departamento' => $sucursal['departamento'],
-            'telefono' => $payload['telefono'] ?? '2222222',
+            'telefono' => $sucursal['telefono'],
             'codigoCliente' => isset($payload['codigoCliente']) ? (string) $payload['codigoCliente'] : null,
             'razonSocial' => $payload['razonSocial'] ?? null,
             'documentoIdentidad' => $payload['documentoIdentidad'] ?? null,

@@ -786,11 +786,12 @@ class FacturacionCartIntegrationController extends Controller
         $nombre = trim((string) ($cart->origen_sucursal_nombre ?? ''));
         $municipio = '';
         $departamento = '';
+        $telefono = '';
 
         $sucursal = null;
         if (Schema::hasTable('sucursales')) {
             $sucursal = DB::table('sucursales')
-                ->select('nombre', 'municipio', 'departamento', 'codigosucursal')
+                ->select('nombre', 'municipio', 'departamento', 'telefono', 'codigosucursal')
                 ->where('codigosucursal', $codigoSucursal)
                 ->first();
         }
@@ -805,6 +806,7 @@ class FacturacionCartIntegrationController extends Controller
 
         $municipio = trim((string) ($sucursal->municipio ?? ''));
         $departamento = trim((string) ($sucursal->departamento ?? ''));
+        $telefono = $this->normalizeFacturaTelefono($sucursal->telefono ?? null);
 
         if ($municipio === '') {
             $municipio = 'LA PAZ';
@@ -818,7 +820,32 @@ class FacturacionCartIntegrationController extends Controller
             'nombre' => $nombre,
             'municipio' => $municipio,
             'departamento' => $departamento,
+            'telefono' => $telefono,
         ];
+    }
+
+    private function normalizeFacturaTelefono(mixed $raw): string
+    {
+        $value = trim((string) $raw);
+        if ($value === '') {
+            return '2222222';
+        }
+
+        $primary = trim((string) preg_split('/[-\/]/', $value)[0]);
+        $digits = preg_replace('/\D+/', '', $primary) ?? '';
+        if ($digits === '') {
+            $digits = preg_replace('/\D+/', '', $value) ?? '';
+        }
+
+        if (strlen($digits) > 8) {
+            $digits = substr($digits, 0, 8);
+        }
+
+        if (strlen($digits) < 7) {
+            return '2222222';
+        }
+
+        return $digits;
     }
 
     private function payloadFromCart(object $cart, $items): array
@@ -887,7 +914,7 @@ class FacturacionCartIntegrationController extends Controller
             'origenSucursal' => ['id' => (string) $cart->origen_sucursal_id, 'codigo' => (string) $cart->origen_sucursal_codigo, 'nombre' => $sucursalContext['nombre']],
             'codigoSucursal' => $codigoSucursal, 'puntoVenta' => $puntoVenta, 'documentoSector' => 1,
             'canalEmision' => $canalEmision,
-            'municipio' => $sucursalContext['municipio'], 'departamento' => $sucursalContext['departamento'], 'telefono' => '2222222',
+            'municipio' => $sucursalContext['municipio'], 'departamento' => $sucursalContext['departamento'], 'telefono' => $sucursalContext['telefono'],
             'codigoCliente' => $sinCliente ? 'SN-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT) : Str::limit($this->sanitizeCodigoClienteFromDocument($doc), 35, ''),
             'razonSocial' => Str::upper($razon), 'documentoIdentidad' => $doc, 'tipoDocumentoIdentidad' => $tipo, 'correo' => $correo,
             'metodoPago' => strtolower((string) ($cart->metodo_pago ?? 'efectivo')) === 'qr' ? 5 : 1, 'formatoFactura' => 'rollo', 'montoTotal' => round((float) $cart->total, 2), 'detalle' => $detalle,
