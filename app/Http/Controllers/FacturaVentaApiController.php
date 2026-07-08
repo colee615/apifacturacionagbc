@@ -168,7 +168,7 @@ class FacturaVentaApiController extends Controller
         $sucursalCodigo = trim((string) data_get($payload, 'origenSucursal.codigo', ''));
         $sucursalNombre = trim((string) data_get($payload, 'origenSucursal.nombre', ''));
         $municipio = trim((string) ($payload['municipio'] ?? ''));
-        $departamento = '';
+        $departamento = trim((string) ($payload['departamento'] ?? ''));
         $telefono = $this->normalizeFacturaTelefono($payload['telefono'] ?? null);
 
         $sucursal = null;
@@ -199,6 +199,10 @@ class FacturaVentaApiController extends Controller
             $municipio = trim((string) ($sucursal->municipio ?? ''));
         }
 
+        if ($departamento === '') {
+            $departamento = trim((string) ($sucursal->departamento ?? ''));
+        }
+
         if ($telefono === '2222222') {
             $telefono = $this->normalizeFacturaTelefono($sucursal->telefono ?? null);
         }
@@ -206,6 +210,8 @@ class FacturaVentaApiController extends Controller
         if ($municipio === '') {
             $municipio = 'LA PAZ';
         }
+
+        [$municipio, $departamento] = $this->normalizeFiscalLocation($municipio, $departamento);
 
         return [
             'id' => $sucursalId,
@@ -946,6 +952,40 @@ class FacturaVentaApiController extends Controller
         }
     }
 
+    private function shouldRetryWithNitException(array $requestPayload, ?array $rejectedPayload): bool
+    {
+        if (($requestPayload['codigoExcepcion'] ?? null) === 1) {
+            return false;
+        }
+
+        if ((int) ($requestPayload['tipoDocumentoIdentidad'] ?? 0) !== 5) {
+            return false;
+        }
+
+        $documento = trim((string) ($requestPayload['documentoIdentidad'] ?? ''));
+        if ($documento === '') {
+            return false;
+        }
+
+        $errors = collect((array) data_get($rejectedPayload, 'datos.errores', []))
+            ->filter(fn ($value) => is_string($value))
+            ->map(fn ($value) => mb_strtolower(trim($value)))
+            ->values();
+
+        if ($errors->isEmpty()) {
+            return false;
+        }
+
+        $needle = mb_strtolower('El documentoIdentidad ' . $documento . ' no es un nit válido');
+
+        return $errors->contains(function (string $error) use ($needle, $documento) {
+            return str_contains($error, $needle)
+                || str_contains($error, 'no es un nit valido')
+                || str_contains($error, 'no es un nit válido')
+                || (str_contains($error, mb_strtolower($documento)) && str_contains($error, 'nit'));
+        });
+    }
+
     private function resolveSuccessfulReception(array $payload): array
     {
         try {
@@ -1092,6 +1132,29 @@ class FacturaVentaApiController extends Controller
 
             $payload = $response->json();
 
+            if (
+                !$response->successful()
+                && $this->shouldRetryWithNitException($requestPayload, is_array($payload) ? $payload : null)
+            ) {
+                $requestPayload['codigoExcepcion'] = 1;
+
+                Log::warning('FacturaVentaApi emitir retrying with codigoExcepcion=1 after NIT validation reject', [
+                    'codigoOrden' => $codigoOrden,
+                    'documentoIdentidad' => $requestPayload['documentoIdentidad'] ?? null,
+                    'tipoDocumentoIdentidad' => $requestPayload['tipoDocumentoIdentidad'] ?? null,
+                ]);
+
+                $response = $this->ageticClient()->post(
+                    $this->ageticBaseUrl() . '/facturacion/emision/individual',
+                    $requestPayload
+                );
+
+                $payload = $response->json();
+                if ($response->successful()) {
+                    $validated['codigoExcepcion'] = 1;
+                }
+            }
+
             if ($response->successful()) {
                 $reception = $this->resolveSuccessfulReception($payload ?? []);
                 $codigoSeguimiento = (string) data_get($reception['validated'], 'datos.codigoSeguimiento');
@@ -1180,6 +1243,48 @@ class FacturaVentaApiController extends Controller
             $rejectedPayload = $this->validatedRejectedPayloadFromResponse($e->response);
 
             if ($rejectedPayload !== null) {
+                if ($this->shouldRetryWithNitException($requestPayload ?? [], $rejectedPayload)) {
+                    $retryPayload = $requestPayload;
+                    $retryPayload['codigoExcepcion'] = 1;
+
+                    Log::warning('FacturaVentaApi emitir retrying with codigoExcepcion=1 after RequestException NIT reject', [
+                        'codigoOrden' => $codigoOrden,
+                        'documentoIdentidad' => $retryPayload['documentoIdentidad'] ?? null,
+                        'tipoDocumentoIdentidad' => $retryPayload['tipoDocumentoIdentidad'] ?? null,
+                    ]);
+
+                    $retryResponse = $this->ageticClient()->post(
+                        $this->ageticBaseUrl() . '/facturacion/emision/individual',
+                        $retryPayload
+                    );
+                    $retryBody = $retryResponse->json();
+
+                    if ($retryResponse->successful()) {
+                        $reception = $this->resolveSuccessfulReception($retryBody ?? []);
+                        $codigoSeguimiento = (string) data_get($reception['validated'], 'datos.codigoSeguimiento');
+                        $validated['codigoExcepcion'] = 1;
+                        $venta = DB::transaction(function () use ($validated, $codigoOrden, $codigoSeguimiento) {
+                            $venta = $this->createVenta($validated, $codigoOrden, $codigoSeguimiento);
+                            $this->createDetalleVentas($venta, $validated);
+                            $this->addVentaToCaja($validated);
+
+                            return $venta;
+                        });
+
+                        $payload = $this->emitResponsePayload($validated, $retryBody ?? [], $venta, $reception['is_final']);
+
+                        return response()->json(
+                            $this->formatResponseForClient($request, $payload['base'], $payload['verbose']),
+                            $retryResponse->status()
+                        );
+                    }
+
+                    $retryRejectedPayload = $this->validatedRejectedPayloadFromResponse($retryResponse);
+                    if ($retryRejectedPayload !== null) {
+                        $rejectedPayload = $retryRejectedPayload;
+                    }
+                }
+
                 Log::warning('FacturaVentaApi emitir request rejected by SEFE', [
                     'codigoOrden' => $codigoOrden,
                     'status' => $e->response?->status(),
