@@ -145,6 +145,9 @@ class FacturaVentaApiController extends Controller
         if (preg_match('/^venta-(\d+)$/i', $codigoOrden, $matches)) {
             $codigoOrden = Venta::formatCodigoOrdenFromNumber((int) $matches[1]);
         }
+        if (preg_match('/^qv-(\d+)$/i', $codigoOrden, $matches)) {
+            $codigoOrden = Venta::formatCodigoOrdenFromNumber((int) $matches[1]);
+        }
         if (preg_match('/^ofi-(\d+)$/i', $codigoOrden, $matches)) {
             $codigoOrden = Venta::formatCodigoOrdenFromNumberWithPrefix((int) $matches[1], Venta::CODIGO_ORDEN_OFICIAL_PREFIX);
         }
