@@ -313,8 +313,14 @@ class FacturacionCartIntegrationController extends Controller
         if (!$draft) return response()->json(['ok' => true, 'cart' => null]);
 
         DB::table('facturacion_cart_items')->where('cart_id', $draft->id)->delete();
-        $this->recalc((int) $draft->id);
-        return response()->json(['ok' => true, 'cart' => $this->cartById((int) $draft->id)]);
+        DB::table('facturacion_carts')->where('id', (int) $draft->id)->delete();
+
+        return response()->json([
+            'ok' => true,
+            'cart' => null,
+            'draft_deleted' => true,
+            'deleted_cart_id' => (int) $draft->id,
+        ]);
     }
 
     public function payment(Request $request): JsonResponse

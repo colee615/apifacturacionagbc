@@ -177,12 +177,20 @@ class CajaDiariaController extends Controller
             'origen_usuario_id' => ['nullable', 'string', 'max:100'],
             'origen_usuario_nombre' => ['nullable', 'string', 'max:255'],
             'origen_usuario_email' => ['nullable', 'string', 'max:120'],
-            'montoCierreDeclarado' => ['required', 'numeric', 'min:0'],
+            'montoCierreDeclarado' => ['nullable', 'numeric', 'min:0'],
+            'monto_cierre_declarado' => ['nullable', 'numeric', 'min:0'],
             'cantidadFichasCierreDeclarado' => ['nullable', 'integer', 'min:0'],
             'montoFichasCierreDeclarado' => ['nullable', 'numeric', 'min:0'],
             'valorUnitarioFicha' => ['nullable', 'numeric', 'gt:0'],
             'observacion' => ['nullable', 'string', 'max:500'],
         ]);
+
+        $montoDeclaradoRaw = $validated['montoCierreDeclarado'] ?? $validated['monto_cierre_declarado'] ?? null;
+        if ($montoDeclaradoRaw === null || $montoDeclaradoRaw === '') {
+            throw ValidationException::withMessages([
+                'monto_cierre_declarado' => ['The monto cierre declarado field is required.'],
+            ]);
+        }
 
         $fecha = (string) ($validated['fecha'] ?? now()->toDateString());
         $caja = CajaDiaria::query()
@@ -202,7 +210,7 @@ class CajaDiariaController extends Controller
             ]);
         }
 
-        $montoDeclarado = round((float) $validated['montoCierreDeclarado'], 2);
+        $montoDeclarado = round((float) $montoDeclaradoRaw, 2);
         $observacion = isset($validated['observacion']) ? trim((string) $validated['observacion']) : null;
         $caja = $this->closeCajaDiariaWithArqueo(
             $caja,
