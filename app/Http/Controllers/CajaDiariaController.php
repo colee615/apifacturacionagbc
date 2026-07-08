@@ -7,6 +7,7 @@ use App\Support\FichaPostalStockService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
@@ -92,6 +93,13 @@ class CajaDiariaController extends Controller
             'valorUnitarioFicha' => ['nullable', 'numeric', 'gt:0'],
             'observacion' => ['nullable', 'string', 'max:500'],
         ]);
+        Log::info('CajaDiariaController abrir request', [
+            'usuario_id' => $usuarioId,
+            'usuario_nombre' => $usuarioNombre,
+            'codigoSucursal' => $validated['codigoSucursal'] ?? null,
+            'puntoVenta' => $validated['puntoVenta'] ?? null,
+            'fecha' => $validated['fecha'] ?? now()->toDateString(),
+        ]);
 
         $fecha = (string) ($validated['fecha'] ?? now()->toDateString());
         $existente = CajaDiaria::query()
@@ -100,6 +108,14 @@ class CajaDiariaController extends Controller
             ->where('codigo_sucursal', (int) $validated['codigoSucursal'])
             ->where('punto_venta', (int) $validated['puntoVenta'])
             ->first();
+        Log::info('CajaDiariaController abrir existente', [
+            'usuario_id' => $usuarioId,
+            'fecha' => $fecha,
+            'codigoSucursal' => (int) $validated['codigoSucursal'],
+            'puntoVenta' => (int) $validated['puntoVenta'],
+            'existente_id' => $existente?->id,
+            'existente_estado' => $existente?->estado,
+        ]);
 
         $context = [
             'usuario_id' => $usuarioId,
@@ -117,27 +133,30 @@ class CajaDiariaController extends Controller
             $stockActual['valorUnitarioReferencia'] ?? null
         );
 
-        $stock = $this->fichaPostalStockService->syncOpeningSaldo(
-            $context,
-            $cantidadFichasApertura,
-            $montoFichasApertura,
-            $valorUnitarioFicha,
-            isset($validated['observacion']) ? trim((string) $validated['observacion']) : null,
-            ['fecha' => $fecha]
-        );
-
         $montoApertura = round((float) ($validated['montoApertura'] ?? 0), 2);
 
         if ($existente && $existente->estado === 'ABIERTA') {
+            Log::info('CajaDiariaController abrir already-open', [
+                'usuario_id' => $usuarioId,
+                'caja_id' => $existente->id,
+            ]);
             return response()->json([
                 'ok' => true,
                 'message' => 'La caja ya se encontraba abierta para esta sucursal.',
                 'caja' => $this->cajaPayload($existente),
-                'stockFichas' => $stock,
+                'stockFichas' => $stockActual,
             ]);
         }
 
         if ($existente && $existente->estado === 'CERRADA') {
+            $stock = $this->fichaPostalStockService->syncOpeningSaldo(
+                $context,
+                $cantidadFichasApertura,
+                $montoFichasApertura,
+                $valorUnitarioFicha,
+                isset($validated['observacion']) ? trim((string) $validated['observacion']) : null,
+                ['fecha' => $fecha, 'reapertura' => true]
+            );
             $existente->update($this->filterCajaDiariaColumns([
                 'usuario_nombre' => $usuarioNombre,
                 'usuario_email' => $usuarioEmail,
@@ -171,6 +190,15 @@ class CajaDiariaController extends Controller
             ], 200);
         }
 
+        $stock = $this->fichaPostalStockService->syncOpeningSaldo(
+            $context,
+            $cantidadFichasApertura,
+            $montoFichasApertura,
+            $valorUnitarioFicha,
+            isset($validated['observacion']) ? trim((string) $validated['observacion']) : null,
+            ['fecha' => $fecha]
+        );
+
         $caja = CajaDiaria::query()->create($this->filterCajaDiariaColumns([
             'usuario_id' => $usuarioId,
             'usuario_nombre' => $usuarioNombre,
@@ -194,6 +222,12 @@ class CajaDiariaController extends Controller
             'observacion_apertura' => isset($validated['observacion']) ? trim((string) $validated['observacion']) : null,
             'abierta_en' => now(),
         ]));
+        Log::info('CajaDiariaController abrir created', [
+            'usuario_id' => $usuarioId,
+            'caja_id' => $caja->id,
+            'codigoSucursal' => (int) $validated['codigoSucursal'],
+            'puntoVenta' => (int) $validated['puntoVenta'],
+        ]);
 
         return response()->json([
             'ok' => true,
