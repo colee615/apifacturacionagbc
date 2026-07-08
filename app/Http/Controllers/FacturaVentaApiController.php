@@ -168,7 +168,7 @@ class FacturaVentaApiController extends Controller
         $sucursalCodigo = trim((string) data_get($payload, 'origenSucursal.codigo', ''));
         $sucursalNombre = trim((string) data_get($payload, 'origenSucursal.nombre', ''));
         $municipio = trim((string) ($payload['municipio'] ?? ''));
-        $departamento = trim((string) ($payload['departamento'] ?? ''));
+        $departamento = '';
         $telefono = $this->normalizeFacturaTelefono($payload['telefono'] ?? null);
 
         $sucursal = null;
@@ -199,10 +199,6 @@ class FacturaVentaApiController extends Controller
             $municipio = trim((string) ($sucursal->municipio ?? ''));
         }
 
-        if ($departamento === '') {
-            $departamento = trim((string) ($sucursal->departamento ?? ''));
-        }
-
         if ($telefono === '2222222') {
             $telefono = $this->normalizeFacturaTelefono($sucursal->telefono ?? null);
         }
@@ -210,12 +206,6 @@ class FacturaVentaApiController extends Controller
         if ($municipio === '') {
             $municipio = 'LA PAZ';
         }
-
-        if ($departamento === '') {
-            $departamento = $municipio;
-        }
-
-        [$municipio, $departamento] = $this->normalizeFiscalLocation($municipio, $departamento);
 
         return [
             'id' => $sucursalId,
@@ -328,7 +318,7 @@ class FacturaVentaApiController extends Controller
             'puntoVenta' => (int) $payload['puntoVenta'],
             'documentoSector' => (int) $payload['documentoSector'],
             'municipio' => $sucursal['municipio'],
-            'departamento' => $sucursal['departamento'],
+            'departamento' => null,
             'telefono' => $sucursal['telefono'],
             'codigoCliente' => isset($payload['codigoCliente']) ? (string) $payload['codigoCliente'] : null,
             'razonSocial' => $payload['razonSocial'] ?? null,

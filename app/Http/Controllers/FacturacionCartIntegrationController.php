@@ -805,18 +805,12 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         $municipio = trim((string) ($sucursal->municipio ?? ''));
-        $departamento = trim((string) ($sucursal->departamento ?? ''));
+        $departamento = '';
         $telefono = $this->normalizeFacturaTelefono($sucursal->telefono ?? null);
 
         if ($municipio === '') {
             $municipio = 'LA PAZ';
         }
-
-        if ($departamento === '') {
-            $departamento = $municipio;
-        }
-
-        [$municipio, $departamento] = $this->normalizeFiscalLocation($municipio, $departamento);
 
         return [
             'nombre' => $nombre,
@@ -966,7 +960,7 @@ class FacturacionCartIntegrationController extends Controller
             'origenSucursal' => ['id' => (string) $cart->origen_sucursal_id, 'codigo' => (string) $cart->origen_sucursal_codigo, 'nombre' => $sucursalContext['nombre']],
             'codigoSucursal' => $codigoSucursal, 'puntoVenta' => $puntoVenta, 'documentoSector' => 1,
             'canalEmision' => $canalEmision,
-            'municipio' => $sucursalContext['municipio'], 'departamento' => $sucursalContext['departamento'], 'telefono' => $sucursalContext['telefono'],
+            'municipio' => $sucursalContext['municipio'], 'telefono' => $sucursalContext['telefono'],
             'codigoCliente' => $sinCliente ? 'SN-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT) : Str::limit($this->sanitizeCodigoClienteFromDocument($doc), 35, ''),
             'razonSocial' => Str::upper($razon), 'documentoIdentidad' => $doc, 'tipoDocumentoIdentidad' => $tipo, 'correo' => $correo,
             'metodoPago' => strtolower((string) ($cart->metodo_pago ?? 'efectivo')) === 'qr' ? 5 : 1, 'formatoFactura' => 'rollo', 'montoTotal' => round((float) $cart->total, 2), 'detalle' => $detalle,

@@ -462,15 +462,8 @@ class SufeSectorUnoValidator
 
     private function validateCombinedLocation($validator, array $data, string $prefix): void
     {
-        $municipio = trim((string) ($data['municipio'] ?? ''));
-        $departamento = trim((string) ($data['departamento'] ?? ''));
-
-        if ($departamento !== '' && strcasecmp($municipio, $departamento) !== 0) {
-            $combinedLength = mb_strlen($municipio . '-' . $departamento);
-            if ($combinedLength > 25) {
-                $validator->errors()->add($prefix . 'departamento', 'La longitud combinada de municipio y departamento no puede superar 25 caracteres.');
-            }
-        }
+        // En facturacion de Correos solo se gestiona municipio.
+        // El departamento queda opcional y no debe bloquear la emision.
     }
 
     private function validateComplemento($validator, array $data, string $prefix): void
