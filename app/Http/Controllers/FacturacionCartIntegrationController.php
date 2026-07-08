@@ -816,6 +816,8 @@ class FacturacionCartIntegrationController extends Controller
             $departamento = $municipio;
         }
 
+        [$municipio, $departamento] = $this->normalizeFiscalLocation($municipio, $departamento);
+
         return [
             'nombre' => $nombre,
             'municipio' => $municipio,
@@ -846,6 +848,56 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         return $digits;
+    }
+
+    private function normalizeFiscalLocation(string $municipio, string $departamento): array
+    {
+        $municipio = mb_strtoupper(trim($municipio));
+        $departamento = mb_strtoupper(trim($departamento));
+
+        $aliases = [
+            'SANTA CRUZ DE LA SIERRA' => 'SANTA CRUZ',
+            'NUESTRA SENORA DE LA PAZ' => 'LA PAZ',
+            'LA SANTISIMA TRINIDAD' => 'TRINIDAD',
+        ];
+
+        $municipio = $aliases[$municipio] ?? $municipio;
+        $departamento = $aliases[$departamento] ?? $departamento;
+
+        if ($departamento !== '' && strcasecmp($municipio, $departamento) !== 0) {
+            $combinedLength = mb_strlen($municipio . '-' . $departamento);
+            if ($combinedLength > 25) {
+                $municipio = $this->shrinkLocationLabel($municipio, 25 - mb_strlen($departamento) - 1);
+            }
+        }
+
+        return [$municipio, $departamento];
+    }
+
+    private function shrinkLocationLabel(string $value, int $limit): string
+    {
+        $value = preg_replace('/\s+/', ' ', trim($value)) ?? trim($value);
+        if ($limit <= 0 || mb_strlen($value) <= $limit) {
+            return $value;
+        }
+
+        $replacements = [
+            ' DE LA SIERRA' => '',
+            ' DE LA' => '',
+            ' DEL' => '',
+            ' DE' => '',
+        ];
+
+        $reduced = $value;
+        foreach ($replacements as $search => $replace) {
+            $candidate = str_replace($search, $replace, $reduced);
+            if (mb_strlen($candidate) <= $limit) {
+                return trim(preg_replace('/\s+/', ' ', $candidate) ?? $candidate);
+            }
+            $reduced = $candidate;
+        }
+
+        return trim(mb_substr($reduced, 0, $limit));
     }
 
     private function payloadFromCart(object $cart, $items): array
