@@ -20,31 +20,41 @@ class CajaDiariaController extends Controller
     public function estado(Request $request)
     {
         [$usuarioId, $usuarioNombre, $usuarioEmail] = $this->resolveActor($request);
-        $fecha = (string) ($request->validate([
+        $validated = $request->validate([
             'fecha' => ['nullable', 'date_format:Y-m-d'],
             'origen_usuario_id' => ['nullable', 'string', 'max:100'],
             'origen_usuario_nombre' => ['nullable', 'string', 'max:255'],
             'origen_usuario_email' => ['nullable', 'string', 'max:120'],
             'codigoSucursal' => ['nullable', 'integer', 'min:0'],
             'puntoVenta' => ['nullable', 'integer', 'min:0'],
-        ])['fecha'] ?? now()->toDateString());
+        ]);
+        $fecha = (string) ($validated['fecha'] ?? now()->toDateString());
         $autoClosed = $this->closePendingCajas($usuarioId, $fecha);
 
-        $caja = CajaDiaria::query()
+        $cajaQuery = CajaDiaria::query()
             ->where('usuario_id', $usuarioId)
-            ->whereDate('fecha_operacion', $fecha)
-            ->first();
+            ->whereDate('fecha_operacion', $fecha);
+
+        if (array_key_exists('codigoSucursal', $validated) && $validated['codigoSucursal'] !== null) {
+            $cajaQuery->where('codigo_sucursal', (int) $validated['codigoSucursal']);
+        }
+
+        if (array_key_exists('puntoVenta', $validated) && $validated['puntoVenta'] !== null) {
+            $cajaQuery->where('punto_venta', (int) $validated['puntoVenta']);
+        }
+
+        $caja = $cajaQuery->first();
 
         $stock = $this->fichaPostalStockService->snapshot([
             'usuario_id' => $usuarioId,
             'usuario_nombre' => $usuarioNombre,
             'usuario_email' => $usuarioEmail,
-            'codigo_sucursal' => (int) ($caja->codigo_sucursal ?? $request->input('codigoSucursal', 0)),
-            'punto_venta' => (int) ($caja->punto_venta ?? $request->input('puntoVenta', 0)),
+            'codigo_sucursal' => (int) ($caja->codigo_sucursal ?? ($validated['codigoSucursal'] ?? 0)),
+            'punto_venta' => (int) ($caja->punto_venta ?? ($validated['puntoVenta'] ?? 0)),
         ]);
         $stockSucursal = $this->fichaPostalStockService->snapshotSucursal([
-            'codigo_sucursal' => (int) ($caja->codigo_sucursal ?? $request->input('codigoSucursal', 0)),
-            'punto_venta' => (int) ($caja->punto_venta ?? $request->input('puntoVenta', 0)),
+            'codigo_sucursal' => (int) ($caja->codigo_sucursal ?? ($validated['codigoSucursal'] ?? 0)),
+            'punto_venta' => (int) ($caja->punto_venta ?? ($validated['puntoVenta'] ?? 0)),
             'sucursal_nombre' => '',
         ]);
 
@@ -87,13 +97,9 @@ class CajaDiariaController extends Controller
         $existente = CajaDiaria::query()
             ->where('usuario_id', $usuarioId)
             ->whereDate('fecha_operacion', $fecha)
+            ->where('codigo_sucursal', (int) $validated['codigoSucursal'])
+            ->where('punto_venta', (int) $validated['puntoVenta'])
             ->first();
-
-        if ($existente) {
-            throw ValidationException::withMessages([
-                'fecha' => ['Ya existe una caja para este usuario en la fecha seleccionada.'],
-            ]);
-        }
 
         $context = [
             'usuario_id' => $usuarioId,
@@ -121,6 +127,49 @@ class CajaDiariaController extends Controller
         );
 
         $montoApertura = round((float) ($validated['montoApertura'] ?? 0), 2);
+
+        if ($existente && $existente->estado === 'ABIERTA') {
+            return response()->json([
+                'ok' => true,
+                'message' => 'La caja ya se encontraba abierta para esta sucursal.',
+                'caja' => $this->cajaPayload($existente),
+                'stockFichas' => $stock,
+            ]);
+        }
+
+        if ($existente && $existente->estado === 'CERRADA') {
+            $existente->update($this->filterCajaDiariaColumns([
+                'usuario_nombre' => $usuarioNombre,
+                'usuario_email' => $usuarioEmail,
+                'estado' => 'ABIERTA',
+                'monto_apertura' => $montoApertura,
+                'monto_cierre_declarado' => null,
+                'monto_cierre_esperado' => $montoApertura,
+                'monto_ventas' => 0,
+                'cantidad_ventas' => 0,
+                'cantidad_fichas_apertura' => (int) ($stock['cantidadDisponible'] ?? $cantidadFichasApertura),
+                'monto_fichas_apertura' => round((float) ($stock['montoDisponible'] ?? $montoFichasApertura), 2),
+                'cantidad_fichas_cierre_esperado' => (int) ($stock['cantidadDisponible'] ?? $cantidadFichasApertura),
+                'monto_fichas_cierre_esperado' => round((float) ($stock['montoDisponible'] ?? $montoFichasApertura), 2),
+                'cantidad_fichas_cierre_declarado' => null,
+                'monto_fichas_cierre_declarado' => null,
+                'diferencia_efectivo' => 0,
+                'diferencia_fichas' => 0,
+                'diferencia_cantidad_fichas' => 0,
+                'diferencia' => 0,
+                'observacion_apertura' => isset($validated['observacion']) ? trim((string) $validated['observacion']) : $existente->observacion_apertura,
+                'observacion_cierre' => null,
+                'abierta_en' => now(),
+                'cerrada_en' => null,
+            ]));
+
+            return response()->json([
+                'ok' => true,
+                'message' => 'Caja reabierta correctamente.',
+                'caja' => $this->cajaPayload($existente->fresh()),
+                'stockFichas' => $stock,
+            ], 200);
+        }
 
         $caja = CajaDiaria::query()->create($this->filterCajaDiariaColumns([
             'usuario_id' => $usuarioId,
@@ -177,6 +226,8 @@ class CajaDiariaController extends Controller
             'origen_usuario_id' => ['nullable', 'string', 'max:100'],
             'origen_usuario_nombre' => ['nullable', 'string', 'max:255'],
             'origen_usuario_email' => ['nullable', 'string', 'max:120'],
+            'codigoSucursal' => ['nullable', 'integer', 'min:0'],
+            'puntoVenta' => ['nullable', 'integer', 'min:0'],
             'montoCierreDeclarado' => ['nullable', 'numeric', 'min:0'],
             'monto_cierre_declarado' => ['nullable', 'numeric', 'min:0'],
             'cantidadFichasCierreDeclarado' => ['nullable', 'integer', 'min:0'],
@@ -193,10 +244,19 @@ class CajaDiariaController extends Controller
         }
 
         $fecha = (string) ($validated['fecha'] ?? now()->toDateString());
-        $caja = CajaDiaria::query()
+        $cajaQuery = CajaDiaria::query()
             ->where('usuario_id', $usuarioId)
-            ->whereDate('fecha_operacion', $fecha)
-            ->first();
+            ->whereDate('fecha_operacion', $fecha);
+
+        if (array_key_exists('codigoSucursal', $validated) && $validated['codigoSucursal'] !== null) {
+            $cajaQuery->where('codigo_sucursal', (int) $validated['codigoSucursal']);
+        }
+
+        if (array_key_exists('puntoVenta', $validated) && $validated['puntoVenta'] !== null) {
+            $cajaQuery->where('punto_venta', (int) $validated['puntoVenta']);
+        }
+
+        $caja = $cajaQuery->first();
 
         if (!$caja) {
             throw ValidationException::withMessages([
