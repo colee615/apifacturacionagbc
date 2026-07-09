@@ -1450,7 +1450,10 @@ class VentaController extends Controller
                 'nombre' => $row->sucursal_nombre,
                 'codigoSucursal' => trim((string) $row->codigo_sucursal),
                 'puntoVenta' => trim((string) $row->punto_venta),
-                'departamento' => $row->departamento,
+                'departamento' => trim((string) ($row->departamento ?? '')) !== ''
+                    ? $row->departamento
+                    : $row->sucursal_nombre,
+                'sucursalNombre' => $row->sucursal_nombre,
                 'cantidadVentas' => (int) $row->cantidad_ventas,
                 'totalVendido' => (float) $row->total_vendido,
                 'cajerosUnicos' => (int) $row->cajeros_unicos,
