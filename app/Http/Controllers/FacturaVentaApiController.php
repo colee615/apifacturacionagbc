@@ -715,6 +715,9 @@ class FacturaVentaApiController extends Controller
                     ]);
 
                 $lastVenta = $this->ventaByCodigoSeguimiento($venta['codigoSeguimiento']) ?: $lastVenta;
+                if ($lastVenta) {
+                    $this->syncFacturacionCartFromVenta($lastVenta, $resolvedStatus);
+                }
             }
 
             if ($this->shouldStopWaitingForCashier($resolvedStatus)) {
@@ -768,6 +771,7 @@ class FacturaVentaApiController extends Controller
                     ]);
 
                 $lastVenta = $this->ventaByCodigoSeguimiento($codigoSeguimiento) ?: $lastVenta;
+                $this->syncFacturacionCartFromVenta($lastVenta, $resolvedStatus);
             }
 
             if (in_array($resolvedStatus, ['ANULADA', 'ANULACION_OBSERVADA'], true)) {
@@ -796,6 +800,26 @@ class FacturaVentaApiController extends Controller
         return DB::table('ventas')
             ->where('cuf', $cuf)
             ->first();
+    }
+
+    private function syncFacturacionCartFromVenta(\stdClass $venta, ?string $bridgeStatus = null): void
+    {
+        $origenVentaTipo = (string) ($venta->origen_venta_tipo ?? '');
+        $cartId = (int) ($venta->origen_venta_id ?? 0);
+
+        if (!in_array($origenVentaTipo, ['facturacion_cart', 'facturacion_cart_remote'], true) || $cartId <= 0) {
+            return;
+        }
+
+        $bridgeStatus = $bridgeStatus ?: (string) ($venta->estado_sufe ?? '');
+
+        DB::table('facturacion_carts')
+            ->where('id', $cartId)
+            ->update([
+                'estado_emision' => $this->cashierStatusFromBridgeStatus($bridgeStatus),
+                'mensaje_emision' => $this->cashierMessageFromBridgeStatus($bridgeStatus),
+                'updated_at' => now(),
+            ]);
     }
 
     private function latestNotificationByCodigoSeguimiento(string $codigoSeguimiento): ?Notificacione
@@ -1460,6 +1484,7 @@ class FacturaVentaApiController extends Controller
                     ]);
 
                 $ventaActualizada = $this->ventaByCuf($cuf) ?: $venta;
+                $this->syncFacturacionCartFromVenta($ventaActualizada, 'ANULACION_SOLICITADA');
                 $resultadoAnulacion = $this->waitForAnulacionOutcome($ventaActualizada);
                 $ventaFinal = $resultadoAnulacion['venta'] ?? $ventaActualizada;
                 $notificacionFinal = $resultadoAnulacion['notificacion'] ?? null;
@@ -1629,6 +1654,7 @@ class FacturaVentaApiController extends Controller
                             ]);
 
                         $venta = $this->ventaByCodigoSeguimiento($codigoSeguimiento) ?: $venta;
+                        $this->syncFacturacionCartFromVenta($venta, $resolvedStatus);
                     }
 
                     $notificacion = $this->latestNotificationByCodigoSeguimiento($codigoSeguimiento);
