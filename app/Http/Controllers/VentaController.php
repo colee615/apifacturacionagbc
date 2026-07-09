@@ -506,6 +506,14 @@ class VentaController extends Controller
         return $this->applyVentaFilters($query, $filters);
     }
 
+    private function applySettledVentaFilters($query)
+    {
+        return $query->where(function ($scope) {
+            $scope->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')")
+                ->orWhereNotNull('cuf');
+        });
+    }
+
     private function applyVentaFilters($query, array $filters)
     {
         $query = $query->where('estado', 1);
@@ -1364,12 +1372,13 @@ class VentaController extends Controller
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
         $baseQuery = $this->buildVentaReportQuery($filters);
+        $settledBaseQuery = $this->applySettledVentaFilters(clone $baseQuery);
         $limite = (int) ($filters['limite'] ?? 200);
         $sucursalCodigoExpr = $this->hasOrigenSucursalCodigoColumn()
             ? "coalesce(nullif(origen_sucursal_codigo, ''), cast(coalesce(\"codigoSucursal\", 0) as varchar))"
             : "cast(coalesce(\"codigoSucursal\", 0) as varchar)";
 
-        $resumen = (clone $baseQuery)
+        $resumen = (clone $settledBaseQuery)
             ->selectRaw("
                 count(*) as cantidad_ventas,
                 coalesce(sum(total), 0) as total_vendido,
@@ -1380,7 +1389,7 @@ class VentaController extends Controller
             ")
             ->first();
 
-        $porSucursal = (clone $baseQuery)
+        $porSucursal = (clone $settledBaseQuery)
             ->selectRaw("
                 concat(
                     {$sucursalCodigoExpr},
@@ -1503,7 +1512,7 @@ class VentaController extends Controller
         $filters['puntoVenta'] = (int) $request->query('puntoVenta');
         $filters['q'] = trim((string) $request->query('q', '')) ?: null;
 
-        $usuarios = (clone $this->buildVentaReportQuery($filters))
+        $usuarios = $this->applySettledVentaFilters(clone $this->buildVentaReportQuery($filters))
             ->selectRaw(
                 '
                     coalesce(nullif(origen_usuario_id, \'\'), \'SIN-USUARIO\') as usuario_id,
