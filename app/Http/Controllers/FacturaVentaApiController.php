@@ -731,6 +731,59 @@ class FacturaVentaApiController extends Controller
         ];
     }
 
+    private function waitForAnulacionOutcome(\stdClass $venta, ?int $seconds = null): array
+    {
+        $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
+        if ($codigoSeguimiento === '') {
+            return [
+                'venta' => $venta,
+                'notificacion' => null,
+                'consulta' => null,
+            ];
+        }
+
+        $seconds = $seconds ?? 6;
+        $deadline = microtime(true) + max(1, $seconds);
+        $lastVenta = $this->ventaByCodigoSeguimiento($codigoSeguimiento) ?: $venta;
+        $lastNotification = $this->latestNotificationByCodigoSeguimiento($codigoSeguimiento);
+        $lastConsulta = null;
+
+        do {
+            $lastVenta = $this->ventaByCodigoSeguimiento($codigoSeguimiento) ?: $lastVenta;
+            $lastNotification = $this->latestNotificationByCodigoSeguimiento($codigoSeguimiento) ?: $lastNotification;
+            $lastConsulta = $this->safeConsultaFactura($codigoSeguimiento) ?: $lastConsulta;
+
+            $currentStatus = (string) ($lastVenta->estado_sufe ?? 'ANULACION_SOLICITADA');
+            $resolvedStatus = $this->resolveBridgeStatus($currentStatus, $lastNotification, $lastConsulta);
+
+            if ($resolvedStatus !== $currentStatus) {
+                DB::table('ventas')
+                    ->where('id', $lastVenta->id)
+                    ->update([
+                        'estado_sufe' => $resolvedStatus,
+                        'cuf' => data_get($lastConsulta, 'cuf', $lastVenta->cuf),
+                        'numero_factura' => data_get($lastConsulta, 'nroFactura', $lastVenta->numero_factura ?? null),
+                        'observacion_sufe' => data_get($lastConsulta, 'observacion', $lastVenta->observacion_sufe),
+                        'updated_at' => now(),
+                    ]);
+
+                $lastVenta = $this->ventaByCodigoSeguimiento($codigoSeguimiento) ?: $lastVenta;
+            }
+
+            if (in_array($resolvedStatus, ['ANULADA', 'ANULACION_OBSERVADA'], true)) {
+                break;
+            }
+
+            usleep(800000);
+        } while (microtime(true) < $deadline);
+
+        return [
+            'venta' => $lastVenta,
+            'notificacion' => $lastNotification,
+            'consulta' => $lastConsulta,
+        ];
+    }
+
     private function ventaByCodigoSeguimiento(string $codigoSeguimiento): ?\stdClass
     {
         return DB::table('ventas')
@@ -1405,6 +1458,26 @@ class FacturaVentaApiController extends Controller
                         'observacion_sufe' => $validated['motivo'],
                         'updated_at' => now(),
                     ]);
+
+                $ventaActualizada = $this->ventaByCuf($cuf) ?: $venta;
+                $resultadoAnulacion = $this->waitForAnulacionOutcome($ventaActualizada);
+                $ventaFinal = $resultadoAnulacion['venta'] ?? $ventaActualizada;
+                $notificacionFinal = $resultadoAnulacion['notificacion'] ?? null;
+                $consultaFinal = $resultadoAnulacion['consulta'] ?? null;
+                $statusFinal = $this->resolveBridgeStatus(
+                    (string) ($ventaFinal->estado_sufe ?? 'ANULACION_SOLICITADA'),
+                    $notificacionFinal,
+                    $consultaFinal
+                );
+
+                if (in_array($statusFinal, ['ANULADA', 'ANULACION_OBSERVADA'], true)) {
+                    $bridgePayload = $this->bridgeConsultPayloadFromVenta($ventaFinal, $notificacionFinal, $consultaFinal);
+
+                    return response()->json(
+                        $this->formatResponseForClient($request, $bridgePayload['base'], $bridgePayload['verbose']),
+                        200
+                    );
+                }
 
                 $base = [
                     'ok' => true,
