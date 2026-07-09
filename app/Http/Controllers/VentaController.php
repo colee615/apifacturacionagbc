@@ -303,6 +303,32 @@ class VentaController extends Controller
         ];
     }
 
+    private function normalizeFacturacionCartCodigoOrden(object $cart): string
+    {
+        $codigoOrden = trim((string) ($cart->codigo_orden ?? ''));
+        if ($codigoOrden === '') {
+            return '';
+        }
+
+        $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
+        if (!in_array($canalEmision, ['factura_electronica', 'qr'], true)) {
+            $canalEmision = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr' ? 'qr' : 'factura_electronica';
+        }
+
+        if (preg_match('/^(?:qv|fvc|vfc)-(\d+)$/i', $codigoOrden, $matches)) {
+            return Venta::formatCodigoOrdenFromNumberWithPrefix(
+                (int) $matches[1],
+                $canalEmision === 'qr' ? Venta::CODIGO_ORDEN_QR_PREFIX : Venta::CODIGO_ORDEN_PREFIX
+            );
+        }
+
+        if (preg_match('/^(?:fqc|vqc)-(\d+)$/i', $codigoOrden, $matches)) {
+            return Venta::formatCodigoOrdenFromNumberWithPrefix((int) $matches[1], Venta::CODIGO_ORDEN_QR_PREFIX);
+        }
+
+        return $codigoOrden;
+    }
+
     private function individualPayloadFromVenta(Venta $venta, ?string $codigoOrden = null): array
     {
         $venta = $this->loadVentaRelations($venta);
@@ -1665,7 +1691,7 @@ class VentaController extends Controller
             'id' => 'cart-' . (int) $cart->id,
             'cartId' => (int) $cart->id,
             'fecha' => $fecha ? date('Y-m-d H:i:s', strtotime((string) $fecha)) : null,
-            'codigoOrden' => (string) ($cart->codigo_orden ?? ''),
+            'codigoOrden' => $this->normalizeFacturacionCartCodigoOrden($cart),
             'codigoSeguimiento' => (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')),
             'numeroFactura' => $this->facturacionCartNumeroFactura((string) ($cart->respuesta_emision ?? '')),
             'origenVentaId' => (int) $cart->id,

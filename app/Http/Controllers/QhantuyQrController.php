@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Venta;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Request;
@@ -31,8 +32,15 @@ class QhantuyQrController extends Controller
 
     private function syncCartPaymentState(string $internalCode, string $paymentStatus, ?int $transactionId = null, ?string $message = null): void
     {
+        $normalizedInternalCode = $this->normalizeQrInternalCode($internalCode);
+
         $cart = DB::table('facturacion_carts')
-            ->where('codigo_orden', $internalCode)
+            ->where(function ($query) use ($internalCode, $normalizedInternalCode) {
+                $query->where('codigo_orden', $internalCode);
+                if ($normalizedInternalCode !== $internalCode) {
+                    $query->orWhere('codigo_orden', $normalizedInternalCode);
+                }
+            })
             ->orderByDesc('id')
             ->first();
 
@@ -69,6 +77,16 @@ class QhantuyQrController extends Controller
         DB::table('facturacion_carts')
             ->where('id', (int) $cart->id)
             ->update($updates);
+    }
+
+    private function normalizeQrInternalCode(string $internalCode): string
+    {
+        $internalCode = trim($internalCode);
+        if ($internalCode !== '' && preg_match('/^(?:qv|fqc|vqc)-(\d+)$/i', $internalCode, $matches)) {
+            return Venta::formatCodigoOrdenFromNumberWithPrefix((int) $matches[1], Venta::CODIGO_ORDEN_QR_PREFIX);
+        }
+
+        return $internalCode;
     }
     private function checkoutBaseUrl(): string
     {
