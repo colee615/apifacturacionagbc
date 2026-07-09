@@ -551,7 +551,14 @@ class FacturacionCartIntegrationController extends Controller
 
     public function consultar(Request $request): JsonResponse
     {
-        $v = $request->validate(['origen_usuario_id' => 'required|string|max:60', 'cart_id' => 'nullable|integer|min:1']);
+        $v = $request->validate([
+            'origen_usuario_id' => 'required|string|max:60',
+            'cart_id' => 'nullable|integer|min:1',
+            'auto_emit_invoice' => 'nullable|boolean',
+        ]);
+        $autoEmitInvoice = array_key_exists('auto_emit_invoice', $v)
+            ? filter_var($v['auto_emit_invoice'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) !== false
+            : true;
         $q = DB::table('facturacion_carts')
             ->where('origen_usuario_id', $v['origen_usuario_id'])
             ->where(function ($query) {
@@ -593,7 +600,9 @@ class FacturacionCartIntegrationController extends Controller
             $resolvedPaymentState = $this->mapQrPaymentStatusToPaymentState($resolvedPaymentStatus);
             $body['estado'] = $this->mapQrPaymentStatusToEmissionState($resolvedPaymentStatus);
             $body['mensaje'] = match ($resolvedPaymentState) {
-                'pagado' => 'Pago QR confirmado. Se continuara automaticamente con la factura electronica.',
+                'pagado' => $autoEmitInvoice
+                    ? 'Pago QR confirmado. Se continuara automaticamente con la factura electronica.'
+                    : 'Pago QR confirmado. La venta quedo registrada solo como cobro QR.',
                 'cancelado' => 'El pago QR no se completo o fue cancelado.',
                 default => 'QR generado. La venta sigue pendiente de pago hasta que el cliente complete la transaccion.',
             };
