@@ -137,16 +137,33 @@ class FacturaVentaApiController extends Controller
         $codigoOrdenRecibido = trim((string) ($payload['codigoOrden'] ?? ''));
         $isOficial = strtoupper((string) ($payload['estado_sufe'] ?? '')) === 'REGISTRADA_OFICIAL'
             || strtoupper((string) data_get($payload, 'origenVenta.tipo', '')) === 'OFICIAL';
+        $canalEmision = strtolower(trim((string) ($payload['canalEmision'] ?? $payload['canal_emision'] ?? 'factura_electronica')));
+        if (!in_array($canalEmision, ['factura_electronica', 'qr'], true)) {
+            $canalEmision = 'factura_electronica';
+        }
+
+        $nextCodigoOrden = $isOficial
+            ? Venta::nextCodigoOrdenOficial()
+            : ($canalEmision === 'qr' ? Venta::nextCodigoOrdenQr() : Venta::nextCodigoOrden());
         $codigoOrden = $codigoOrdenRecibido !== ''
             ? $codigoOrdenRecibido
-            : ($isOficial ? Venta::nextCodigoOrdenOficial() : Venta::nextCodigoOrden());
+            : $nextCodigoOrden;
 
         // Normaliza formatos tipo "venta-1", "VENTA-0001", etc. al formato canónico.
         if (preg_match('/^venta-(\d+)$/i', $codigoOrden, $matches)) {
             $codigoOrden = Venta::formatCodigoOrdenFromNumber((int) $matches[1]);
         }
         if (preg_match('/^qv-(\d+)$/i', $codigoOrden, $matches)) {
-            $codigoOrden = Venta::formatCodigoOrdenFromNumber((int) $matches[1]);
+            $codigoOrden = Venta::formatCodigoOrdenFromNumberWithPrefix(
+                (int) $matches[1],
+                $canalEmision === 'qr' ? Venta::CODIGO_ORDEN_QR_PREFIX : Venta::CODIGO_ORDEN_PREFIX
+            );
+        }
+        if (preg_match('/^(?:fvc|vfc)-(\d+)$/i', $codigoOrden, $matches)) {
+            $codigoOrden = Venta::formatCodigoOrdenFromNumberWithPrefix((int) $matches[1], Venta::CODIGO_ORDEN_PREFIX);
+        }
+        if (preg_match('/^(?:fqc|vqc)-(\d+)$/i', $codigoOrden, $matches)) {
+            $codigoOrden = Venta::formatCodigoOrdenFromNumberWithPrefix((int) $matches[1], Venta::CODIGO_ORDEN_QR_PREFIX);
         }
         if (preg_match('/^ofi-(\d+)$/i', $codigoOrden, $matches)) {
             $codigoOrden = Venta::formatCodigoOrdenFromNumberWithPrefix((int) $matches[1], Venta::CODIGO_ORDEN_OFICIAL_PREFIX);
@@ -157,7 +174,7 @@ class FacturaVentaApiController extends Controller
             ->exists();
 
         if ($exists) {
-            $codigoOrden = $isOficial ? Venta::nextCodigoOrdenOficial() : Venta::nextCodigoOrden();
+            $codigoOrden = $nextCodigoOrden;
         }
 
         return $codigoOrden;

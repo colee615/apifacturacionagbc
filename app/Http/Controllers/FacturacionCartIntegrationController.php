@@ -469,7 +469,7 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         // Cada intento de emision usa un codigo de orden nuevo para evitar rechazos por "ya emitida".
-        $codigoOrdenIntento = $this->nextBridgeCodigoOrden($canalEmision);
+        $codigoOrdenIntento = $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
             'qr_transaction_id' => $preservePaidQrPayment ? ($cart->qr_transaction_id ?? null) : null,
@@ -952,8 +952,7 @@ class FacturacionCartIntegrationController extends Controller
             return ['actividadEconomica' => $ae, 'codigoSin' => $cs, 'codigo' => $codigoDetalle, 'descripcion' => Str::limit(Str::upper($de), 250, ''), 'unidadMedida' => $um, 'precioUnitario' => round((float) ($i->monto_base ?? 0), 2), 'cantidad' => max(1, (int) ($i->cantidad ?? 1))];
         })->values()->all();
 
-        $codigoOrden = trim((string) ($cart->codigo_orden ?? ''));
-        if ($codigoOrden === '') $codigoOrden = $this->nextBridgeCodigoOrden('factura_electronica');
+        $codigoOrden = $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, 'factura_electronica');
 
         $canalEmision = 'factura_electronica';
         $motivo = 'factura electronica';
@@ -981,10 +980,7 @@ class FacturacionCartIntegrationController extends Controller
 
     private function qrCheckoutPayloadFromCart(object $cart, $items): array
     {
-        $codigoOrden = trim((string) ($cart->codigo_orden ?? ''));
-        if ($codigoOrden === '') {
-            $codigoOrden = $this->nextBridgeCodigoOrden('qr');
-        }
+        $codigoOrden = $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, 'qr');
 
         $correo = trim((string) ($cart->correo_facturacion ?? ''));
         if ($correo === '' || !filter_var($correo, FILTER_VALIDATE_EMAIL)) {
@@ -1061,8 +1057,8 @@ class FacturacionCartIntegrationController extends Controller
             $canalEmision = 'factura_electronica';
         }
 
-        $prefix = 'QV-';
-        $padLength = 11;
+        $prefix = $canalEmision === 'qr' ? Venta::CODIGO_ORDEN_QR_PREFIX : Venta::CODIGO_ORDEN_PREFIX;
+        $padLength = Venta::CODIGO_ORDEN_PAD;
         $next = 1;
         $pattern = '/^' . preg_quote($prefix, '/') . '(\d{' . $padLength . '})$/';
 
@@ -1091,6 +1087,24 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         return $prefix . str_pad((string) $next, $padLength, '0', STR_PAD_LEFT);
+    }
+
+    private function normalizeBridgeCodigoOrden(?string $codigoOrden, string $canalEmision): string
+    {
+        $codigoOrden = trim((string) $codigoOrden);
+        $canalEmision = strtolower(trim($canalEmision));
+        $prefix = $canalEmision === 'qr' ? Venta::CODIGO_ORDEN_QR_PREFIX : Venta::CODIGO_ORDEN_PREFIX;
+        $padLength = Venta::CODIGO_ORDEN_PAD;
+
+        if ($codigoOrden === '') {
+            return $this->nextBridgeCodigoOrden($canalEmision);
+        }
+
+        if (preg_match('/^(?:qv|fvc|fqc|vfc|vqc)-(\d+)$/i', $codigoOrden, $matches)) {
+            return $prefix . str_pad((string) max((int) $matches[1], 1), $padLength, '0', STR_PAD_LEFT);
+        }
+
+        return $codigoOrden;
     }
 
     private function buildDetalleCodigo(string $codigoPaquete, string $codigoProductoFallback): string

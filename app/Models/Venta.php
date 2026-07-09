@@ -9,9 +9,10 @@ class Venta extends Model
 {
    use HasFactory;
 
-   public const CODIGO_ORDEN_PREFIX = 'QV-';
+   public const CODIGO_ORDEN_PREFIX = 'VFC-';
+   public const CODIGO_ORDEN_QR_PREFIX = 'VQC-';
    public const CODIGO_ORDEN_OFICIAL_PREFIX = 'OFI-';
-   public const CODIGO_ORDEN_PAD = 11;
+   public const CODIGO_ORDEN_PAD = 10;
 
    public function detalleVentas()
    {
@@ -49,6 +50,11 @@ class Venta extends Model
    public static function nextCodigoOrdenOficial(): string
    {
       return static::nextCodigoOrdenByPrefix(self::CODIGO_ORDEN_OFICIAL_PREFIX);
+   }
+
+   public static function nextCodigoOrdenQr(): string
+   {
+      return static::nextCodigoOrdenByPrefix(self::CODIGO_ORDEN_QR_PREFIX);
    }
 
    public static function nextCodigoOrdenByPrefix(string $prefix): string
