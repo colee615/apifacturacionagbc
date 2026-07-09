@@ -510,6 +510,19 @@ class VentaController extends Controller
     {
         $query = $query->where('estado', 1);
 
+        if (Schema::hasTable('facturacion_carts')) {
+            $query->where(function ($scope) {
+                $scope->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                    ->orWhereNull('origen_venta_tipo')
+                    ->orWhereNotExists(function ($draftCart) {
+                        $draftCart->select(DB::raw('1'))
+                            ->from('facturacion_carts as fc')
+                            ->whereRaw("cast(fc.id as varchar) = cast(ventas.origen_venta_id as varchar)")
+                            ->whereRaw("lower(coalesce(fc.estado, '')) = 'borrador'");
+                    });
+            });
+        }
+
         if (!empty($filters['fechaInicio'])) {
             $query->whereDate('created_at', '>=', $filters['fechaInicio']);
         }
@@ -1539,7 +1552,8 @@ class VentaController extends Controller
 
     private function buildFacturacionCartReportQuery(array $filters)
     {
-        $query = DB::table('facturacion_carts');
+        $query = DB::table('facturacion_carts')
+            ->whereRaw("lower(coalesce(estado, '')) <> 'borrador'");
 
         if (!empty($filters['fechaInicio'])) {
             $query->whereDate('created_at', '>=', $filters['fechaInicio']);
