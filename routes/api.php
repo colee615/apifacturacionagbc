@@ -58,6 +58,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/ventas/{venta}', [VentaController::class, 'show']);
     Route::post('/qr/checkout', [QhantuyQrController::class, 'checkout']);
     Route::post('/qr/check-payments', [QhantuyQrController::class, 'checkPayments']);
+    Route::post('/qr/cancel-payment', [QhantuyQrController::class, 'cancelPayment']);
 });
 
 Route::middleware('factura.auth')->prefix('facturacion')->group(function () {

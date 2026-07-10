@@ -111,6 +111,11 @@ class QhantuyQrController extends Controller
         return (string) config('services.qhantuy_checkout.check_payments_url', '');
     }
 
+    private function cancelPaymentUrl(): string
+    {
+        return (string) config('services.qhantuy_checkout.cancel_payment_url', '');
+    }
+
     private function appkey(): string
     {
         return trim((string) config('services.qhantuy_checkout.appkey', ''));
@@ -170,6 +175,7 @@ class QhantuyQrController extends Controller
         return [
             'checkout_url' => $this->checkoutUrl(),
             'check_payments_url' => $this->checkPaymentsUrl(),
+            'cancel_payment_url' => $this->cancelPaymentUrl(),
             'callback_url' => $this->callbackUrl(),
             'currency_code' => $this->currencyCode(),
             'image_method' => $this->imageMethod(),
@@ -692,6 +698,229 @@ class QhantuyQrController extends Controller
                 'ok' => false,
                 'message' => 'Error inesperado al consultar pago QR.',
                 'detail' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function cancelPayment(Request $request)
+    {
+        $validated = $request->validate([
+            'transaction_id' => ['nullable', 'numeric'],
+            'internal_code' => ['nullable', 'string', 'max:120'],
+            'cart_id' => ['nullable', 'integer', 'min:1'],
+            'reason' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $transactionId = (int) ($validated['transaction_id'] ?? 0);
+        $internalCode = trim((string) ($validated['internal_code'] ?? ''));
+        $normalizedInternalCode = $internalCode !== '' ? $this->normalizeQrInternalCode($internalCode) : '';
+        $cartId = (int) ($validated['cart_id'] ?? 0);
+        $reason = trim((string) ($validated['reason'] ?? ''));
+
+        $cart = null;
+        if ($cartId > 0) {
+            $cart = DB::table('facturacion_carts')->where('id', $cartId)->first();
+            if ($cart && $internalCode === '') {
+                $internalCode = trim((string) ($cart->codigo_orden ?? ''));
+                $normalizedInternalCode = $internalCode !== '' ? $this->normalizeQrInternalCode($internalCode) : '';
+            }
+            if ($cart && $transactionId <= 0) {
+                $transactionId = (int) ($cart->qr_transaction_id ?? 0);
+            }
+        }
+
+        $row = null;
+        if ($internalCode !== '') {
+            $row = DB::table('qhantuy_qr_payments')
+                ->where(function ($query) use ($internalCode, $normalizedInternalCode) {
+                    $query->where('internal_code', $internalCode);
+                    if ($normalizedInternalCode !== '' && $normalizedInternalCode !== $internalCode) {
+                        $query->orWhere('internal_code', $normalizedInternalCode);
+                    }
+                })
+                ->first();
+        }
+
+        if (!$row && $transactionId > 0) {
+            $row = DB::table('qhantuy_qr_payments')->where('transaction_id', $transactionId)->first();
+        }
+
+        if (!$cart && $row) {
+            $resolvedInternalCode = trim((string) ($row->internal_code ?? ''));
+            $resolvedNormalizedCode = $resolvedInternalCode !== '' ? $this->normalizeQrInternalCode($resolvedInternalCode) : '';
+            $cart = DB::table('facturacion_carts')
+                ->where(function ($query) use ($resolvedInternalCode, $resolvedNormalizedCode) {
+                    $query->where('codigo_orden', $resolvedInternalCode);
+                    if ($resolvedNormalizedCode !== '' && $resolvedNormalizedCode !== $resolvedInternalCode) {
+                        $query->orWhere('codigo_orden', $resolvedNormalizedCode);
+                    }
+                })
+                ->orderByDesc('id')
+                ->first();
+        }
+
+        if (!$row && !$cart) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'No se encontro una venta QR pendiente para cancelar.',
+            ], 404);
+        }
+
+        $transactionId = $transactionId > 0 ? $transactionId : (int) ($row->transaction_id ?? 0);
+        $internalCode = $internalCode !== '' ? $internalCode : trim((string) ($row->internal_code ?? ($cart->codigo_orden ?? '')));
+        $normalizedInternalCode = $internalCode !== '' ? $this->normalizeQrInternalCode($internalCode) : '';
+
+        if ($transactionId <= 0 || $internalCode === '') {
+            return response()->json([
+                'ok' => false,
+                'message' => 'La venta QR no tiene transaction_id o codigo interno suficiente para cancelacion.',
+            ], 422);
+        }
+
+        $currentStatus = $this->normalizeQrPaymentStatus((string) (
+            $row->payment_status
+            ?? $cart->estado_pago
+            ?? 'holding'
+        ));
+
+        if ($currentStatus === 'success') {
+            return response()->json([
+                'ok' => false,
+                'message' => 'El QR ya fue pagado y no puede cancelarse.',
+            ], 422);
+        }
+
+        if ($currentStatus === 'cancelled') {
+            if ($row) {
+                $this->syncCartPaymentState(
+                    (string) ($row->internal_code ?? $internalCode),
+                    'cancelled',
+                    (int) ($row->transaction_id ?? $transactionId),
+                    (string) ($row->last_message ?? 'Cobro QR ya estaba cancelado.')
+                );
+            }
+
+            return response()->json([
+                'ok' => true,
+                'message' => 'El cobro QR ya estaba cancelado.',
+                'transaction_id' => $transactionId,
+                'payment_status' => 'cancelled',
+                'estado_pago' => $this->qrPaymentStateFromStatus('cancelled'),
+            ]);
+        }
+
+        Log::debug('Qhantuy cancel-payment requested', [
+            'transaction_id' => $transactionId,
+            'internal_code' => $internalCode,
+            'cart_id' => (int) ($cart->id ?? 0),
+            'config' => $this->maskedCheckoutConfig(),
+        ]);
+
+        if ($this->appkey() === '' || $this->token() === '' || $this->cancelPaymentUrl() === '') {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Configuracion Qhantuy incompleta en SAFE.',
+            ], 500);
+        }
+
+        $payload = [
+            'appkey' => $this->appkey(),
+            'transaction_id' => $transactionId,
+        ];
+        if ($reason !== '') {
+            $payload['reason'] = $reason;
+        }
+
+        try {
+            $response = $this->qhantuyClient()->post($this->cancelPaymentUrl(), $payload);
+            $body = $response->json();
+
+            Log::debug('Qhantuy cancel-payment response received', [
+                'transaction_id' => $transactionId,
+                'status' => $response->status(),
+                'successful' => $response->successful(),
+                'raw_body' => $response->body(),
+                'json_body' => $body,
+            ]);
+
+            if (!$response->successful()) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => (string) data_get($body, 'message', 'No se pudo cancelar el cobro QR.'),
+                    'status_code' => $response->status(),
+                    'qhantuy' => is_array($body) ? $body : null,
+                ], $response->status());
+            }
+
+            $processOk = filter_var(data_get($body, 'process', true), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+            if ($processOk === false) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => (string) data_get($body, 'message', 'Qhantuy no permitio cancelar el cobro QR.'),
+                    'qhantuy' => is_array($body) ? $body : null,
+                ], 422);
+            }
+
+            $source = is_array(data_get($body, 'item')) ? data_get($body, 'item') : (is_array($body) ? $body : []);
+            $status = $this->normalizeQrPaymentStatus(
+                data_get($source, 'current_status')
+                ?? data_get($body, 'current_status')
+                ?? 'cancelled'
+            );
+            $message = (string) data_get($body, 'message', 'Cobro QR anulado satisfactoriamente.');
+
+            if ($row) {
+                DB::table('qhantuy_qr_payments')
+                    ->where('id', $row->id)
+                    ->update([
+                        'payment_status' => $status,
+                        'raw_check_response' => json_encode($body, JSON_UNESCAPED_UNICODE),
+                        'last_message' => $message,
+                        'cancelled_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+            }
+
+            $this->syncCartPaymentState($internalCode, $status, $transactionId, $message);
+
+            $updatedCart = DB::table('facturacion_carts')
+                ->where(function ($query) use ($internalCode, $normalizedInternalCode) {
+                    $query->where('codigo_orden', $internalCode);
+                    if ($normalizedInternalCode !== '' && $normalizedInternalCode !== $internalCode) {
+                        $query->orWhere('codigo_orden', $normalizedInternalCode);
+                    }
+                })
+                ->orderByDesc('id')
+                ->first();
+
+            return response()->json([
+                'ok' => true,
+                'message' => $message,
+                'transaction_id' => $transactionId,
+                'payment_status' => $status,
+                'estado_pago' => $this->qrPaymentStateFromStatus($status),
+                'cart' => $updatedCart,
+                'qhantuy' => $body,
+            ]);
+        } catch (RequestException $e) {
+            $response = $e->response;
+            return response()->json($response?->json() ?? [
+                'ok' => false,
+                'message' => 'Error remoto al cancelar el cobro QR.',
+                'details' => $e->getMessage(),
+            ], $response?->status() ?? 502);
+        } catch (ConnectionException $e) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'No se pudo conectar con Qhantuy para cancelar el cobro QR.',
+                'details' => $e->getMessage(),
+            ], 504);
+        } catch (\Throwable $e) {
+            Log::error('Qhantuy cancel-payment unexpected error', ['msg' => $e->getMessage()]);
+            return response()->json([
+                'ok' => false,
+                'message' => 'Error inesperado al cancelar el cobro QR.',
+                'details' => $e->getMessage(),
             ], 500);
         }
     }

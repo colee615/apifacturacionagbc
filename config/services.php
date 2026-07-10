@@ -41,6 +41,7 @@ return [
     'qhantuy_checkout' => [
         'base_url' => env('QHANTUY_CHECKOUT_BASE_URL', 'https://testingcheckout.qhantuy.com/external-api/v2'),
         'check_payments_url' => env('QHANTUY_CHECK_PAYMENTS_URL', 'https://testingcheckout.qhantuy.com/external-api/check-payments'),
+        'cancel_payment_url' => env('QHANTUY_CANCEL_PAYMENT_URL', 'https://testingcheckout.qhantuy.com/external-api/cancel-payment'),
         'token' => env('QHANTUY_CHECKOUT_TOKEN'),
         'appkey' => env('QHANTUY_CHECKOUT_APPKEY'),
         'profile_code' => env('QHANTUY_CHECKOUT_PROFILE_CODE'),

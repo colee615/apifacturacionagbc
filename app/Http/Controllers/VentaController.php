@@ -1870,21 +1870,21 @@ class VentaController extends Controller
 
         if ($canal === 'qr') {
             if ($estadoPago === 'pagado' || $estado === 'emitido') {
-                return ['key' => 'QR_PAGADO', 'label' => 'Pagado QR', 'can_annul' => false, 'cuf' => $cuf !== '' ? $cuf : null];
+                return ['key' => 'QR_PAGADO', 'label' => 'Pagado QR', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null];
             }
             if ($estadoPago === 'cancelado') {
-                return ['key' => 'QR_RECHAZADO', 'label' => 'QR rechazado', 'can_annul' => false, 'cuf' => $cuf !== '' ? $cuf : null];
+                return ['key' => 'QR_RECHAZADO', 'label' => 'QR rechazado', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null];
             }
-            return ['key' => 'QR_PENDIENTE', 'label' => 'QR pendiente', 'can_annul' => false, 'cuf' => $cuf !== '' ? $cuf : null];
+            return ['key' => 'QR_PENDIENTE', 'label' => 'QR pendiente', 'can_annul' => false, 'can_cancel' => true, 'cuf' => $cuf !== '' ? $cuf : null];
         }
 
         return match ($estadoEmision) {
-            'FACTURADA' => ['key' => 'FACTURADA', 'label' => 'Facturada', 'can_annul' => $canAnnul, 'cuf' => $cuf !== '' ? $cuf : null],
-            'PENDIENTE' => ['key' => 'PENDIENTE', 'label' => 'Pendiente', 'can_annul' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            'RECHAZADA' => ['key' => 'RECHAZADA', 'label' => 'Rechazada', 'can_annul' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            'ERROR' => ['key' => 'ERROR', 'label' => 'Error', 'can_annul' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            'NO_APLICA' => ['key' => 'NO_APLICA', 'label' => 'No aplica', 'can_annul' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            default => ['key' => strtoupper($estado !== '' ? $estado : 'SIN_ESTADO'), 'label' => ucfirst($estado !== '' ? $estado : 'Sin estado'), 'can_annul' => false, 'cuf' => $cuf !== '' ? $cuf : null],
+            'FACTURADA' => ['key' => 'FACTURADA', 'label' => 'Facturada', 'can_annul' => $canAnnul, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
+            'PENDIENTE' => ['key' => 'PENDIENTE', 'label' => 'Pendiente', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
+            'RECHAZADA' => ['key' => 'RECHAZADA', 'label' => 'Rechazada', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
+            'ERROR' => ['key' => 'ERROR', 'label' => 'Error', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
+            'NO_APLICA' => ['key' => 'NO_APLICA', 'label' => 'No aplica', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
+            default => ['key' => strtoupper($estado !== '' ? $estado : 'SIN_ESTADO'), 'label' => ucfirst($estado !== '' ? $estado : 'Sin estado'), 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
         };
     }
 
