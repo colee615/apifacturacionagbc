@@ -395,6 +395,21 @@ class FacturacionCartIntegrationController extends Controller
         $resolvedQrTransactionId = $preservePaidQrPayment
             ? ($cart->qr_transaction_id ?? null)
             : ($overrideCanal === 'qr' ? ($cart->qr_transaction_id ?? null) : null);
+        $isPaidQrInvoiceConversion = $preservePaidQrPayment && $overrideCanal === 'factura_electronica';
+
+        Log::info('FacturacionCart emitir: inicio evaluacion.', [
+            'user_id' => $userId,
+            'cart_id' => $cart->id ?? null,
+            'incoming_cart_id' => $cartId > 0 ? $cartId : null,
+            'codigo_orden_actual' => $cart->codigo_orden ?? null,
+            'override_canal' => $overrideCanal,
+            'metodo_pago_actual' => $cart->metodo_pago ?? null,
+            'estado_pago_actual' => $cart->estado_pago ?? null,
+            'estado_emision_actual' => $cart->estado_emision ?? null,
+            'qr_transaction_id' => $cart->qr_transaction_id ?? null,
+            'preserve_paid_qr_payment' => $preservePaidQrPayment,
+            'is_paid_qr_invoice_conversion' => $isPaidQrInvoiceConversion,
+        ]);
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'modalidad_facturacion' => $overrideMode,
@@ -436,8 +451,13 @@ class FacturacionCartIntegrationController extends Controller
             }
         }
 
-        // Cada intento de emision usa un codigo de orden nuevo para evitar rechazos por "ya emitida".
-        $codigoOrdenIntento = $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
+        // En una venta QR ya cobrada debemos reenviar exactamente la misma venta y el mismo codigo.
+        $codigoOrdenIntento = $isPaidQrInvoiceConversion
+            ? trim((string) ($cart->codigo_orden ?? ''))
+            : $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
+        if ($codigoOrdenIntento === '') {
+            $codigoOrdenIntento = $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
+        }
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
             'qr_transaction_id' => $preservePaidQrPayment ? ($cart->qr_transaction_id ?? null) : null,
@@ -448,12 +468,42 @@ class FacturacionCartIntegrationController extends Controller
         ]);
         $cart->codigo_orden = $codigoOrdenIntento;
 
+        Log::info('FacturacionCart emitir: preparacion completa.', [
+            'user_id' => $userId,
+            'cart_id' => $cart->id ?? null,
+            'codigo_orden_intento' => $codigoOrdenIntento,
+            'canal_emision_final' => $canalEmision,
+            'is_paid_qr_invoice_conversion' => $isPaidQrInvoiceConversion,
+            'preserved_qr_transaction_id' => $cart->qr_transaction_id ?? null,
+        ]);
+
         if ($canalEmision === 'qr') {
-            $emitReq = Request::create('/api/factura-venta/qr/checkout', 'POST', $this->qrCheckoutPayloadFromCart($cart, $items));
+            $qrPayload = $this->qrCheckoutPayloadFromCart($cart, $items);
+            Log::info('FacturacionCart emitir: enviando checkout QR.', [
+                'user_id' => $userId,
+                'cart_id' => $cart->id ?? null,
+                'codigo_orden' => $cart->codigo_orden ?? null,
+                'internal_code' => $qrPayload['internal_code'] ?? null,
+                'item_count' => count($qrPayload['items'] ?? []),
+                'total' => $cart->total ?? null,
+            ]);
+            $emitReq = Request::create('/api/factura-venta/qr/checkout', 'POST', $qrPayload);
             $emitReq->headers->set('Accept', 'application/json');
             $emitRes = app(QhantuyQrController::class)->checkout($emitReq);
         } else {
-            $emitReq = Request::create('/api/factura-venta/emitir', 'POST', $this->payloadFromCart($cart, $items));
+            $facturaPayload = $this->payloadFromCart($cart, $items);
+            Log::info('FacturacionCart emitir: enviando a SEFE.', [
+                'user_id' => $userId,
+                'cart_id' => $cart->id ?? null,
+                'codigo_orden_cart' => $cart->codigo_orden ?? null,
+                'codigo_orden_payload' => $facturaPayload['codigoOrden'] ?? null,
+                'origen_venta' => $facturaPayload['origenVenta'] ?? null,
+                'metodo_pago' => $cart->metodo_pago ?? null,
+                'estado_pago' => $cart->estado_pago ?? null,
+                'qr_transaction_id' => $cart->qr_transaction_id ?? null,
+                'is_paid_qr_invoice_conversion' => $isPaidQrInvoiceConversion,
+            ]);
+            $emitReq = Request::create('/api/factura-venta/emitir', 'POST', $facturaPayload);
             $emitReq->headers->set('Accept', 'application/json');
             $emitReq->headers->set('X-Bridge-Debug', 'true');
             $emitRes = app(FacturaVentaApiController::class)->emitir($emitReq);
@@ -491,7 +541,23 @@ class FacturacionCartIntegrationController extends Controller
             $codigoOrdenEmitido = $codigoOrdenIntento;
         }
 
-        $codigoOrdenEmitido = $this->normalizeBridgeCodigoOrden($codigoOrdenEmitido, $canalEmision);
+        $codigoOrdenEmitido = $isPaidQrInvoiceConversion
+            ? trim((string) $codigoOrdenEmitido)
+            : $this->normalizeBridgeCodigoOrden($codigoOrdenEmitido, $canalEmision);
+
+        Log::info('FacturacionCart emitir: respuesta recibida.', [
+            'user_id' => $userId,
+            'cart_id' => $cart->id ?? null,
+            'http_status' => $emitStatusCode,
+            'ok' => $ok,
+            'codigo_orden_intento' => $codigoOrdenIntento,
+            'codigo_orden_emitido' => $codigoOrdenEmitido,
+            'codigo_seguimiento_emitido' => $codigoSeguimientoEmitido,
+            'qr_transaction_id_respuesta' => $qrTransactionId,
+            'estado_respuesta' => $body['estado'] ?? null,
+            'mensaje_respuesta' => $body['mensaje'] ?? ($body['message'] ?? null),
+            'is_paid_qr_invoice_conversion' => $isPaidQrInvoiceConversion,
+        ]);
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenEmitido,
@@ -550,6 +616,21 @@ class FacturacionCartIntegrationController extends Controller
             || ($metodoPago === 'qr' && $hasQrTransaction && $codigoSeguimientoFiscal === '')
             || ($metodoPago === 'qr' && $hasQrTransaction && in_array($estadoPagoActual, ['pendiente', 'pagado', 'cancelado'], true));
 
+        Log::info('FacturacionCart consultar: decision de consulta.', [
+            'user_id' => $v['origen_usuario_id'],
+            'cart_id' => $cart->id ?? null,
+            'codigo_orden' => $cart->codigo_orden ?? null,
+            'canal_emision' => $canalEmision,
+            'metodo_pago' => $metodoPago,
+            'estado_pago' => $estadoPagoActual,
+            'estado_emision' => $cart->estado_emision ?? null,
+            'codigo_seguimiento_fiscal' => $codigoSeguimientoFiscal,
+            'qr_transaction_id' => $cart->qr_transaction_id ?? null,
+            'auto_emit_invoice' => $autoEmitInvoice,
+            'is_qr_origin' => $isQrOrigin,
+            'should_consult_qr' => $shouldConsultQr,
+        ]);
+
         if ($shouldConsultQr) {
             $transactionId = (int) trim((string) ($cart->qr_transaction_id ?? $cart->codigo_seguimiento ?? ''));
             if ($transactionId <= 0) {
@@ -573,6 +654,17 @@ class FacturacionCartIntegrationController extends Controller
         $body = json_decode($cRes->getContent(), true);
         if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
         $statusCode = $cRes->getStatusCode();
+        Log::info('FacturacionCart consultar: respuesta recibida.', [
+            'user_id' => $v['origen_usuario_id'],
+            'cart_id' => $cart->id ?? null,
+            'codigo_orden' => $cart->codigo_orden ?? null,
+            'http_status' => $statusCode,
+            'body_estado' => $body['estado'] ?? null,
+            'body_mensaje' => $body['mensaje'] ?? ($body['message'] ?? null),
+            'body_payment_status' => $body['payment_status'] ?? null,
+            'body_codigo_seguimiento' => $body['codigoSeguimiento'] ?? null,
+            'body_numero_factura' => data_get($body, 'factura.nroFactura') ?? data_get($body, 'nroFactura'),
+        ]);
         if ($isQrOrigin) {
             $resolvedPaymentStatus = (string) ($body['payment_status'] ?? 'holding');
             $resolvedPaymentState = $this->mapQrPaymentStatusToPaymentState($resolvedPaymentStatus);
@@ -930,7 +1022,15 @@ class FacturacionCartIntegrationController extends Controller
             return ['actividadEconomica' => $ae, 'codigoSin' => $cs, 'codigo' => $codigoDetalle, 'descripcion' => Str::limit(Str::upper($de), 250, ''), 'unidadMedida' => $um, 'precioUnitario' => round((float) ($i->monto_base ?? 0), 2), 'cantidad' => max(1, (int) ($i->cantidad ?? 1))];
         })->values()->all();
 
-        $codigoOrden = $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, 'factura_electronica');
+        $isPaidQrInvoiceConversion = strtolower((string) ($cart->metodo_pago ?? 'efectivo')) === 'qr'
+            && strtolower((string) ($cart->estado_pago ?? 'pendiente')) === 'pagado'
+            && trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+        $codigoOrden = $isPaidQrInvoiceConversion
+            ? trim((string) ($cart->codigo_orden ?? ''))
+            : $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, 'factura_electronica');
+        if ($codigoOrden === '') {
+            $codigoOrden = $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, 'factura_electronica');
+        }
 
         $canalEmision = 'factura_electronica';
         $motivo = 'factura electronica';
