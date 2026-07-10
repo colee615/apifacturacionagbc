@@ -153,23 +153,6 @@ class FacturacionCartIntegrationController extends Controller
             ->where('origen_id', (int) $v['origen_id'])
             ->first();
 
-        $codigoNormalizado = strtoupper(trim((string) ($v['codigo'] ?? '')));
-        if ($codigoNormalizado !== '') {
-            $duplicateQuery = DB::table('facturacion_cart_items')
-                ->where('cart_id', $cartId)
-                ->whereRaw('upper(trim(coalesce(codigo, \'\'))) = ?', [$codigoNormalizado]);
-            if ($existing) {
-                $duplicateQuery->where('id', '<>', (int) $existing->id);
-            }
-
-            if ($duplicateQuery->exists()) {
-                return response()->json([
-                    'ok' => false,
-                    'message' => 'Ya existe un item con ese codigo en el carrito.',
-                ], 422);
-            }
-        }
-
         $data = [
             'cart_id' => $cartId,
             'origen_tipo' => (string) $v['origen_tipo'],
@@ -244,22 +227,6 @@ class FacturacionCartIntegrationController extends Controller
         $r['codigo_producto'] = trim((string) ($v['codigo_producto'] ?? ($r['codigo_producto'] ?? '')));
         $r['descripcion_servicio'] = trim((string) ($v['descripcion_servicio'] ?? ($r['descripcion_servicio'] ?? '')));
         $r['unidad_medida'] = isset($v['unidad_medida']) ? (int) $v['unidad_medida'] : ($r['unidad_medida'] ?? null);
-
-        $codigoNormalizado = strtoupper(trim((string) $v['codigo']));
-        if ($codigoNormalizado !== '') {
-            $duplicateExists = DB::table('facturacion_cart_items as other')
-                ->where('other.cart_id', (int) $row->cart_id_ref)
-                ->where('other.id', '<>', (int) $itemId)
-                ->whereRaw('upper(trim(coalesce(other.codigo, \'\'))) = ?', [$codigoNormalizado])
-                ->exists();
-
-            if ($duplicateExists) {
-                return response()->json([
-                    'ok' => false,
-                    'message' => 'Ya existe un item con ese codigo en el carrito.',
-                ], 422);
-            }
-        }
 
         $cantidad = max(1, (int) ($row->cantidad ?? 1));
         $montoExtras = isset($v['monto_extras']) ? round((float) $v['monto_extras'], 2) : round((float) ($row->monto_extras ?? 0), 2);
