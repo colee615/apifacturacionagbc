@@ -10,6 +10,7 @@ use Dompdf\Dompdf;
 use Dompdf\Options;
 use Illuminate\Http\Response as HttpResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
@@ -1037,11 +1038,36 @@ class VentaController extends Controller
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
         $limite = (int) ($filters['limite'] ?? 500);
+        $cartRows = Schema::hasTable('facturacion_carts')
+            ? $this->buildFacturacionCartReportQuery($filters)
+                ->orderByDesc('emitido_en')
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
+                ->limit($limite)
+                ->get()
+            : collect();
 
-        $ventasRows = (clone $this->buildVentaReportQuery($filters))
+        $cartIds = $cartRows
+            ->pluck('id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
+        if ($cartIds !== []) {
+            $ventasQuery->where(function ($query) use ($cartIds) {
+                $query->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                    ->orWhereNull('origen_venta_tipo')
+                    ->orWhereNotIn('origen_venta_id', $cartIds);
+            });
+        }
+
+        $ventasRows = $ventasQuery
             ->latest('created_at')
             ->limit($limite)
-            ->get([
+            ->get(array_values(array_filter([
                 'id',
                 'created_at',
                 'codigoOrden',
@@ -1049,36 +1075,183 @@ class VentaController extends Controller
                 'numero_factura',
                 'origen_venta_id',
                 'origen_venta_tipo',
+                'origen_usuario_id',
+                'origen_usuario_nombre',
+                $this->hasOrigenUsuarioEmailColumn() ? 'origen_usuario_email' : null,
+                'origen_sucursal_id',
+                'origen_sucursal_nombre',
                 'codigoSucursal',
                 'puntoVenta',
+                'razonSocial',
+                'documentoIdentidad',
                 'total',
-            ]);
+                'estado_sufe',
+            ])));
 
         $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventasRows->pluck('codigoSeguimiento')->all());
         $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventasRows);
+        $detalleMaps = $this->detalleMapsFromRows($ventasRows);
 
-        $ventaIds = $ventasRows->pluck('id')
-            ->map(fn ($id) => (int) $id)
-            ->filter(fn ($id) => $id > 0)
-            ->unique()
-            ->values()
-            ->all();
+        $rows = $this->buildPdfRowsFromVentas($ventasRows, $detalleMaps['detalle'] ?? [], $numeroFacturaMap, $numeroFacturaBridgeMap)
+            ->concat($this->buildPdfRowsFromFacturacionCarts($cartRows))
+            ->sortByDesc(fn ($row) => (int) data_get($row, 'fecha_sort', 0))
+            ->values();
 
-        $detalleVentasMap = [];
-        if ($ventaIds !== []) {
-            $detalleVentasMap = DB::table('detalle_ventas')
-                ->whereIn('venta_id', $ventaIds)
-                ->orderBy('id')
-                ->get(['venta_id', 'id', 'codigo', 'descripcion', 'cantidad', 'precio'])
-                ->groupBy('venta_id')
-                ->toArray();
+        $totals = [
+            'parcial' => round((float) $rows->sum('importe_parcial'), 2),
+            'general' => round((float) $rows->sum('importe_general'), 2),
+        ];
+
+        $authUser = Auth::guard('api')->user() ?? $request->user();
+        $firstRow = $ventasRows->first() ?: $cartRows->first();
+        $usuario = (object) [
+            'name' => trim((string) data_get($authUser, 'nombre', data_get($authUser, 'name', 'Sin responsable'))),
+            'sucursal' => (object) [
+                'nombre' => trim((string) data_get($firstRow, 'origen_sucursal_nombre', data_get($authUser, 'sucursal.nombre', ''))),
+                'descripcion' => trim((string) data_get($authUser, 'sucursal.descripcion', '')),
+                'municipio' => trim((string) data_get($authUser, 'sucursal.municipio', '')),
+                'puntoVenta' => trim((string) data_get($firstRow, 'puntoVenta', data_get($authUser, 'sucursal.puntoVenta', ''))),
+            ],
+        ];
+
+        $filtersView = [
+            'estado' => 'emitido',
+            'estado_emision' => (string) ($filters['estado_sufe'] ?? 'all'),
+            'from' => $filters['fechaInicio'] ?? null,
+            'to' => $filters['fechaFin'] ?? null,
+            'q' => trim((string) ($filters['q'] ?? '')),
+        ];
+
+        $scope = empty($filters['origen_usuario_id'])
+            && empty($filters['origen_usuario_email'])
+            && empty($filters['origen_usuario_alias'])
+            && empty($filters['origen_usuario_carnet'])
+            ? 'branch'
+            : 'own';
+
+        $html = view('facturacion.mis-ventas-kardex-pdf', [
+            'user' => $usuario,
+            'filters' => $filtersView,
+            'carts' => $cartRows,
+            'rows' => $rows->values(),
+            'totals' => $totals,
+            'generatedAt' => now(),
+            'scope' => $scope,
+        ])->render();
+
+        $options = new Options();
+        $options->set('isRemoteEnabled', false);
+        $options->set('defaultFont', 'DejaVu Serif');
+
+        $dompdf = new Dompdf($options);
+        $dompdf->loadHtml($html, 'UTF-8');
+        $dompdf->setPaper('A4', 'portrait');
+        $dompdf->render();
+
+        $filename = 'kardex-facturacion-' . now()->format('Ymd-His') . '.pdf';
+
+        return response($dompdf->output(), 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+        ]);
+    }
+
+    private function buildPdfRowsFromVentas(Collection $ventasRows, array $detalleVentasMap, array $numeroFacturaMap, array $numeroFacturaBridgeMap): Collection
+    {
+        return $ventasRows->flatMap(function (Venta $venta) use ($detalleVentasMap, $numeroFacturaMap, $numeroFacturaBridgeMap) {
+            $ventaId = (int) $venta->id;
+            $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
+            $numeroFactura = trim((string) (
+                $venta->numero_factura
+                ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[(int) ($venta->origen_venta_id ?? 0)] ?? ''))
+            ));
+            $detalleVentas = collect($detalleVentasMap[$ventaId] ?? []);
+            $items = $detalleVentas->map(function ($item) {
+                $cantidad = max(1, (int) ($item->cantidad ?? 1));
+                $precio = round((float) ($item->precio ?? 0), 2);
+                $descripcion = trim((string) ($item->descripcion ?? 'SIN SERVICIO'));
+
+                return (object) [
+                    'codigo' => trim((string) ($item->codigo ?? '')),
+                    'descripcion' => $descripcion,
+                    'titulo' => $descripcion,
+                    'nombre_servicio' => $descripcion,
+                    'cantidad' => $cantidad,
+                    'precio' => $precio,
+                    'monto_base' => $precio,
+                    'monto_extras' => 0.0,
+                    'total_linea' => round($cantidad * $precio, 2),
+                    'resumen_origen' => [],
+                ];
+            })->values();
+
+            $tipoEnvio = $items
+                ->map(fn ($item) => trim((string) data_get($item, 'nombre_servicio', data_get($item, 'titulo', ''))))
+                ->filter()
+                ->unique()
+                ->implode(' / ');
+            $detalleItems = $items
+                ->map(fn ($item) => trim((string) data_get($item, 'titulo', data_get($item, 'nombre_servicio', ''))))
+                ->filter()
+                ->unique()
+                ->implode(' / ');
+            $codigoOrden = trim((string) ($venta->codigoOrden ?? '')) ?: '-';
+            $codigosPaquete = $this->extractPdfPackageCodesFromItems($items);
+            $cantidadTotal = max(1, (int) $items->sum(fn ($item) => (int) data_get($item, 'cantidad', 1)));
+            $packageItemsCount = $codigosPaquete->count();
+            $serviceItemsCount = max(0, $cantidadTotal - $packageItemsCount);
+            $detalleResumen = collect([
+                $packageItemsCount > 0 ? $packageItemsCount . ' paquete' . ($packageItemsCount === 1 ? '' : 's') : null,
+                $serviceItemsCount > 0 ? $serviceItemsCount . ' servicio' . ($serviceItemsCount === 1 ? '' : 's') : null,
+            ])->filter()->implode(' + ');
+            $sectionKey = strtoupper(trim((string) ($venta->estado_sufe ?? ''))) === 'REGISTRADA_OFICIAL'
+                ? 'oficial'
+                : 'factura_electronica';
+
+            return [[
+                'origen_usuario_id' => trim((string) ($venta->origen_usuario_id ?? '')),
+                'origen_usuario_nombre' => trim((string) ($venta->origen_usuario_nombre ?? '')),
+                'origen_usuario_email' => trim((string) ($venta->origen_usuario_email ?? '')),
+                'fecha' => optional($venta->created_at)->format('d/m/Y') ?: '-',
+                'fecha_hora' => optional($venta->created_at)->format('d/m/Y H:i') ?: '-',
+                'fecha_sort' => optional($venta->created_at)->timestamp ?: 0,
+                'cliente' => trim((string) ($venta->razonSocial ?? '')) ?: 'Sin cliente',
+                'tipo_envio' => $tipoEnvio !== '' ? $tipoEnvio : 'SIN DETALLE REAL',
+                'detalle_items' => $detalleItems !== '' ? $detalleItems : 'Sin detalle real',
+                'detalle_resumen' => $detalleResumen,
+                'codigo_item' => $codigoOrden,
+                'codigo_paquetes' => $codigosPaquete,
+                'codigo_referencia' => $codigosPaquete->isNotEmpty()
+                    ? $codigoOrden . "\nPaquetes: " . $codigosPaquete->implode(', ')
+                    : $codigoOrden,
+                'peso' => 0.0,
+                'cantidad' => $cantidadTotal,
+                'canal_emision' => $sectionKey,
+                'metodo_pago' => 'efectivo',
+                'estado_pago' => 'pagado',
+                'estado_emision' => 'FACTURADA',
+                'section_key' => $sectionKey,
+                'emision_label' => $sectionKey === 'oficial' ? 'Envio oficial' : 'Factura electronica',
+                'cobro_label' => $sectionKey === 'oficial' ? 'CAJA / OFICIAL' : 'CAJA',
+                'cobro_detalle' => 'Cobro registrado en caja.',
+                'contabiliza_en_caja' => true,
+                'cobrada' => true,
+                'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
+                'importe_parcial' => round((float) ($venta->total ?? 0), 2),
+                'importe_general' => round((float) ($venta->total ?? 0), 2),
+            ]];
+        })->values();
+    }
+
+    private function buildPdfRowsFromFacturacionCarts(Collection $cartRows): Collection
+    {
+        if ($cartRows->isEmpty()) {
+            return collect();
         }
 
-        $cartIds = $ventasRows
-            ->filter(fn ($venta) => in_array((string) ($venta->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true))
-            ->pluck('origen_venta_id')
-            ->map(fn ($id) => (int) $id)
-            ->filter(fn ($id) => $id > 0)
+        $cartIds = $cartRows->pluck('id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
             ->unique()
             ->values()
             ->all();
@@ -1105,133 +1278,178 @@ class VentaController extends Controller
                 ->toArray();
         }
 
-        $rows = collect();
-        foreach ($ventasRows as $venta) {
-            $ventaId = (int) $venta->id;
-            $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
-            $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
-            $numeroFactura = trim((string) (
-                $venta->numero_factura
-                ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? ''))
-            ));
-            $fecha = optional($venta->created_at)->format('d/m/Y') ?: '-';
-
-            $cartItems = collect($cartItemsMap[$origenVentaId] ?? []);
-            if ($cartItems->isNotEmpty()) {
-                foreach ($cartItems as $item) {
+        return $cartRows->map(function ($cart) use ($cartItemsMap) {
+            $cart = is_array($cart) ? (object) $cart : $cart;
+            $items = collect($cartItemsMap[(int) $cart->id] ?? [])
+                ->map(function ($item) {
+                    $item = is_array($item) ? (object) $item : $item;
                     $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
-                    if (!is_array($resumen)) {
-                        $resumen = [];
-                    }
+                    $item->resumen_origen = is_array($resumen) ? $resumen : [];
+                    return $item;
+                })
+                ->values();
 
-                    $codigoItem = trim((string) (($resumen['codigo'] ?? null) ?: ($item->codigo ?? '')));
-                    $codigoItem = $codigoItem !== '' ? $codigoItem : ('ITEM-' . (int) $item->id);
-
-                    $tipoEnvio = trim((string) ($item->nombre_servicio ?? ''));
-                    if ($tipoEnvio === '') {
-                        $tipoEnvio = trim((string) ($item->titulo ?? 'SIN SERVICIO'));
-                    }
-
-                    $rows->push([
-                        'fecha' => $fecha,
-                        'origen' => trim((string) ($resumen['ciudad'] ?? $resumen['origen'] ?? '-')) ?: '-',
-                        'tipo_envio' => $tipoEnvio !== '' ? $tipoEnvio : 'SIN SERVICIO',
-                        'codigo_item' => $codigoItem,
-                        'peso' => round((float) ($resumen['peso'] ?? 0), 3),
-                        'cantidad' => max(1, (int) ($item->cantidad ?? 1)),
-                        'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
-                        'importe_parcial' => round((float) ($item->monto_base ?? 0), 2),
-                        'importe_general' => round((float) ($item->total_linea ?? 0), 2),
-                    ]);
-                }
-
-                continue;
+            $numeroFactura = trim((string) $this->facturacionCartNumeroFactura((string) ($cart->respuesta_emision ?? '')));
+            $fechaBase = $cart->emitido_en ?: $cart->created_at;
+            $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
+            $metodoPago = strtolower(trim((string) ($cart->metodo_pago ?? ($canalEmision === 'qr' ? 'qr' : 'efectivo'))));
+            $sectionKey = $this->resolvePdfSectionKey([
+                'codigo_orden' => $cart->codigo_orden,
+                'canal_emision' => $canalEmision,
+                'metodo_pago' => $metodoPago,
+                'estado_pago' => $cart->estado_pago,
+                'estado_emision' => $cart->estado_emision,
+                'qr_transaction_id' => $cart->qr_transaction_id,
+            ]);
+            $contabilizaEnCaja = !in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true);
+            $emisionLabel = match ($sectionKey) {
+                'qr_facturado' => 'QR pagado + facturado',
+                'qr_pagado_pendiente_factura' => 'QR pagado',
+                'qr_cancelado' => 'QR cancelado',
+                'qr_pendiente' => 'QR pendiente',
+                default => $this->labelCanalEmision($canalEmision),
+            };
+            $cobroLabel = match ($sectionKey) {
+                'qr_facturado' => 'QR / NO CAJA',
+                'qr_pagado_pendiente_factura' => 'QR / NO CAJA',
+                'qr_cancelado' => 'QR CANCELADO',
+                'qr_pendiente' => 'QR PENDIENTE',
+                default => 'CAJA',
+            };
+            $cobroDetalle = match ($sectionKey) {
+                'qr_facturado' => 'Cobro QR transformado a factura electronica. No suma a caja.',
+                'qr_pagado_pendiente_factura' => 'Cobro QR confirmado. No suma a caja mientras no sea efectivo.',
+                'qr_cancelado' => 'Intento QR no concretado.',
+                'qr_pendiente' => 'Pendiente de pago QR.',
+                default => 'Cobro registrado en caja.',
+            };
+            $tipoEnvio = $items
+                ->map(fn ($item) => trim((string) data_get($item, 'nombre_servicio', data_get($item, 'titulo', ''))))
+                ->filter()
+                ->unique()
+                ->implode(' / ');
+            $detalleItems = $items
+                ->map(fn ($item) => trim((string) data_get($item, 'titulo', data_get($item, 'nombre_servicio', ''))))
+                ->filter()
+                ->unique()
+                ->implode(' / ');
+            $codigoOrden = trim((string) ($cart->codigo_orden ?? ($cart->codigo_seguimiento ?? ''))) ?: '-';
+            $codigosPaquete = $this->extractPdfPackageCodesFromItems($items);
+            $pesoTotal = (float) $items->sum(fn ($item) => (float) data_get($item, 'resumen_origen.peso', 0));
+            $cantidadTotal = max(1, (int) ($cart->cantidad_items ?? $items->sum(fn ($item) => (int) data_get($item, 'cantidad', 1)) ?: $items->count()));
+            $packageItemsCount = $codigosPaquete->count();
+            $serviceItemsCount = max(0, $cantidadTotal - $packageItemsCount);
+            $detalleResumen = collect([
+                $packageItemsCount > 0 ? $packageItemsCount . ' paquete' . ($packageItemsCount === 1 ? '' : 's') : null,
+                $serviceItemsCount > 0 ? $serviceItemsCount . ' servicio' . ($serviceItemsCount === 1 ? '' : 's') : null,
+            ])->filter()->implode(' + ');
+            $clienteLabel = trim((string) ($cart->razon_social ?? ''));
+            if ($clienteLabel === '') {
+                $clienteLabel = 'Sin cliente';
             }
 
-            $detalleVentas = collect($detalleVentasMap[$ventaId] ?? []);
-            foreach ($detalleVentas as $item) {
-                $cantidad = max(1, (int) ($item->cantidad ?? 1));
-                $precio = round((float) ($item->precio ?? 0), 2);
-                $descripcion = trim((string) ($item->descripcion ?? 'SIN SERVICIO'));
-                $codigoServicio = trim((string) ($item->codigo ?? ''));
-                $codigoItem = $codigoServicio;
-                if ($codigoItem === '' || preg_match('/^SRV[\-0-9A-Z_]*$/i', $codigoItem)) {
-                    if (preg_match('/\b(EN[0-9A-Z]+)\b/i', $descripcion, $matchPaquete)) {
-                        $codigoItem = strtoupper((string) $matchPaquete[1]);
-                    } else {
-                        $codigoItem = '-';
-                    }
-                }
+            return [
+                'origen_usuario_id' => trim((string) ($cart->origen_usuario_id ?? '')),
+                'origen_usuario_nombre' => trim((string) ($cart->origen_usuario_nombre ?? '')),
+                'origen_usuario_email' => trim((string) ($cart->origen_usuario_email ?? '')),
+                'fecha' => $fechaBase ? date('d/m/Y', strtotime((string) $fechaBase)) : '-',
+                'fecha_hora' => $fechaBase ? date('d/m/Y H:i', strtotime((string) $fechaBase)) : '-',
+                'fecha_sort' => $fechaBase ? strtotime((string) $fechaBase) : 0,
+                'cliente' => $clienteLabel,
+                'tipo_envio' => $tipoEnvio !== '' ? $tipoEnvio : 'SIN DETALLE REAL',
+                'detalle_items' => $detalleItems !== '' ? $detalleItems : 'Sin detalle real',
+                'detalle_resumen' => $detalleResumen,
+                'codigo_item' => $codigoOrden,
+                'codigo_paquetes' => $codigosPaquete,
+                'codigo_referencia' => $codigosPaquete->isNotEmpty()
+                    ? $codigoOrden . "\nPaquetes: " . $codigosPaquete->implode(', ')
+                    : $codigoOrden,
+                'peso' => $pesoTotal,
+                'cantidad' => $cantidadTotal,
+                'canal_emision' => $canalEmision,
+                'metodo_pago' => $metodoPago,
+                'estado_pago' => strtolower(trim((string) ($cart->estado_pago ?? 'pendiente'))),
+                'estado_emision' => strtoupper(trim((string) ($cart->estado_emision ?? 'NO_APLICA'))),
+                'section_key' => $sectionKey,
+                'emision_label' => $emisionLabel,
+                'cobro_label' => $cobroLabel,
+                'cobro_detalle' => $cobroDetalle,
+                'contabiliza_en_caja' => $contabilizaEnCaja,
+                'cobrada' => in_array($sectionKey, ['factura_electronica', 'qr_facturado', 'qr_pagado_pendiente_factura', 'oficial'], true),
+                'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
+                'importe_parcial' => round((float) ($cart->total ?? 0), 2),
+                'importe_general' => round((float) ($cart->total ?? 0), 2),
+            ];
+        })->values();
+    }
 
-                $rows->push([
-                    'fecha' => $fecha,
-                    'origen' => '-',
-                    'tipo_envio' => $descripcion !== '' ? $descripcion : 'SIN SERVICIO',
-                    'codigo_item' => $codigoItem,
-                    'peso' => 0.0,
-                    'cantidad' => $cantidad,
-                    'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
-                    'importe_parcial' => $precio,
-                    'importe_general' => round($cantidad * $precio, 2),
-                ]);
+    private function extractPdfPackageCodesFromItems(Collection $items): Collection
+    {
+        return $items
+            ->flatMap(function ($item) {
+                return [
+                    trim((string) data_get($item, 'codigo', '')),
+                    trim((string) data_get($item, 'codigo_item', '')),
+                    trim((string) data_get($item, 'codigo_paquete', '')),
+                    trim((string) data_get($item, 'resumen_origen.codigo', '')),
+                    trim((string) data_get($item, 'resumen_origen.codigo_item', '')),
+                    trim((string) data_get($item, 'resumen_origen.codigo_paquete', '')),
+                ];
+            })
+            ->filter()
+            ->unique()
+            ->values();
+    }
+
+    private function isQrPaymentRow(object|array $row): bool
+    {
+        $codigoOrden = strtoupper(trim((string) data_get($row, 'codigo_orden', data_get($row, 'codigoOrden', ''))));
+
+        return strtolower(trim((string) data_get($row, 'metodo_pago', ''))) === 'qr'
+            || trim((string) data_get($row, 'qr_transaction_id', '')) !== ''
+            || strtolower(trim((string) data_get($row, 'canal_emision', ''))) === 'qr'
+            || $this->hasQrOrderCodePrefix($codigoOrden);
+    }
+
+    private function hasQrOrderCodePrefix(string $codigoOrden): bool
+    {
+        $codigoOrden = strtoupper(trim($codigoOrden));
+
+        return str_starts_with($codigoOrden, 'VQ-')
+            || str_starts_with($codigoOrden, 'VQC-');
+    }
+
+    private function labelCanalEmision(string $canalEmision): string
+    {
+        return match (strtolower(trim($canalEmision))) {
+            'qr' => 'QR',
+            'oficial' => 'Envio oficial',
+            default => 'Factura electronica',
+        };
+    }
+
+    private function resolvePdfSectionKey(object|array $row): string
+    {
+        if ($this->isQrPaymentRow($row)) {
+            $estadoPago = strtolower(trim((string) data_get($row, 'estado_pago', 'pendiente')));
+            $estadoEmision = strtoupper(trim((string) data_get($row, 'estado_emision', 'NO_APLICA')));
+
+            if ($estadoPago === 'cancelado') {
+                return 'qr_cancelado';
             }
+
+            if ($estadoPago !== 'pagado') {
+                return 'qr_pendiente';
+            }
+
+            if ($estadoEmision === 'FACTURADA') {
+                return 'qr_facturado';
+            }
+
+            return 'qr_pagado_pendiente_factura';
         }
 
-        $totals = [
-            'parcial' => round((float) $rows->sum('importe_parcial'), 2),
-            'general' => round((float) $rows->sum('importe_general'), 2),
-        ];
-
-        $authUser = Auth::guard('api')->user() ?? $request->user();
-        $usuario = (object) [
-            'name' => trim((string) data_get($authUser, 'nombre', data_get($authUser, 'name', 'Sin responsable'))),
-            'sucursal' => (object) [
-                'nombre' => trim((string) data_get($authUser, 'sucursal.nombre', '')),
-                'descripcion' => trim((string) data_get($authUser, 'sucursal.descripcion', '')),
-                'municipio' => trim((string) data_get($authUser, 'sucursal.municipio', '')),
-                'puntoVenta' => trim((string) data_get($authUser, 'sucursal.puntoVenta', '')),
-            ],
-        ];
-
-        $filtersView = [
-            'estado' => 'emitido',
-            'estado_emision' => (string) ($filters['estado_sufe'] ?? 'all'),
-            'from' => $filters['fechaInicio'] ?? null,
-            'to' => $filters['fechaFin'] ?? null,
-            'q' => trim((string) ($filters['q'] ?? '')),
-        ];
-
-        $dummyCarts = $rows->isEmpty()
-            ? collect()
-            : collect([(object) ['items' => $rows->map(fn ($row) => (object) [
-                'titulo' => (string) ($row['tipo_envio'] ?? ''),
-                'nombre_servicio' => (string) ($row['tipo_envio'] ?? ''),
-            ])->values()]]);
-
-        $html = view('facturacion.mis-ventas-kardex-pdf', [
-            'user' => $usuario,
-            'filters' => $filtersView,
-            'carts' => $dummyCarts,
-            'rows' => $rows->values(),
-            'totals' => $totals,
-            'generatedAt' => now(),
-        ])->render();
-
-        $options = new Options();
-        $options->set('isRemoteEnabled', false);
-        $options->set('defaultFont', 'DejaVu Serif');
-
-        $dompdf = new Dompdf($options);
-        $dompdf->loadHtml($html, 'UTF-8');
-        $dompdf->setPaper('A4', 'portrait');
-        $dompdf->render();
-
-        $filename = 'kardex-facturacion-' . now()->format('Ymd-His') . '.pdf';
-
-        return response($dompdf->output(), 200, [
-            'Content-Type' => 'application/pdf',
-            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
-        ]);
+        return strtolower(trim((string) data_get($row, 'canal_emision', 'factura_electronica')));
     }
 
     public function reporteVentas(Request $request)

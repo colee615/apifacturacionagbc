@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
@@ -9,7 +9,7 @@
         }
 
         body {
-            font-family: DejaVu Serif, serif;
+            font-family: Verdana, DejaVu Sans, sans-serif;
             font-size: 11px;
             color: #111;
         }
@@ -19,34 +19,10 @@
             border-collapse: collapse;
         }
 
-        .no-border td {
-            border: none;
-        }
-
         .header-banner {
             width: 100%;
             height: auto;
             display: block;
-        }
-
-        .label-box {
-            border: 1px solid #333;
-            padding: 7px 10px;
-            display: inline-block;
-            font-size: 11px;
-            margin-top: 10px;
-        }
-
-        .side-box {
-            width: 220px;
-            margin-left: auto;
-            margin-top: 10px;
-        }
-
-        .side-box td {
-            border: 1px solid #333;
-            padding: 4px 8px;
-            font-size: 11px;
         }
 
         .meta td {
@@ -62,6 +38,16 @@
 
         .meta .value {
             width: 32%;
+        }
+
+        .section-title {
+            margin: 12px 0 6px;
+            padding: 5px 8px;
+            border: 1px solid #333;
+            background: #f4f6f9;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
         }
 
         .grid th,
@@ -129,10 +115,43 @@
         .obs-grid td:last-child {
             border-right: 0;
         }
+
+        .page-break {
+            page-break-before: always;
+        }
+
+        .cashier-meta td {
+            border: 1px solid #333;
+            padding: 5px 7px;
+            font-size: 9.5px;
+        }
+
+        .cashier-name {
+            font-weight: 700;
+            font-size: 11px;
+        }
+
+        .cashier-muted {
+            color: #444;
+            font-size: 9px;
+        }
+
+        .summary-grid td {
+            border: 1px solid #333;
+            padding: 6px 8px;
+            font-size: 10px;
+        }
+
+        .summary-label {
+            font-weight: 700;
+            text-transform: uppercase;
+            background: #f4f6f9;
+        }
     </style>
 </head>
 <body>
 @php
+    $scope = $scope ?? 'own';
     $headerImagePath = public_path('images/encabezado_contratos.jpeg');
     $headerImage = file_exists($headerImagePath) ? 'data:image/jpeg;base64,' . base64_encode(file_get_contents($headerImagePath)) : null;
     $sucursal = $user->sucursal;
@@ -152,9 +171,6 @@
     $ventanilla = $isAdmisionesEms
         ? 'Admisiones'
         : ($sucursal ? ('Punto ' . trim((string) ($sucursal->puntoVenta ?? ''))) : '');
-    if (!empty($forceVentanilla ?? '')) {
-        $ventanilla = (string) $forceVentanilla;
-    }
     $fechaRecaudacion = $filters['from'] && $filters['to']
         ? ($filters['from'] === $filters['to'] ? $filters['from'] : ($filters['from'] . ' al ' . $filters['to']))
         : ($filters['from'] ?: ($filters['to'] ?: $generatedAt->format('Y-m-d')));
@@ -163,26 +179,65 @@
         $filters['estado'] !== 'all' ? 'Estado: ' . strtoupper($filters['estado']) : null,
         $filters['estado_emision'] !== 'all' ? 'Emision: ' . $filters['estado_emision'] : null,
     ])->filter()->implode(' | ');
-    $rowsCollection = $rows instanceof \Illuminate\Support\Collection ? $rows->values() : collect($rows);
-    $sampleRows = collect([
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'LA PAZ', 'tipo_envio' => 'EMS NACIONAL', 'codigo_item' => 'EN100000001BO', 'peso' => 0.250, 'cantidad' => 1, 'numero_factura' => '1001', 'importe_general' => 18.50],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'COCHABAMBA', 'tipo_envio' => 'CERTIFICADO', 'codigo_item' => 'EN100000002BO', 'peso' => 0.180, 'cantidad' => 1, 'numero_factura' => '1002', 'importe_general' => 12.00],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'SANTA CRUZ', 'tipo_envio' => 'ENCOMIENDA', 'codigo_item' => 'CP100000003BO', 'peso' => 1.200, 'cantidad' => 1, 'numero_factura' => '1003', 'importe_general' => 35.00],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'ORURO', 'tipo_envio' => 'EXPRESO', 'codigo_item' => 'EN100000004BO', 'peso' => 0.500, 'cantidad' => 1, 'numero_factura' => '1004', 'importe_general' => 22.50],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'POTOSI', 'tipo_envio' => 'CERTIFICADO', 'codigo_item' => 'EN100000005BO', 'peso' => 0.220, 'cantidad' => 1, 'numero_factura' => '1005', 'importe_general' => 13.00],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'TARIJA', 'tipo_envio' => 'EMS NACIONAL', 'codigo_item' => 'EN100000006BO', 'peso' => 0.310, 'cantidad' => 1, 'numero_factura' => '1006', 'importe_general' => 19.50],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'SUCRE', 'tipo_envio' => 'ENCOMIENDA', 'codigo_item' => 'CP100000007BO', 'peso' => 0.950, 'cantidad' => 1, 'numero_factura' => '1007', 'importe_general' => 28.00],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'BENI', 'tipo_envio' => 'EXPRESO', 'codigo_item' => 'EN100000008BO', 'peso' => 0.430, 'cantidad' => 1, 'numero_factura' => '1008', 'importe_general' => 24.00],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'PANDO', 'tipo_envio' => 'CERTIFICADO', 'codigo_item' => 'EN100000009BO', 'peso' => 0.150, 'cantidad' => 1, 'numero_factura' => '1009', 'importe_general' => 11.00],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'LA PAZ', 'tipo_envio' => 'EMS NACIONAL', 'codigo_item' => 'EN100000010BO', 'peso' => 0.275, 'cantidad' => 1, 'numero_factura' => '1010', 'importe_general' => 18.50],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'COCHABAMBA', 'tipo_envio' => 'EXPRESO', 'codigo_item' => 'EN100000011BO', 'peso' => 0.620, 'cantidad' => 1, 'numero_factura' => '1011', 'importe_general' => 26.00],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'SANTA CRUZ', 'tipo_envio' => 'ENCOMIENDA', 'codigo_item' => 'CP100000012BO', 'peso' => 1.450, 'cantidad' => 1, 'numero_factura' => '1012', 'importe_general' => 39.00],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'ORURO', 'tipo_envio' => 'CERTIFICADO', 'codigo_item' => 'EN100000013BO', 'peso' => 0.210, 'cantidad' => 1, 'numero_factura' => '1013', 'importe_general' => 12.00],
-        ['fecha' => $generatedAt->format('d/m/Y'), 'origen' => 'TARIJA', 'tipo_envio' => 'EMS NACIONAL', 'codigo_item' => 'EN100000014BO', 'peso' => 0.330, 'cantidad' => 1, 'numero_factura' => '1014', 'importe_general' => 20.00],
-    ]);
-    $displayRows = $rowsCollection->isEmpty()
-        ? $sampleRows
-        : $rowsCollection->take(14)->concat($sampleRows)->take(14)->values();
+    $sectionConfigs = [
+        'factura_electronica' => [
+            'title' => 'Facturacion electronica',
+            'total_label' => 'TOTAL FACTURACION ELECTRONICA EN CAJA',
+        ],
+        'qr_facturado' => [
+            'title' => 'Pagos QR facturados',
+            'total_label' => 'TOTAL QR FACTURADO REFERENCIAL NO SUMADO A CAJA',
+        ],
+        'qr_pagado_pendiente_factura' => [
+            'title' => 'Pagos QR confirmados pendientes de factura',
+            'total_label' => 'TOTAL QR PAGADO PENDIENTE DE FACTURA',
+        ],
+        'qr_pendiente' => [
+            'title' => 'Pagos QR pendientes',
+            'total_label' => 'TOTAL QR PENDIENTE',
+        ],
+        'qr_cancelado' => [
+            'title' => 'Pagos QR no concretados',
+            'total_label' => 'TOTAL QR CANCELADO / NO PAGADO',
+        ],
+        'oficial' => [
+            'title' => 'Envios oficiales',
+            'total_label' => 'TOTAL ENVIOS OFICIALES',
+        ],
+    ];
+    $rowsByChannel = collect($rows)->groupBy(fn ($row) => (string) data_get($row, 'section_key', strtolower((string) data_get($row, 'canal_emision', 'factura_electronica'))));
+    $paidSectionKeys = ['factura_electronica', 'qr_facturado', 'qr_pagado_pendiente_factura', 'oficial'];
+    $cashSectionKeys = ['factura_electronica', 'oficial'];
+    $unpaidSectionKeys = ['qr_pendiente', 'qr_cancelado'];
+    $hasPaidRows = collect($paidSectionKeys)->contains(fn ($key) => $rowsByChannel->get($key, collect())->isNotEmpty());
+    $hasUnpaidRows = collect($unpaidSectionKeys)->contains(fn ($key) => $rowsByChannel->get($key, collect())->isNotEmpty());
+    $paidRows = collect($rows)->filter(fn ($row) => in_array((string) data_get($row, 'section_key', ''), $paidSectionKeys, true))->values();
+    $cashRows = collect($rows)->filter(fn ($row) => in_array((string) data_get($row, 'section_key', ''), $cashSectionKeys, true))->values();
+    $unpaidRows = collect($rows)->filter(fn ($row) => in_array((string) data_get($row, 'section_key', ''), $unpaidSectionKeys, true))->values();
+    $branchGroups = collect($rows)
+        ->groupBy(fn ($row) => trim((string) data_get($row, 'origen_usuario_id', data_get($row, 'origen_usuario_email', 'sin-usuario'))))
+        ->map(function ($groupRows) {
+            $groupRows = collect($groupRows)
+                ->sortBy(fn ($row) => (int) data_get($row, 'fecha_sort', 0))
+                ->values();
+            $first = $groupRows->first();
+
+            return [
+                'usuario_id' => trim((string) data_get($first, 'origen_usuario_id', '')),
+                'nombre' => trim((string) data_get($first, 'origen_usuario_nombre', 'Sin usuario')),
+                'email' => trim((string) data_get($first, 'origen_usuario_email', '')),
+                'rows' => $groupRows,
+                'ventas' => $groupRows->count(),
+                'cobradas' => $groupRows->filter(fn ($row) => (bool) data_get($row, 'cobrada', false))->count(),
+                'pendientes' => $groupRows->filter(fn ($row) => ! (bool) data_get($row, 'cobrada', false))->count(),
+                'total' => round((float) $groupRows->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2),
+                'total_caja' => round((float) $groupRows
+                    ->filter(fn ($row) => (bool) data_get($row, 'contabiliza_en_caja', false))
+                    ->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2),
+            ];
+        })
+        ->sortByDesc('total')
+        ->values();
 @endphp
 
 @if($headerImage)
@@ -191,26 +246,11 @@
     </div>
 @endif
 
-<table class="no-border" style="margin-bottom: 8px;">
-    <tr>
-        <td style="width: 55%;">
-            <div class="label-box">KARDEX DIARIO DE RENDICION</div>
-        </td>
-        <td style="width: 45%;">
-            <table class="side-box">
-                <tr><td>Direccion de Operaciones</td></tr>
-                <tr><td>Distribucion</td></tr>
-                <tr><td>Kardex 2</td></tr>
-            </table>
-        </td>
-    </tr>
-</table>
-
 <table class="meta" style="margin-bottom: 10px;">
     <tr>
         <td class="field">Oficina Postal:</td>
         <td class="value">{{ $oficinaPostal !== '' ? $oficinaPostal : '-' }}</td>
-        <td class="field">Nombre Responsable:</td>
+        <td class="field">{{ $scope === 'branch' ? 'Encargado sucursal:' : 'Nombre Responsable:' }}</td>
         <td class="value">{{ $user->name }}</td>
     </tr>
     <tr>
@@ -221,47 +261,159 @@
     </tr>
 </table>
 
-<table class="grid">
-    <thead>
+@if($scope === 'branch')
+    <div class="section-title">Kardex agrupado por cajero</div>
+    <table class="summary-grid" style="margin-bottom: 10px;">
         <tr>
-            <th style="width: 4%;">N°</th>
-            <th style="width: 10%;">FECHA</th>
-            <th style="width: 13%;">ORIGEN</th>
-            <th style="width: 13%;">TIPO DE ENVIO</th>
-            <th style="width: 18%;">CODIGO DE ITEM</th>
-            <th style="width: 11%;">PESO DE ENVIO</th>
-            <th style="width: 8%;">CANTIDAD</th>
-            <th style="width: 12%;">N° FACTURA</th>
-            <th style="width: 11%;">IMPORTE</th>
+            <td class="summary-label" style="width: 25%;">Cajeros con ventas</td>
+            <td style="width: 25%;">{{ $branchGroups->count() }}</td>
+            <td class="summary-label" style="width: 25%;">Total ventas</td>
+            <td style="width: 25%;">{{ collect($rows)->count() }}</td>
         </tr>
-    </thead>
-    <tbody>
-        @foreach($displayRows as $index => $row)
-            <tr>
-                <td class="center">{{ $index + 1 }}</td>
-                <td class="center">{{ $row['fecha'] }}</td>
-                <td>{{ $row['origen'] }}</td>
-                <td>{{ $row['tipo_envio'] }}</td>
-                <td>{{ $row['codigo_item'] }}</td>
-                <td class="right">{{ number_format((float) $row['peso'], 3) }}</td>
-                <td class="center">{{ $row['cantidad'] }}</td>
-                <td class="center">{{ $row['numero_factura'] }}</td>
-                <td class="right">{{ number_format((float) $row['importe_general'], 2) }}</td>
-            </tr>
-        @endforeach
-    </tbody>
-</table>
+        <tr>
+            <td class="summary-label">Total en caja</td>
+            <td>Bs {{ number_format((float) $cashRows->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+            <td class="summary-label">Total emitido</td>
+            <td>Bs {{ number_format((float) collect($rows)->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+        </tr>
+    </table>
 
-<table class="totals" style="margin-top: 0;">
-    <tr>
-        <td style="width: 89%;" class="right">TOTAL PARCIAL</td>
-        <td style="width: 11%;" class="right">Bs {{ number_format((float) $totals['parcial'], 2) }}</td>
-    </tr>
-    <tr>
-        <td class="right">TOTAL GENERAL</td>
-        <td class="right">Bs {{ number_format((float) $totals['general'], 2) }}</td>
-    </tr>
-</table>
+    @forelse($branchGroups as $cashierIndex => $group)
+        <div class="section-title">Cajero {{ $cashierIndex + 1 }}: {{ $group['nombre'] }}</div>
+        <table class="cashier-meta" style="margin-bottom: 6px;">
+            <tr>
+                <td style="width: 38%;">
+                    <div class="cashier-name">{{ $group['nombre'] }}</div>
+                    <div class="cashier-muted">{{ $group['email'] !== '' ? $group['email'] : 'Sin correo registrado' }}</div>
+                </td>
+                <td style="width: 14%;" class="center"><strong>{{ $group['ventas'] }}</strong><br>ventas</td>
+                <td style="width: 14%;" class="center"><strong>{{ $group['cobradas'] }}</strong><br>cobradas</td>
+                <td style="width: 14%;" class="center"><strong>{{ $group['pendientes'] }}</strong><br>pendientes</td>
+                <td style="width: 20%;" class="right"><strong>Bs {{ number_format((float) $group['total_caja'], 2) }}</strong><br>total en caja</td>
+            </tr>
+        </table>
+
+        <table class="grid" style="margin-bottom: 10px;">
+            <thead>
+                <tr>
+                    <th style="width: 4%;">Nro.</th>
+                    <th style="width: 10%;">Fecha</th>
+                    <th style="width: 12%;">Orden</th>
+                    <th style="width: 14%;">Cliente</th>
+                    <th style="width: 23%;">Detalle</th>
+                    <th style="width: 17%;">Paquete / codigos</th>
+                    <th style="width: 8%;">Factura</th>
+                    <th style="width: 6%;">Estado</th>
+                    <th style="width: 6%;">Importe</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($group['rows'] as $index => $row)
+                    <tr>
+                        <td class="center">{{ $index + 1 }}</td>
+                        <td class="center">{{ data_get($row, 'fecha_hora', data_get($row, 'fecha', '-')) }}</td>
+                        <td>{{ data_get($row, 'codigo_item', '-') }}</td>
+                        <td>{{ data_get($row, 'cliente', 'Sin cliente') }}</td>
+                        <td>
+                            <strong>{{ data_get($row, 'detalle_items', data_get($row, 'tipo_envio', 'Sin detalle')) }}</strong>
+                            @if((string) data_get($row, 'detalle_resumen', '') !== '')
+                                <br>{{ data_get($row, 'detalle_resumen') }}
+                            @endif
+                        </td>
+                        <td style="white-space: pre-line;">{{ data_get($row, 'codigo_referencia', '-') }}</td>
+                        <td class="center">{{ data_get($row, 'numero_factura', '-') }}</td>
+                        <td class="center">{{ (bool) data_get($row, 'cobrada', false) ? 'Cobrada' : 'Pend.' }}</td>
+                        <td class="right">{{ number_format((float) data_get($row, 'importe_general', 0), 2) }}</td>
+                    </tr>
+                @endforeach
+                <tr>
+                    <td colspan="8" class="right" style="font-weight: 700;">SUBTOTAL {{ strtoupper($group['nombre']) }}</td>
+                    <td class="right" style="font-weight: 700;">Bs {{ number_format((float) $group['total'], 2) }}</td>
+                </tr>
+            </tbody>
+        </table>
+    @empty
+        <table class="grid">
+            <tbody>
+                <tr>
+                    <td class="center" style="padding: 12px;">No se encontraron ventas de sucursal con los filtros aplicados.</td>
+                </tr>
+            </tbody>
+        </table>
+    @endforelse
+
+    <table class="totals" style="margin-top: 4px;">
+        <tr>
+            <td style="width: 89%;" class="right">TOTAL EN CAJA SUCURSAL</td>
+            <td style="width: 11%;" class="right">Bs {{ number_format((float) $cashRows->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+        </tr>
+        <tr>
+            <td class="right">TOTAL PENDIENTE / NO COBRADO</td>
+            <td class="right">Bs {{ number_format((float) $unpaidRows->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+        </tr>
+        <tr>
+            <td class="right">TOTAL GENERAL SUCURSAL</td>
+            <td class="right">Bs {{ number_format((float) collect($rows)->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+        </tr>
+    </table>
+@else
+    <div class="section-title">Kardex de ventas cobradas</div>
+    @if($hasPaidRows)
+        @foreach($paidSectionKeys as $channelKey)
+            @php($sectionRows = $rowsByChannel->get($channelKey, collect())->values())
+            @continue($sectionRows->isEmpty())
+            @include('facturacion.partials.kardex-section-table', ['section' => $sectionConfigs[$channelKey], 'sectionRows' => $sectionRows])
+        @endforeach
+    @else
+        <table class="grid">
+            <tbody>
+                <tr>
+                    <td class="center" style="padding: 12px;">No se encontraron ventas cobradas con los filtros aplicados.</td>
+                </tr>
+            </tbody>
+        </table>
+    @endif
+
+    <table class="totals" style="margin-top: 0;">
+        <tr>
+            <td style="width: 89%;" class="right">TOTAL PARCIAL EN CAJA</td>
+            <td style="width: 11%;" class="right">Bs {{ number_format((float) $cashRows->sum(fn ($row) => (float) data_get($row, 'importe_parcial', 0)), 2) }}</td>
+        </tr>
+        <tr>
+            <td class="right">TOTAL GENERAL EN CAJA</td>
+            <td class="right">Bs {{ number_format((float) $cashRows->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+        </tr>
+        <tr>
+            <td class="right">TOTAL QR REFERENCIAL NO SUMADO A CAJA</td>
+            <td class="right">Bs {{ number_format((float) $paidRows->filter(fn ($row) => strtolower((string) data_get($row, 'metodo_pago', '')) === 'qr')->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+        </tr>
+    </table>
+
+    <div class="page-break"></div>
+    <div class="section-title">Kardex de ventas no cobradas</div>
+    @if($hasUnpaidRows)
+        @foreach($unpaidSectionKeys as $channelKey)
+            @php($sectionRows = $rowsByChannel->get($channelKey, collect())->values())
+            @continue($sectionRows->isEmpty())
+            @include('facturacion.partials.kardex-section-table', ['section' => $sectionConfigs[$channelKey], 'sectionRows' => $sectionRows])
+        @endforeach
+    @else
+        <table class="grid">
+            <tbody>
+                <tr>
+                    <td class="center" style="padding: 12px;">No se encontraron ventas no cobradas con los filtros aplicados.</td>
+                </tr>
+            </tbody>
+        </table>
+    @endif
+
+    <table class="totals" style="margin-top: 0;">
+        <tr>
+            <td style="width: 89%;" class="right">TOTAL VENTAS NO COBRADAS</td>
+            <td style="width: 11%;" class="right">Bs {{ number_format((float) $unpaidRows->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+        </tr>
+    </table>
+@endif
 
 <table class="observaciones" style="margin-top: 14px;">
     <tr>
