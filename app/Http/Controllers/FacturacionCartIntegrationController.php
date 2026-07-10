@@ -1026,7 +1026,27 @@ class FacturacionCartIntegrationController extends Controller
             $um = is_numeric($r['unidad_medida'] ?? null) ? (int) $r['unidad_medida'] : 0;
             if ($ae === '' || $cs === '' || $cp === '' || $de === '' || $um <= 0 || mb_strlen($cp) < 3) abort(422, 'El borrador tiene items sin datos SIN completos.');
             $codigoDetalle = $this->buildDetalleCodigo($codigoPaquete, $cp);
-            return ['actividadEconomica' => $ae, 'codigoSin' => $cs, 'codigo' => $codigoDetalle, 'descripcion' => Str::limit(Str::upper($de), 250, ''), 'unidadMedida' => $um, 'precioUnitario' => round((float) ($i->monto_base ?? 0), 2), 'cantidad' => max(1, (int) ($i->cantidad ?? 1))];
+            $cantidad = max(1, (int) ($i->cantidad ?? 1));
+            $totalLinea = round((float) ($i->total_linea ?? 0), 2);
+            $montoBase = round((float) ($i->monto_base ?? 0), 2);
+            $montoExtras = round((float) ($i->monto_extras ?? 0), 2);
+            $montoUnitario = $totalLinea > 0
+                ? round($totalLinea / $cantidad, 2)
+                : round(($montoBase + $montoExtras) / $cantidad, 2);
+
+            if ($montoUnitario <= 0) {
+                $montoUnitario = $montoBase > 0 ? $montoBase : round($montoExtras, 2);
+            }
+
+            return [
+                'actividadEconomica' => $ae,
+                'codigoSin' => $cs,
+                'codigo' => $codigoDetalle,
+                'descripcion' => Str::limit(Str::upper($de), 250, ''),
+                'unidadMedida' => $um,
+                'precioUnitario' => round($montoUnitario, 2),
+                'cantidad' => $cantidad,
+            ];
         })->values()->all();
 
         $isPaidQrInvoiceConversion = strtolower((string) ($cart->metodo_pago ?? 'efectivo')) === 'qr'
