@@ -541,7 +541,15 @@ class FacturacionCartIntegrationController extends Controller
         if (!$cart) return response()->json(['ok' => false, 'message' => 'No existe una emision previa para consultar.'], 422);
 
         $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
-        if ($canalEmision === 'qr') {
+        $metodoPago = strtolower(trim((string) ($cart->metodo_pago ?? '')));
+        $estadoPagoActual = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
+        $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? $cart->codigo_seguimiento ?? ''));
+        $hasQrTransaction = trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+        $shouldConsultQr = $canalEmision === 'qr'
+            || ($metodoPago === 'qr' && $hasQrTransaction && $codigoSeguimientoFiscal === '')
+            || ($metodoPago === 'qr' && $hasQrTransaction && in_array($estadoPagoActual, ['pendiente', 'pagado', 'cancelado'], true));
+
+        if ($shouldConsultQr) {
             $transactionId = (int) trim((string) ($cart->qr_transaction_id ?? $cart->codigo_seguimiento ?? ''));
             if ($transactionId <= 0) {
                 return response()->json(['ok' => false, 'message' => 'No existe transaction_id QR para consultar.'], 422);
@@ -553,7 +561,6 @@ class FacturacionCartIntegrationController extends Controller
             $cReq->headers->set('Accept', 'application/json');
             $cRes = app(QhantuyQrController::class)->checkPayments($cReq);
         } else {
-            $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? $cart->codigo_seguimiento ?? ''));
             if ($codigoSeguimientoFiscal === '') {
                 return response()->json(['ok' => false, 'message' => 'No existe codigo de seguimiento fiscal para consultar.'], 422);
             }

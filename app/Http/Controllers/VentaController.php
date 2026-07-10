@@ -1873,7 +1873,7 @@ class VentaController extends Controller
                 return ['key' => 'QR_PAGADO', 'label' => 'Pagado QR', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null];
             }
             if ($estadoPago === 'cancelado') {
-                return ['key' => 'QR_RECHAZADO', 'label' => 'QR rechazado', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null];
+                return ['key' => 'QR_ANULADO', 'label' => 'QR anulado', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null];
             }
             return ['key' => 'QR_PENDIENTE', 'label' => 'QR pendiente', 'can_annul' => false, 'can_cancel' => true, 'cuf' => $cuf !== '' ? $cuf : null];
         }
