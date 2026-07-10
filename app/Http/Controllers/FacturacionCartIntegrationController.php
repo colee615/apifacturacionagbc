@@ -610,12 +610,18 @@ class FacturacionCartIntegrationController extends Controller
         $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
         $metodoPago = strtolower(trim((string) ($cart->metodo_pago ?? '')));
         $estadoPagoActual = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
+        $estadoEmisionActual = strtoupper(trim((string) ($cart->estado_emision ?? '')));
         $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? $cart->codigo_seguimiento ?? ''));
         $hasQrTransaction = trim((string) ($cart->qr_transaction_id ?? '')) !== '';
         $isQrOrigin = $this->isQrOriginCart($cart);
         $shouldConsultQr = $canalEmision === 'qr'
-            || ($metodoPago === 'qr' && $hasQrTransaction && $codigoSeguimientoFiscal === '')
-            || ($metodoPago === 'qr' && $hasQrTransaction && in_array($estadoPagoActual, ['pendiente', 'pagado', 'cancelado'], true));
+            || (
+                $metodoPago === 'qr'
+                && $hasQrTransaction
+                && $codigoSeguimientoFiscal === ''
+                && in_array($estadoEmisionActual, ['', 'NO_APLICA'], true)
+                && in_array($estadoPagoActual, ['pendiente', 'pagado', 'cancelado'], true)
+            );
 
         Log::info('FacturacionCart consultar: decision de consulta.', [
             'user_id' => $v['origen_usuario_id'],
@@ -624,7 +630,7 @@ class FacturacionCartIntegrationController extends Controller
             'canal_emision' => $canalEmision,
             'metodo_pago' => $metodoPago,
             'estado_pago' => $estadoPagoActual,
-            'estado_emision' => $cart->estado_emision ?? null,
+            'estado_emision' => $estadoEmisionActual,
             'codigo_seguimiento_fiscal' => $codigoSeguimientoFiscal,
             'qr_transaction_id' => $cart->qr_transaction_id ?? null,
             'auto_emit_invoice' => $autoEmitInvoice,
@@ -666,7 +672,7 @@ class FacturacionCartIntegrationController extends Controller
             'body_codigo_seguimiento' => $body['codigoSeguimiento'] ?? null,
             'body_numero_factura' => data_get($body, 'factura.nroFactura') ?? data_get($body, 'nroFactura'),
         ]);
-        if ($isQrOrigin) {
+        if ($shouldConsultQr) {
             $resolvedPaymentStatus = (string) ($body['payment_status'] ?? 'holding');
             $resolvedPaymentState = $this->mapQrPaymentStatusToPaymentState($resolvedPaymentStatus);
             $body['estado'] = $this->mapQrPaymentStatusToEmissionState($resolvedPaymentStatus);
@@ -686,7 +692,7 @@ class FacturacionCartIntegrationController extends Controller
             'updated_at' => now(),
         ];
 
-        if ($isQrOrigin) {
+        if ($shouldConsultQr) {
             $updates['estado_pago'] = $this->mapQrPaymentStatusToPaymentState((string) ($body['payment_status'] ?? 'holding'));
             $updates['qr_transaction_id'] = trim((string) ($body['transaction_id'] ?? ($cart->qr_transaction_id ?? ''))) ?: null;
             $fiscalSeguimiento = trim((string) ($body['codigoSeguimiento'] ?? data_get($body, 'sefe.datos.codigoSeguimiento', '')));
