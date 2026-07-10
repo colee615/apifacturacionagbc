@@ -1204,9 +1204,13 @@ class VentaController extends Controller
                 $packageItemsCount > 0 ? $packageItemsCount . ' paquete' . ($packageItemsCount === 1 ? '' : 's') : null,
                 $serviceItemsCount > 0 ? $serviceItemsCount . ' servicio' . ($serviceItemsCount === 1 ? '' : 's') : null,
             ])->filter()->implode(' + ');
-            $sectionKey = strtoupper(trim((string) ($venta->estado_sufe ?? ''))) === 'REGISTRADA_OFICIAL'
-                ? 'oficial'
-                : 'factura_electronica';
+            $sectionKey = $this->resolveNonQrPdfSectionKey([
+                'codigo_orden' => $venta->codigoOrden,
+                'canal_emision' => 'factura_electronica',
+                'estado_sufe' => $venta->estado_sufe,
+                'es_oficial' => strtoupper(trim((string) ($venta->estado_sufe ?? ''))) === 'REGISTRADA_OFICIAL',
+                'razon_social' => $venta->razonSocial,
+            ]);
 
             return [[
                 'origen_usuario_id' => trim((string) ($venta->origen_usuario_id ?? '')),
@@ -1224,7 +1228,9 @@ class VentaController extends Controller
                 'codigo_referencia' => $codigosPaquete->isNotEmpty()
                     ? $codigoOrden . "\nPaquetes: " . $codigosPaquete->implode(', ')
                     : $codigoOrden,
-                'peso' => 0.0,
+                'peso' => Schema::hasColumn('ventas', 'peso_total')
+                    ? round((float) ($venta->peso_total ?? 0), 3)
+                    : 0.0,
                 'cantidad' => $cantidadTotal,
                 'canal_emision' => $sectionKey,
                 'metodo_pago' => 'efectivo',
@@ -1434,7 +1440,7 @@ class VentaController extends Controller
             $estadoPago = strtolower(trim((string) data_get($row, 'estado_pago', 'pendiente')));
             $estadoEmision = strtoupper(trim((string) data_get($row, 'estado_emision', 'NO_APLICA')));
 
-            if ($estadoPago === 'cancelado') {
+            if (in_array($estadoPago, ['cancelado', 'fallido'], true)) {
                 return 'qr_cancelado';
             }
 
@@ -1449,7 +1455,22 @@ class VentaController extends Controller
             return 'qr_pagado_pendiente_factura';
         }
 
-        return strtolower(trim((string) data_get($row, 'canal_emision', 'factura_electronica')));
+        return $this->resolveNonQrPdfSectionKey($row);
+    }
+
+    private function resolveNonQrPdfSectionKey(object|array $row): string
+    {
+        $codigoOrden = strtoupper(trim((string) data_get($row, 'codigo_orden', data_get($row, 'codigoOrden', ''))));
+        $razonSocial = strtoupper(trim((string) data_get($row, 'razon_social', data_get($row, 'razonSocial', data_get($row, 'cliente.razonSocial', '')))));
+        $estadoSufe = strtoupper(trim((string) data_get($row, 'estado_sufe', data_get($row, 'estadoSufe', data_get($row, 'respuesta_emision.estadoSufe', '')))));
+        $canalEmision = strtolower(trim((string) data_get($row, 'canal_emision', 'factura_electronica')));
+        $esOficial = (bool) data_get($row, 'es_oficial', false)
+            || str_starts_with($codigoOrden, 'OFI-')
+            || $razonSocial === 'ENVIO OFICIAL'
+            || $estadoSufe === 'REGISTRADA_OFICIAL'
+            || $canalEmision === 'oficial';
+
+        return $esOficial ? 'oficial' : 'factura_electronica';
     }
 
     public function reporteVentas(Request $request)

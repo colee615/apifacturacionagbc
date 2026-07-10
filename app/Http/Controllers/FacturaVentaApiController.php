@@ -373,6 +373,14 @@ class FacturaVentaApiController extends Controller
             'updated_at' => $now,
         ]);
 
+        if (Schema::hasColumn('ventas', 'peso_total')) {
+            DB::table('ventas')
+                ->where('id', $ventaId)
+                ->update([
+                    'peso_total' => round((float) ($payload['pesoTotal'] ?? 0), 3),
+                ]);
+        }
+
         return [
             'id' => (int) $ventaId,
             'codigoOrden' => $codigoOrden,
@@ -385,7 +393,7 @@ class FacturaVentaApiController extends Controller
         $now = Date::now();
 
         foreach ($payload['detalle'] as $detalle) {
-            DB::table('detalle_ventas')->insert([
+            $insert = [
                 'venta_id' => $venta['id'],
                 'actividadEconomica' => $detalle['actividadEconomica'],
                 'codigoSin' => $detalle['codigoSin'],
@@ -397,7 +405,13 @@ class FacturaVentaApiController extends Controller
                 'estado' => 1,
                 'created_at' => $now,
                 'updated_at' => $now,
-            ]);
+            ];
+
+            if (Schema::hasColumn('detalle_ventas', 'peso')) {
+                $insert['peso'] = round((float) ($detalle['peso'] ?? 0), 3);
+            }
+
+            DB::table('detalle_ventas')->insert($insert);
         }
     }
 
@@ -434,6 +448,7 @@ class FacturaVentaApiController extends Controller
             'metodoPago' => ['nullable', 'integer', 'min:0'],
             'formatoFactura' => ['nullable', 'string', 'max:30'],
             'montoTotal' => ['required', 'numeric', 'min:0'],
+            'pesoTotal' => ['nullable', 'numeric', 'min:0'],
             'detalle' => ['required', 'array', 'min:1'],
             'detalle.*.actividadEconomica' => ['nullable', 'string', 'max:20'],
             'detalle.*.codigoSin' => ['nullable', 'string', 'max:20'],
@@ -441,6 +456,7 @@ class FacturaVentaApiController extends Controller
             'detalle.*.descripcion' => ['nullable', 'string', 'max:255'],
             'detalle.*.unidadMedida' => ['nullable', 'integer', 'min:1'],
             'detalle.*.precioUnitario' => ['nullable', 'numeric', 'min:0'],
+            'detalle.*.peso' => ['nullable', 'numeric', 'min:0'],
             'detalle.*.cantidad' => ['required', 'numeric', 'gt:0'],
         ]);
 
