@@ -30,6 +30,11 @@ class FacturaVentaApiController extends Controller
         return rtrim(config('services.agetic.base_url', 'https://sefe.demo.agetic.gob.bo'), '/');
     }
 
+    private function ageticPublicBaseUrl(): string
+    {
+        return rtrim(config('services.agetic.public_base_url', 'https://sefe.agetic.gob.bo'), '/');
+    }
+
     private function ageticClient()
     {
         $token = config('services.agetic.token');
@@ -598,7 +603,7 @@ class FacturaVentaApiController extends Controller
 
     private function sefePublicAssetUrl(?string $type, ?string $cuf = null, ?string $xmlFile = null): ?string
     {
-        $baseUrl = $this->ageticBaseUrl() . '/public';
+        $baseUrl = $this->ageticPublicBaseUrl() . '/public';
 
         if ($type === 'pdf' && filled($cuf)) {
             return "{$baseUrl}/facturas_pdf/{$cuf}.pdf";
@@ -616,6 +621,21 @@ class FacturaVentaApiController extends Controller
         }
 
         return null;
+    }
+
+    private function normalizeSefePublicUrl(?string $url): ?string
+    {
+        $resolvedUrl = trim((string) $url);
+        if ($resolvedUrl === '') {
+            return null;
+        }
+
+        $path = (string) parse_url($resolvedUrl, PHP_URL_PATH);
+        if ($path === '' || !str_starts_with($path, '/public/')) {
+            return $resolvedUrl;
+        }
+
+        return $this->ageticPublicBaseUrl() . $path;
     }
 
     private function wantsVerboseResponse(Request $request): bool
@@ -854,8 +874,8 @@ class FacturaVentaApiController extends Controller
         $observacion = $venta->observacion_sufe ?: data_get($detalleNotificacion, 'observacion') ?: data_get($consulta, 'observacion');
         $cuf = $venta->cuf ?: data_get($detalleNotificacion, 'cuf') ?: data_get($consulta, 'cuf');
         $xmlFile = data_get($consulta, 'xml');
-        $pdfUrl = $venta->url_pdf ?: data_get($detalleNotificacion, 'urlPdf');
-        $xmlUrl = $venta->url_xml ?: data_get($detalleNotificacion, 'urlXml');
+        $pdfUrl = $this->normalizeSefePublicUrl($venta->url_pdf ?: data_get($detalleNotificacion, 'urlPdf'));
+        $xmlUrl = $this->normalizeSefePublicUrl($venta->url_xml ?: data_get($detalleNotificacion, 'urlXml'));
 
         if (!$pdfUrl && $status === 'PROCESADA') {
             $pdfUrl = $this->sefePublicAssetUrl('pdf', $cuf);
@@ -868,8 +888,8 @@ class FacturaVentaApiController extends Controller
         $factura = [
             'cuf' => $cuf,
             'nroFactura' => ($venta->numero_factura ?? null) ?: data_get($detalleNotificacion, 'nroFactura') ?: data_get($consulta, 'nroFactura'),
-            'pdfUrl' => $pdfUrl,
-            'xmlUrl' => $xmlUrl,
+            'pdfUrl' => $this->normalizeSefePublicUrl($pdfUrl),
+            'xmlUrl' => $this->normalizeSefePublicUrl($xmlUrl),
         ];
 
         $base = [
@@ -918,8 +938,8 @@ class FacturaVentaApiController extends Controller
         $factura = [
             'cuf' => $cuf,
             'nroFactura' => data_get($sefePayload, 'datos.nroFactura'),
-            'pdfUrl' => data_get($sefePayload, 'datos.urlPdf') ?: ($estadoPuente === 'PROCESADA' ? $this->sefePublicAssetUrl('pdf', $cuf) : null),
-            'xmlUrl' => data_get($sefePayload, 'datos.urlXml') ?: ($estadoPuente === 'PROCESADA' ? $this->sefePublicAssetUrl('xml', $cuf) : null),
+            'pdfUrl' => $this->normalizeSefePublicUrl(data_get($sefePayload, 'datos.urlPdf') ?: ($estadoPuente === 'PROCESADA' ? $this->sefePublicAssetUrl('pdf', $cuf) : null)),
+            'xmlUrl' => $this->normalizeSefePublicUrl(data_get($sefePayload, 'datos.urlXml') ?: ($estadoPuente === 'PROCESADA' ? $this->sefePublicAssetUrl('xml', $cuf) : null)),
         ];
 
         $base = [

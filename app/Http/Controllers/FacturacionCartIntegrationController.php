@@ -353,9 +353,9 @@ class FacturacionCartIntegrationController extends Controller
                 ->where(function ($query) {
                     $query->where('estado', 'borrador')
                         ->orWhere(function ($qr) {
-                            $qr->where('canal_emision', 'qr')
-                                ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
+                            $qr->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
+                                ->whereNotNull('qr_transaction_id')
                                 ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('NO_APLICA','PENDIENTE','ERROR','RECHAZADA')");
                         });
                 });
@@ -364,7 +364,7 @@ class FacturacionCartIntegrationController extends Controller
                 $query->where('estado', 'borrador')
                     ->orWhere(function ($qr) {
                         $qr->where('estado', 'pendiente_pago')
-                            ->where('canal_emision', 'qr')
+                            ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                             ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) <> 'pagado'");
                     });
             });
@@ -422,7 +422,7 @@ class FacturacionCartIntegrationController extends Controller
             $canalEmision = 'factura_electronica';
         }
 
-        if ($canalEmision === 'qr' && $this->shouldReusePendingQr($cart)) {
+        if ($this->isQrOriginCart($cart) && $this->shouldReusePendingQr($cart)) {
             $existingResponse = $this->buildReusableQrResponse($cart);
 
             if ($existingResponse !== null) {
@@ -545,6 +545,7 @@ class FacturacionCartIntegrationController extends Controller
         $estadoPagoActual = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
         $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? $cart->codigo_seguimiento ?? ''));
         $hasQrTransaction = trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+        $isQrOrigin = $this->isQrOriginCart($cart);
         $shouldConsultQr = $canalEmision === 'qr'
             || ($metodoPago === 'qr' && $hasQrTransaction && $codigoSeguimientoFiscal === '')
             || ($metodoPago === 'qr' && $hasQrTransaction && in_array($estadoPagoActual, ['pendiente', 'pagado', 'cancelado'], true));
@@ -572,7 +573,7 @@ class FacturacionCartIntegrationController extends Controller
         $body = json_decode($cRes->getContent(), true);
         if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
         $statusCode = $cRes->getStatusCode();
-        if ($canalEmision === 'qr') {
+        if ($isQrOrigin) {
             $resolvedPaymentStatus = (string) ($body['payment_status'] ?? 'holding');
             $resolvedPaymentState = $this->mapQrPaymentStatusToPaymentState($resolvedPaymentStatus);
             $body['estado'] = $this->mapQrPaymentStatusToEmissionState($resolvedPaymentStatus);
@@ -592,7 +593,7 @@ class FacturacionCartIntegrationController extends Controller
             'updated_at' => now(),
         ];
 
-        if ($canalEmision === 'qr') {
+        if ($isQrOrigin) {
             $updates['estado_pago'] = $this->mapQrPaymentStatusToPaymentState((string) ($body['payment_status'] ?? 'holding'));
             $updates['qr_transaction_id'] = trim((string) ($body['transaction_id'] ?? ($cart->qr_transaction_id ?? ''))) ?: null;
             $fiscalSeguimiento = trim((string) ($body['codigoSeguimiento'] ?? data_get($body, 'sefe.datos.codigoSeguimiento', '')));
@@ -1263,10 +1264,19 @@ class FacturacionCartIntegrationController extends Controller
 
     private function shouldReusePendingQr(object $cart): bool
     {
-        return strtolower(trim((string) ($cart->canal_emision ?? ''))) === 'qr'
+        return $this->isQrOriginCart($cart)
             && strtolower(trim((string) ($cart->estado ?? ''))) === 'pendiente_pago'
             && strtolower(trim((string) ($cart->estado_pago ?? 'pendiente'))) === 'pendiente'
             && trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+    }
+
+    private function isQrOriginCart(object $cart): bool
+    {
+        $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? '')));
+        $metodoPago = strtolower(trim((string) ($cart->metodo_pago ?? '')));
+        $transactionId = trim((string) ($cart->qr_transaction_id ?? ''));
+
+        return $canalEmision === 'qr' || $metodoPago === 'qr' || $transactionId !== '';
     }
 
     private function buildReusableQrResponse(object $cart): ?array

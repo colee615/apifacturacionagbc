@@ -31,6 +31,7 @@ return [
     ],
      'agetic' => [
         'base_url' => env('AGETIC_BASE_URL', 'https://sefe.demo.agetic.gob.bo'),
+        'public_base_url' => env('AGETIC_PUBLIC_BASE_URL', 'https://sefe.agetic.gob.bo'),
         'token'    => env('AGETIC_TOKEN'),
         'verify'   => env('AGETIC_SSL_VERIFY', true), // true|false
     ],
