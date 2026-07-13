@@ -6,6 +6,7 @@ use App\Models\Notificacione;
 use App\Models\Venta;
 use App\Support\SufeSectorUnoValidator;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class NotificacioneController extends Controller
 {
@@ -105,8 +106,9 @@ class NotificacioneController extends Controller
    {
       $observacion = $validated['observacion'] ?? data_get($validated, 'detalle.observacion');
       $tipoEmision = (string) data_get($validated, 'detalle.tipoEmision', '');
+      $estadoSufe = $this->resolveVentaEstadoSufe($validated);
       $updates = [
-         'estado_sufe' => $this->resolveVentaEstadoSufe($validated),
+         'estado_sufe' => $estadoSufe,
          'tipo_emision_sufe' => $tipoEmision,
          'observacion_sufe' => $observacion,
          'fecha_notificacion_sufe' => $validated['fecha'] ?? null,
@@ -125,6 +127,54 @@ class NotificacioneController extends Controller
       Venta::query()
          ->where('codigoSeguimiento', $codigoSeguimiento)
          ->update($updates);
+
+      $venta = Venta::query()
+         ->where('codigoSeguimiento', $codigoSeguimiento)
+         ->first([
+            'origen_venta_id',
+            'origen_venta_tipo',
+            'codigoSeguimiento',
+            'estado_sufe',
+            'cuf',
+         ]);
+
+      if (!$venta) {
+         return;
+      }
+
+      $origenVentaTipo = (string) ($venta->origen_venta_tipo ?? '');
+      $cartId = (int) ($venta->origen_venta_id ?? 0);
+
+      if (!in_array($origenVentaTipo, ['facturacion_cart', 'facturacion_cart_remote'], true) || $cartId <= 0) {
+         return;
+      }
+
+      $estadoEmision = match ($estadoSufe) {
+         'PROCESADA' => 'FACTURADA',
+         'OBSERVADA' => 'RECHAZADA',
+         'ANULADA', 'ANULACION_OBSERVADA' => 'ANULADA',
+         'CONTINGENCIA_CREADA', 'CREADA', 'RECEPCIONADA' => 'PENDIENTE',
+         default => strtoupper(trim($estadoSufe)) !== '' ? strtoupper(trim($estadoSufe)) : 'PENDIENTE',
+      };
+
+      $mensajeEmision = match ($estadoSufe) {
+         'PROCESADA' => 'Factura emitida correctamente.',
+         'OBSERVADA' => 'La factura fue observada por SEFE.',
+         'ANULADA' => 'La factura fue anulada correctamente.',
+         'ANULACION_OBSERVADA' => 'La solicitud de anulacion fue observada por SEFE.',
+         'CONTINGENCIA_CREADA', 'CREADA', 'RECEPCIONADA' => 'La venta fue recibida y esta pendiente de confirmacion.',
+         default => 'Estado de facturacion actualizado desde la notificacion de SEFE.',
+      };
+
+      DB::table('facturacion_carts')
+         ->where('id', $cartId)
+         ->update([
+            'estado_emision' => $estadoEmision,
+            'mensaje_emision' => $mensajeEmision,
+            'codigo_seguimiento' => $venta->codigoSeguimiento,
+            'codigo_seguimiento_fiscal' => $venta->codigoSeguimiento,
+            'updated_at' => now(),
+         ]);
    }
 
    public function procesarNotificacion(Request $request, $codigoSeguimiento)

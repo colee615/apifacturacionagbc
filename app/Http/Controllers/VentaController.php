@@ -855,6 +855,38 @@ class VentaController extends Controller
         return $map;
     }
 
+    private function bridgeCartMetaMapFromVentasRows($ventasRows): array
+    {
+        $cartIds = collect($ventasRows)
+            ->filter(function ($row) {
+                return (string) ($row->origen_venta_tipo ?? '') === 'facturacion_cart_remote'
+                    && trim((string) ($row->origen_venta_id ?? '')) !== '';
+            })
+            ->pluck('origen_venta_id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($cartIds === []) {
+            return [];
+        }
+
+        return DB::table('facturacion_carts')
+            ->whereIn('id', $cartIds)
+            ->get([
+                'id',
+                'canal_emision',
+                'metodo_pago',
+                'estado_pago',
+                'estado_emision',
+                'qr_transaction_id',
+            ])
+            ->keyBy(fn ($row) => (int) $row->id)
+            ->toArray();
+    }
+
     private function itemsCountMapsFromRows($ventasRows): array
     {
         $ventaIds = collect($ventasRows)
@@ -1203,9 +1235,10 @@ class VentaController extends Controller
 
         $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventasRows->pluck('codigoSeguimiento')->all());
         $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventasRows);
+        $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventasRows);
         $detalleMaps = $this->detalleMapsFromRows($ventasRows);
 
-        $rows = $this->buildPdfRowsFromVentas($ventasRows, $detalleMaps['detalle'] ?? [], $numeroFacturaMap, $numeroFacturaBridgeMap)
+        $rows = $this->buildPdfRowsFromVentas($ventasRows, $detalleMaps['detalle'] ?? [], $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap)
             ->concat($this->buildPdfRowsFromFacturacionCarts($cartRows))
             ->sortByDesc(fn ($row) => (int) data_get($row, 'fecha_sort', 0))
             ->values();
@@ -1269,14 +1302,16 @@ class VentaController extends Controller
         ]);
     }
 
-    private function buildPdfRowsFromVentas(Collection $ventasRows, array $detalleVentasMap, array $numeroFacturaMap, array $numeroFacturaBridgeMap): Collection
+    private function buildPdfRowsFromVentas(Collection $ventasRows, array $detalleVentasMap, array $numeroFacturaMap, array $numeroFacturaBridgeMap, array $bridgeCartMetaMap = []): Collection
     {
-        return $ventasRows->flatMap(function (Venta $venta) use ($detalleVentasMap, $numeroFacturaMap, $numeroFacturaBridgeMap) {
+        return $ventasRows->flatMap(function (Venta $venta) use ($detalleVentasMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap) {
             $ventaId = (int) $venta->id;
+            $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
+            $bridgeCart = $bridgeCartMetaMap[$origenVentaId] ?? null;
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
             $numeroFactura = trim((string) (
                 $venta->numero_factura
-                ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[(int) ($venta->origen_venta_id ?? 0)] ?? ''))
+                ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? ''))
             ));
             $detalleVentas = collect($detalleVentasMap[$ventaId] ?? []);
             $items = $detalleVentas->map(function ($item) {
@@ -1317,9 +1352,17 @@ class VentaController extends Controller
                 $packageItemsCount > 0 ? $packageItemsCount . ' paquete' . ($packageItemsCount === 1 ? '' : 's') : null,
                 $serviceItemsCount > 0 ? $serviceItemsCount . ' servicio' . ($serviceItemsCount === 1 ? '' : 's') : null,
             ])->filter()->implode(' + ');
-            $sectionKey = $this->resolveNonQrPdfSectionKey([
+            $canalEmision = strtolower(trim((string) ($bridgeCart->canal_emision ?? 'factura_electronica')));
+            $metodoPago = strtolower(trim((string) ($bridgeCart->metodo_pago ?? 'efectivo')));
+            $estadoPago = strtolower(trim((string) ($bridgeCart->estado_pago ?? 'pagado')));
+            $estadoEmision = strtoupper(trim((string) ($bridgeCart->estado_emision ?? 'FACTURADA')));
+            $sectionKey = $this->resolvePdfSectionKey([
                 'codigo_orden' => $venta->codigoOrden,
-                'canal_emision' => 'factura_electronica',
+                'canal_emision' => $canalEmision,
+                'metodo_pago' => $metodoPago,
+                'estado_pago' => $estadoPago,
+                'estado_emision' => $estadoEmision,
+                'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
                 'estado_sufe' => $venta->estado_sufe,
                 'es_oficial' => strtoupper(trim((string) ($venta->estado_sufe ?? ''))) === 'REGISTRADA_OFICIAL',
                 'razon_social' => $venta->razonSocial,
@@ -1345,15 +1388,34 @@ class VentaController extends Controller
                     ? round((float) ($venta->peso_total ?? 0), 3)
                     : 0.0,
                 'cantidad' => $cantidadTotal,
-                'canal_emision' => $sectionKey,
-                'metodo_pago' => 'efectivo',
-                'estado_pago' => 'pagado',
-                'estado_emision' => 'FACTURADA',
+                'canal_emision' => $canalEmision,
+                'metodo_pago' => $metodoPago,
+                'estado_pago' => $estadoPago,
+                'estado_emision' => $estadoEmision,
                 'section_key' => $sectionKey,
-                'emision_label' => $sectionKey === 'oficial' ? 'Envio oficial' : 'Factura electronica',
-                'cobro_label' => $sectionKey === 'oficial' ? 'CAJA / OFICIAL' : 'CAJA',
-                'cobro_detalle' => 'Cobro registrado en caja.',
-                'contabiliza_en_caja' => true,
+                'emision_label' => match ($sectionKey) {
+                    'qr_facturado' => 'QR pagado + facturado',
+                    'qr_pagado_pendiente_factura' => 'QR pagado',
+                    'qr_cancelado' => 'QR cancelado',
+                    'qr_pendiente' => 'QR pendiente',
+                    'oficial' => 'Envio oficial',
+                    default => 'Factura electronica',
+                },
+                'cobro_label' => match ($sectionKey) {
+                    'qr_facturado', 'qr_pagado_pendiente_factura' => 'QR / NO CAJA',
+                    'qr_cancelado' => 'QR CANCELADO',
+                    'qr_pendiente' => 'QR PENDIENTE',
+                    'oficial' => 'CAJA / OFICIAL',
+                    default => 'CAJA',
+                },
+                'cobro_detalle' => match ($sectionKey) {
+                    'qr_facturado' => 'Cobro QR transformado a factura electronica. No suma a caja.',
+                    'qr_pagado_pendiente_factura' => 'Cobro QR confirmado. No suma a caja mientras no sea efectivo.',
+                    'qr_cancelado' => 'Intento QR no concretado.',
+                    'qr_pendiente' => 'Pendiente de pago QR.',
+                    default => 'Cobro registrado en caja.',
+                },
+                'contabiliza_en_caja' => !in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true),
                 'cobrada' => true,
                 'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
                 'importe_parcial' => round((float) ($venta->total ?? 0), 2),
