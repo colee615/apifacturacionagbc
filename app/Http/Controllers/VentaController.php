@@ -1110,12 +1110,14 @@ class VentaController extends Controller
                 ->get($detalleColumns);
             $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($detalleRows->pluck('codigoSeguimiento')->all());
             $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($detalleRows);
+            $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($detalleRows);
             $itemsCountMaps = $this->itemsCountMapsFromRows($detalleRows);
             $detalleMaps = $this->detalleMapsFromRows($detalleRows);
 
-            $detalle = $detalleRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $itemsCountMaps, $detalleMaps) {
+            $detalle = $detalleRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $itemsCountMaps, $detalleMaps) {
                     $codigoSeguimiento = trim((string) $venta->codigoSeguimiento);
                     $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
+                    $bridgeCart = $bridgeCartMetaMap[$origenVentaId] ?? null;
                     $ventaId = (int) $venta->id;
                     $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
                     if ($itemsCount === 0 && $origenVentaId > 0) {
@@ -1144,6 +1146,11 @@ class VentaController extends Controller
                         'documentoIdentidad' => strtoupper((string) ($venta->estado_sufe ?? '')) === 'REGISTRADA_OFICIAL' ? null : $venta->documentoIdentidad,
                         'codigoCliente' => $venta->codigoCliente,
                         'total' => (float) $venta->total,
+                        'canal_emision' => $bridgeCart->canal_emision ?? null,
+                        'metodo_pago' => $bridgeCart->metodo_pago ?? null,
+                        'estado_pago' => $bridgeCart->estado_pago ?? null,
+                        'estado_emision' => $bridgeCart->estado_emision ?? null,
+                        'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
                         'itemsCount' => $itemsCount,
                         'detalle' => $items->values()->all(),
                         'estadoSufe' => $venta->estado_sufe,
@@ -1714,11 +1721,13 @@ class VentaController extends Controller
             ])));
         $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventasRows->pluck('codigoSeguimiento')->all());
         $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventasRows);
+        $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventasRows);
         $itemsCountMaps = $this->itemsCountMapsFromRows($ventasRows);
 
-        $ventas = $ventasRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $itemsCountMaps) {
+        $ventas = $ventasRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $itemsCountMaps) {
                 $codigoSeguimiento = trim((string) $venta->codigoSeguimiento);
                 $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
+                $bridgeCart = $bridgeCartMetaMap[$origenVentaId] ?? null;
                 $ventaId = (int) $venta->id;
                 $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
                 if ($itemsCount === 0 && $origenVentaId > 0) {
@@ -1750,6 +1759,11 @@ class VentaController extends Controller
                         'documentoIdentidad' => strtoupper((string) ($venta->estado_sufe ?? '')) === 'REGISTRADA_OFICIAL' ? null : $venta->documentoIdentidad,
                         'codigoCliente' => $venta->codigoCliente,
                     ],
+                    'canal_emision' => $bridgeCart->canal_emision ?? null,
+                    'metodo_pago' => $bridgeCart->metodo_pago ?? null,
+                    'estado_pago' => $bridgeCart->estado_pago ?? null,
+                    'estado_emision' => $bridgeCart->estado_emision ?? null,
+                    'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
                     'itemsCount' => $itemsCount,
                     'total' => (float) $venta->total,
                     'estadoSufe' => $venta->estado_sufe,
