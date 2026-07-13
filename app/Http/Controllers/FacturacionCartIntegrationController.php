@@ -53,21 +53,6 @@ class FacturacionCartIntegrationController extends Controller
             'correo_facturacion' => 'nullable|email|max:50',
         ]);
 
-        $mode = in_array(($v['modalidad_facturacion'] ?? ''), ['con_datos', 'sin_cliente'], true) ? $v['modalidad_facturacion'] : 'con_datos';
-        $tipo = $mode === 'sin_cliente' ? null : $this->nullBlank($v['tipo_documento'] ?? null);
-        $numero = $mode === 'sin_cliente' ? null : $this->nullBlank($v['numero_documento'] ?? null);
-        $complemento = $mode === 'sin_cliente' || !in_array((string) $tipo, ['1', '2'], true)
-            ? null
-            : Str::upper((string) $this->nullBlank($v['complemento_documento'] ?? null));
-        $razon = $mode === 'sin_cliente' ? null : Str::upper((string) $this->nullBlank($v['razon_social'] ?? null));
-        $correoFacturacion = $this->nullBlank($v['correo_facturacion'] ?? null);
-        $correoFacturacion = $correoFacturacion !== null ? strtolower($correoFacturacion) : null;
-        $canal = in_array((string) ($v['canal_emision'] ?? ''), ['factura_electronica', 'qr'], true)
-            ? (string) $v['canal_emision']
-            : 'factura_electronica';
-        $metodoPago = $canal === 'qr' ? 'qr' : 'efectivo';
-        $estadoPago = $canal === 'qr' ? 'pendiente' : 'pagado';
-
         $draftQuery = DB::table('facturacion_carts')
             ->where('origen_usuario_id', (string) $v['origen_usuario_id']);
         if (!empty($v['cart_id'])) {
@@ -85,12 +70,52 @@ class FacturacionCartIntegrationController extends Controller
             ]);
         }
 
+        $mode = array_key_exists('modalidad_facturacion', $v)
+            ? (in_array((string) $v['modalidad_facturacion'], ['con_datos', 'sin_cliente'], true) ? (string) $v['modalidad_facturacion'] : 'con_datos')
+            : (string) ($draft->modalidad_facturacion ?? 'con_datos');
+        $canal = array_key_exists('canal_emision', $v)
+            ? (in_array((string) $v['canal_emision'], ['factura_electronica', 'qr'], true) ? (string) $v['canal_emision'] : 'factura_electronica')
+            : (string) ($draft->canal_emision ?? 'factura_electronica');
+        $metodoPago = $canal === 'qr'
+            ? 'qr'
+            : ((string) ($draft->metodo_pago ?? 'efectivo') === 'qr' && (string) ($draft->estado_pago ?? 'pendiente') === 'pagado'
+                ? 'qr'
+                : 'efectivo');
+        $estadoPago = $canal === 'qr'
+            ? ((string) ($draft->estado_pago ?? 'pendiente') === 'pagado' ? 'pagado' : 'pendiente')
+            : 'pagado';
+
+        $tipo = $mode === 'sin_cliente'
+            ? null
+            : (array_key_exists('tipo_documento', $v)
+                ? $this->nullBlank($v['tipo_documento'])
+                : $this->nullBlank($draft->tipo_documento ?? null));
+        $numero = $mode === 'sin_cliente'
+            ? null
+            : (array_key_exists('numero_documento', $v)
+                ? $this->nullBlank($v['numero_documento'])
+                : $this->nullBlank($draft->numero_documento ?? null));
+        $razon = $mode === 'sin_cliente'
+            ? null
+            : (array_key_exists('razon_social', $v)
+                ? Str::upper((string) $this->nullBlank($v['razon_social']))
+                : ($draft->razon_social !== null ? Str::upper((string) $draft->razon_social) : null));
+        $correoFacturacion = array_key_exists('correo_facturacion', $v)
+            ? $this->nullBlank($v['correo_facturacion'])
+            : $this->nullBlank($draft->correo_facturacion ?? null);
+        $correoFacturacion = $correoFacturacion !== null ? strtolower($correoFacturacion) : null;
+        $complemento = $mode === 'sin_cliente' || !in_array((string) $tipo, ['1', '2'], true)
+            ? null
+            : (array_key_exists('complemento_documento', $v)
+                ? Str::upper((string) $this->nullBlank($v['complemento_documento']))
+                : ($draft->complemento_documento !== null ? Str::upper((string) $draft->complemento_documento) : null));
+
         $updates = array_merge([
-            'origen_usuario_nombre' => $this->nullBlank($v['origen_usuario_nombre'] ?? null),
-            'origen_usuario_email' => $this->nullBlank($v['origen_usuario_email'] ?? null),
-            'origen_sucursal_id' => $this->nullBlank($v['origen_sucursal_id'] ?? null),
-            'origen_sucursal_codigo' => $this->nullBlank($v['origen_sucursal_codigo'] ?? null),
-            'origen_sucursal_nombre' => $this->nullBlank($v['origen_sucursal_nombre'] ?? null),
+            'origen_usuario_nombre' => array_key_exists('origen_usuario_nombre', $v) ? $this->nullBlank($v['origen_usuario_nombre']) : $this->nullBlank($draft->origen_usuario_nombre ?? null),
+            'origen_usuario_email' => array_key_exists('origen_usuario_email', $v) ? $this->nullBlank($v['origen_usuario_email']) : $this->nullBlank($draft->origen_usuario_email ?? null),
+            'origen_sucursal_id' => array_key_exists('origen_sucursal_id', $v) ? $this->nullBlank($v['origen_sucursal_id']) : $this->nullBlank($draft->origen_sucursal_id ?? null),
+            'origen_sucursal_codigo' => array_key_exists('origen_sucursal_codigo', $v) ? $this->nullBlank($v['origen_sucursal_codigo']) : $this->nullBlank($draft->origen_sucursal_codigo ?? null),
+            'origen_sucursal_nombre' => array_key_exists('origen_sucursal_nombre', $v) ? $this->nullBlank($v['origen_sucursal_nombre']) : $this->nullBlank($draft->origen_sucursal_nombre ?? null),
             'modalidad_facturacion' => $mode,
             'canal_emision' => $canal,
             'metodo_pago' => $metodoPago,

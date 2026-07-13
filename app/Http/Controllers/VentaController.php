@@ -2352,6 +2352,7 @@ class VentaController extends Controller
         $estado = strtolower(trim((string) ($cart->estado ?? '')));
         $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
         $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+        $canConsult = $this->canConsultFacturacionCart($cart);
         $respuestaEmision = json_decode((string) ($cart->respuesta_emision ?? ''), true);
         if (!is_array($respuestaEmision)) {
             $respuestaEmision = [];
@@ -2368,22 +2369,38 @@ class VentaController extends Controller
 
         if ($canal === 'qr') {
             if ($estadoPago === 'pagado' || $estado === 'emitido') {
-                return ['key' => 'QR_PAGADO', 'label' => 'Pagado QR', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null];
+                return ['key' => 'QR_PAGADO', 'label' => 'Pagado QR', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null];
             }
             if ($estadoPago === 'cancelado') {
-                return ['key' => 'QR_ANULADO', 'label' => 'QR anulado', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null];
+                return ['key' => 'QR_ANULADO', 'label' => 'QR anulado', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null];
             }
-            return ['key' => 'QR_PENDIENTE', 'label' => 'QR pendiente', 'can_annul' => false, 'can_cancel' => true, 'cuf' => $cuf !== '' ? $cuf : null];
+            return ['key' => 'QR_PENDIENTE', 'label' => 'QR pendiente', 'can_annul' => false, 'can_cancel' => true, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null];
         }
 
         return match ($estadoEmision) {
-            'FACTURADA' => ['key' => 'FACTURADA', 'label' => 'Facturada', 'can_annul' => $canAnnul, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            'PENDIENTE' => ['key' => 'PENDIENTE', 'label' => 'Pendiente', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            'RECHAZADA' => ['key' => 'RECHAZADA', 'label' => 'Rechazada', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            'ERROR' => ['key' => 'ERROR', 'label' => 'Error', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            'NO_APLICA' => ['key' => 'NO_APLICA', 'label' => 'No aplica', 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            default => ['key' => strtoupper($estado !== '' ? $estado : 'SIN_ESTADO'), 'label' => ucfirst($estado !== '' ? $estado : 'Sin estado'), 'can_annul' => false, 'can_cancel' => false, 'cuf' => $cuf !== '' ? $cuf : null],
+            'FACTURADA' => ['key' => 'FACTURADA', 'label' => 'Facturada', 'can_annul' => $canAnnul, 'can_cancel' => false, 'can_consult' => false, 'cuf' => $cuf !== '' ? $cuf : null],
+            'PENDIENTE' => ['key' => 'PENDIENTE', 'label' => 'Pendiente', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
+            'RECHAZADA' => ['key' => 'RECHAZADA', 'label' => 'Rechazada', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
+            'ERROR' => ['key' => 'ERROR', 'label' => 'Error', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
+            'NO_APLICA' => ['key' => 'NO_APLICA', 'label' => 'No aplica', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
+            default => ['key' => strtoupper($estado !== '' ? $estado : 'SIN_ESTADO'), 'label' => ucfirst($estado !== '' ? $estado : 'Sin estado'), 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
         };
+    }
+
+    private function canConsultFacturacionCart(object $cart): bool
+    {
+        $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+        $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
+        $codigoSeguimiento = trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')));
+        $transactionId = trim((string) ($cart->qr_transaction_id ?? ''));
+
+        if ($codigoSeguimiento !== '' && in_array($estadoEmision, ['PENDIENTE', 'ERROR', 'RECHAZADA'], true)) {
+            return true;
+        }
+
+        return $transactionId !== ''
+            && in_array($estadoPago, ['pendiente', 'pagado', 'cancelado'], true)
+            && in_array($estadoEmision, ['', 'NO_APLICA', 'PENDIENTE', 'ERROR', 'RECHAZADA'], true);
     }
 
     private function facturacionCartNumeroFactura(?string $respuestaEmision): ?string
