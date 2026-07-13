@@ -54,6 +54,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/ventas/reportes/kardex-usuarios', [VentaController::class, 'kardexUsuarios']);
     Route::get('/ventas/reportes/sucursales', [VentaController::class, 'reporteSucursales']);
     Route::get('/ventas/reportes/sucursales/usuarios', [VentaController::class, 'reporteSucursalesUsuarios']);
+    Route::get('/ventas/reportes/sucursales/incidencias', [VentaController::class, 'reporteSucursalesIncidencias']);
     Route::get('/ventas/consultar/{codigoSeguimiento}', [VentaController::class, 'consultarVenta']);
     Route::get('/ventas/{venta}', [VentaController::class, 'show']);
     Route::post('/qr/checkout', [QhantuyQrController::class, 'checkout']);

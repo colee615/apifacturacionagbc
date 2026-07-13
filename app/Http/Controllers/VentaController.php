@@ -29,10 +29,36 @@ class VentaController extends Controller
     private static ?bool $hasOrigenUsuarioCarnetColumn = null;
     private static ?bool $hasOrigenUsuarioEmailColumn = null;
     private static ?bool $hasOrigenSucursalCodigoColumn = null;
+    private static ?bool $hasCartOrigenUsuarioEmailColumn = null;
+    private static ?bool $hasCartOrigenUsuarioAliasColumn = null;
+    private static ?bool $hasCartOrigenUsuarioCarnetColumn = null;
+    private static ?bool $hasCartOrigenSucursalCodigoColumn = null;
+    private static ?bool $hasCartOrigenSucursalIdColumn = null;
+    private static ?bool $hasFacturacionCartItemsTable = null;
 
     public function __construct(
         private readonly SufeSectorUnoValidator $sufeValidator
     ) {
+    }
+
+    private function reportLogContext(Request $request, array $extra = []): array
+    {
+        return array_merge([
+            'route' => $request->path(),
+            'method' => $request->method(),
+            'query' => $request->query(),
+            'user_id' => optional(Auth::guard('api')->user() ?? $request->user())->id,
+        ], $extra);
+    }
+
+    private function reportStartedAt(): float
+    {
+        return microtime(true);
+    }
+
+    private function reportElapsedMs(float $startedAt): int
+    {
+        return (int) round((microtime(true) - $startedAt) * 1000);
     }
 
   
@@ -85,10 +111,38 @@ class VentaController extends Controller
             ->first();
     }
 
-    private function protocolStatusForVenta(Venta $venta): array
+    private function latestNotificationsMapFromSeguimientos(array $seguimientos): array
     {
-        $notification = $this->latestNotificationForVenta($venta);
-        $detalle = $notification ? json_decode($notification->detalle, true) : [];
+        $seguimientos = array_values(array_unique(array_filter(array_map(
+            fn ($value) => trim((string) $value),
+            $seguimientos
+        ))));
+
+        if ($seguimientos === []) {
+            return [];
+        }
+
+        $map = [];
+        $notificaciones = Notificacione::query()
+            ->whereIn('codigo_seguimiento', $seguimientos)
+            ->orderByDesc('id')
+            ->get();
+
+        foreach ($notificaciones as $notificacion) {
+            $codigoSeguimiento = trim((string) $notificacion->codigo_seguimiento);
+            if ($codigoSeguimiento === '' || array_key_exists($codigoSeguimiento, $map)) {
+                continue;
+            }
+
+            $map[$codigoSeguimiento] = $notificacion;
+        }
+
+        return $map;
+    }
+
+    private function protocolStatusFromVentaNotification(Venta $venta, ?Notificacione $notification): array
+    {
+        $detalle = $notification ? json_decode((string) $notification->detalle, true) : [];
         $estadoSufe = strtoupper((string) ($venta->estado_sufe ?? ''));
 
         if (blank($venta->codigoSeguimiento) || Str::startsWith((string) $venta->codigoSeguimiento, 'pendiente-')) {
@@ -257,6 +311,11 @@ class VentaController extends Controller
             'tipoEmision' => $tipoEmision,
             'cuf' => $cuf,
         ];
+    }
+
+    private function protocolStatusForVenta(Venta $venta): array
+    {
+        return $this->protocolStatusFromVentaNotification($venta, $this->latestNotificationForVenta($venta));
     }
 
     private function syncVentaFromConsulta(string $codigoSeguimiento, array $payload): void
@@ -644,6 +703,60 @@ class VentaController extends Controller
         }
 
         return self::$hasOrigenSucursalCodigoColumn;
+    }
+
+    private function hasCartOrigenUsuarioEmailColumn(): bool
+    {
+        if (self::$hasCartOrigenUsuarioEmailColumn === null) {
+            self::$hasCartOrigenUsuarioEmailColumn = Schema::hasColumn('facturacion_carts', 'origen_usuario_email');
+        }
+
+        return self::$hasCartOrigenUsuarioEmailColumn;
+    }
+
+    private function hasCartOrigenUsuarioAliasColumn(): bool
+    {
+        if (self::$hasCartOrigenUsuarioAliasColumn === null) {
+            self::$hasCartOrigenUsuarioAliasColumn = Schema::hasColumn('facturacion_carts', 'origen_usuario_alias');
+        }
+
+        return self::$hasCartOrigenUsuarioAliasColumn;
+    }
+
+    private function hasCartOrigenUsuarioCarnetColumn(): bool
+    {
+        if (self::$hasCartOrigenUsuarioCarnetColumn === null) {
+            self::$hasCartOrigenUsuarioCarnetColumn = Schema::hasColumn('facturacion_carts', 'origen_usuario_carnet');
+        }
+
+        return self::$hasCartOrigenUsuarioCarnetColumn;
+    }
+
+    private function hasCartOrigenSucursalCodigoColumn(): bool
+    {
+        if (self::$hasCartOrigenSucursalCodigoColumn === null) {
+            self::$hasCartOrigenSucursalCodigoColumn = Schema::hasColumn('facturacion_carts', 'origen_sucursal_codigo');
+        }
+
+        return self::$hasCartOrigenSucursalCodigoColumn;
+    }
+
+    private function hasCartOrigenSucursalIdColumn(): bool
+    {
+        if (self::$hasCartOrigenSucursalIdColumn === null) {
+            self::$hasCartOrigenSucursalIdColumn = Schema::hasColumn('facturacion_carts', 'origen_sucursal_id');
+        }
+
+        return self::$hasCartOrigenSucursalIdColumn;
+    }
+
+    private function hasFacturacionCartItemsTable(): bool
+    {
+        if (self::$hasFacturacionCartItemsTable === null) {
+            self::$hasFacturacionCartItemsTable = Schema::hasTable('facturacion_cart_items');
+        }
+
+        return self::$hasFacturacionCartItemsTable;
     }
 
     private function extractNumeroFacturaFromDetalle(?string $detalle): ?string
@@ -1609,20 +1722,65 @@ class VentaController extends Controller
 
     public function reporteSucursales(Request $request)
     {
+        $startedAt = $this->reportStartedAt();
+        Log::info('ventas.reporteSucursales.start', $this->reportLogContext($request));
+
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        Log::info('ventas.reporteSucursales.filters', $this->reportLogContext($request, [
+            'filters' => $filters,
+            'codigoSucursal_is_zero' => isset($filters['codigoSucursal']) && (int) $filters['codigoSucursal'] === 0,
+            'puntoVenta_is_zero' => isset($filters['puntoVenta']) && (int) $filters['puntoVenta'] === 0,
+        ]));
         $baseQuery = $this->buildVentaReportQuery($filters);
         $settledBaseQuery = $this->applySettledVentaFilters(clone $baseQuery);
         $limite = (int) ($filters['limite'] ?? 200);
         $sucursalCodigoExpr = $this->hasOrigenSucursalCodigoColumn()
             ? "coalesce(nullif(origen_sucursal_codigo, ''), cast(coalesce(\"codigoSucursal\", 0) as varchar))"
             : "cast(coalesce(\"codigoSucursal\", 0) as varchar)";
+        $puntoVentaExpr = "coalesce(nullif(origen_sucursal_id, ''), cast(coalesce(\"puntoVenta\", 0) as varchar))";
+        $sucursalIdExpr = "concat({$sucursalCodigoExpr}, '-', {$puntoVentaExpr})";
+        $sucursalNombreExpr = "coalesce(nullif(origen_sucursal_nombre, ''), concat('Sucursal ', \"codigoSucursal\", ' / PV ', \"puntoVenta\"), 'Sin sucursal')";
 
         $resumen = (clone $settledBaseQuery)
             ->selectRaw("
                 count(*) as cantidad_ventas,
                 coalesce(sum(total), 0) as total_vendido,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then total else 0
+                end), 0) as total_qr_facturado,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and not (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then total else 0
+                end), 0) as total_efectivo_facturado,
                 count(distinct coalesce(origen_usuario_id, origen_usuario_email, origen_usuario_alias, origen_usuario_nombre, 'SIN-USUARIO')) as cajeros_unicos,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'PROCESADA' then 1 else 0 end) as facturadas,
+                sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then 1 else 0
+                end) as qr_facturadas,
+                sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and not (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then 1 else 0
+                end) as electronicas_facturadas,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'REGISTRADA_OFICIAL' then 1 else 0 end) as oficiales,
+                sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') then 1 else 0 end) as con_cuf_otro_estado,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' then 1 else 0 end) as observadas,
                 sum(case when upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA') then 1 else 0 end) as pendientes
             ")
@@ -1630,37 +1788,137 @@ class VentaController extends Controller
 
         $porSucursal = (clone $settledBaseQuery)
             ->selectRaw("
-                concat(
-                    {$sucursalCodigoExpr},
-                    '-',
-                    coalesce(nullif(origen_sucursal_id, ''), cast(coalesce(\"puntoVenta\", 0) as varchar))
-                ) as sucursal_id,
-                coalesce(nullif(origen_sucursal_nombre, ''), concat('Sucursal ', \"codigoSucursal\", ' / PV ', \"puntoVenta\"), 'Sin sucursal') as sucursal_nombre,
+                {$sucursalIdExpr} as sucursal_id,
+                {$sucursalNombreExpr} as sucursal_nombre,
                 {$sucursalCodigoExpr} as codigo_sucursal,
-                coalesce(nullif(origen_sucursal_id, ''), cast(coalesce(\"puntoVenta\", 0) as varchar)) as punto_venta,
+                {$puntoVentaExpr} as punto_venta,
                 coalesce(max(nullif(departamento, '')), '') as departamento,
                 count(*) as cantidad_ventas,
                 coalesce(sum(total), 0) as total_vendido,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then total else 0
+                end), 0) as total_qr_facturado,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and not (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then total else 0
+                end), 0) as total_efectivo_facturado,
                 count(distinct coalesce(origen_usuario_id, origen_usuario_email, origen_usuario_alias, origen_usuario_nombre, 'SIN-USUARIO')) as cajeros_unicos,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'PROCESADA' then 1 else 0 end) as facturadas,
+                sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then 1 else 0
+                end) as qr_facturadas,
+                sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and not (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then 1 else 0
+                end) as electronicas_facturadas,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'REGISTRADA_OFICIAL' then 1 else 0 end) as oficiales,
+                sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') then 1 else 0 end) as con_cuf_otro_estado,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' then 1 else 0 end) as observadas,
                 sum(case when upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA') then 1 else 0 end) as pendientes,
                 min(created_at) as primera_venta,
                 max(created_at) as ultima_venta
             ")
             ->groupByRaw("
-                concat(
-                    {$sucursalCodigoExpr},
-                    '-',
-                    coalesce(nullif(origen_sucursal_id, ''), cast(coalesce(\"puntoVenta\", 0) as varchar))
-                ),
-                coalesce(nullif(origen_sucursal_nombre, ''), concat('Sucursal ', \"codigoSucursal\", ' / PV ', \"puntoVenta\"), 'Sin sucursal'),
+                {$sucursalIdExpr},
+                {$sucursalNombreExpr},
                 {$sucursalCodigoExpr},
-                coalesce(nullif(origen_sucursal_id, ''), cast(coalesce(\"puntoVenta\", 0) as varchar))
+                {$puntoVentaExpr}
             ")
             ->orderByDesc('total_vendido')
             ->orderBy('sucursal_nombre')
             ->get();
+        Log::info('ventas.reporteSucursales.porSucursal.ready', $this->reportLogContext($request, [
+            'elapsed_ms' => $this->reportElapsedMs($startedAt),
+            'sucursales_count' => $porSucursal->count(),
+            'first_sucursal' => $porSucursal->first(),
+        ]));
+
+        $qrSucursalMetrics = collect();
+        if (Schema::hasTable('facturacion_carts')) {
+            $cartSucursalCodigoExpr = $this->hasCartOrigenSucursalCodigoColumn()
+                ? "coalesce(nullif(origen_sucursal_codigo, ''), '0')"
+                : "'0'";
+            $cartPuntoVentaExpr = $this->hasCartOrigenSucursalIdColumn()
+                ? "coalesce(nullif(origen_sucursal_id, ''), '0')"
+                : "'0'";
+            $cartSucursalIdExpr = "concat({$cartSucursalCodigoExpr}, '-', {$cartPuntoVentaExpr})";
+            $cartIsQrExpr = "(
+                lower(coalesce(metodo_pago, '')) = 'qr'
+                or lower(coalesce(canal_emision, '')) = 'qr'
+                or upper(coalesce(codigo_orden, '')) like 'VQ-%'
+                or upper(coalesce(codigo_orden, '')) like 'VQC-%'
+            )";
+
+            $qrSucursalMetrics = $this->buildFacturacionCartReportQuery($filters)
+                ->selectRaw("
+                    {$cartSucursalIdExpr} as sucursal_id,
+                    sum(case
+                        when {$cartIsQrExpr}
+                            and lower(coalesce(estado_pago, 'pendiente')) = 'pagado'
+                            and upper(coalesce(estado_emision, 'NO_APLICA')) = 'FACTURADA'
+                        then 1 else 0
+                    end) as qr_facturado,
+                    coalesce(sum(case
+                        when {$cartIsQrExpr}
+                            and lower(coalesce(estado_pago, 'pendiente')) = 'pagado'
+                            and upper(coalesce(estado_emision, 'NO_APLICA')) = 'FACTURADA'
+                        then total else 0
+                    end), 0) as total_qr_facturado_cart,
+                    sum(case
+                        when {$cartIsQrExpr}
+                            and lower(coalesce(estado_pago, 'pendiente')) = 'pagado'
+                            and upper(coalesce(estado_emision, 'NO_APLICA')) <> 'FACTURADA'
+                        then 1 else 0
+                    end) as qr_pagado_pendiente_factura,
+                    coalesce(sum(case
+                        when {$cartIsQrExpr}
+                            and lower(coalesce(estado_pago, 'pendiente')) = 'pagado'
+                            and upper(coalesce(estado_emision, 'NO_APLICA')) <> 'FACTURADA'
+                        then total else 0
+                    end), 0) as total_qr_pagado_pendiente_factura,
+                    sum(case
+                        when {$cartIsQrExpr}
+                            and lower(coalesce(estado_pago, 'pendiente')) in ('cancelado', 'fallido')
+                        then 1 else 0
+                    end) as qr_cancelado,
+                    coalesce(sum(case
+                        when {$cartIsQrExpr}
+                            and lower(coalesce(estado_pago, 'pendiente')) in ('cancelado', 'fallido')
+                        then total else 0
+                    end), 0) as total_qr_cancelado,
+                    sum(case
+                        when {$cartIsQrExpr}
+                            and lower(coalesce(estado_pago, 'pendiente')) not in ('pagado', 'cancelado', 'fallido')
+                        then 1 else 0
+                    end) as qr_pendiente,
+                    coalesce(sum(case
+                        when {$cartIsQrExpr}
+                            and lower(coalesce(estado_pago, 'pendiente')) not in ('pagado', 'cancelado', 'fallido')
+                        then total else 0
+                    end), 0) as total_qr_pendiente
+                ")
+                ->groupByRaw($cartSucursalIdExpr)
+                ->get()
+                ->keyBy('sucursal_id');
+        }
 
         $detalleRows = (clone $baseQuery)
             ->latest('created_at')
@@ -1682,35 +1940,68 @@ class VentaController extends Controller
                 'total',
                 'estado_sufe',
             ]);
+        Log::info('ventas.reporteSucursales.detalle.ready', $this->reportLogContext($request, [
+            'elapsed_ms' => $this->reportElapsedMs($startedAt),
+            'detalle_count' => $detalleRows->count(),
+        ]));
 
         return response()->json([
             'filters' => $filters,
             'resumen' => [
                 'cantidadVentas' => (int) ($resumen->cantidad_ventas ?? 0),
                 'totalVendido' => (float) ($resumen->total_vendido ?? 0),
+                'totalQrFacturado' => (float) ($resumen->total_qr_facturado ?? 0),
+                'totalEfectivoFacturado' => (float) ($resumen->total_efectivo_facturado ?? 0),
                 'cajerosUnicos' => (int) ($resumen->cajeros_unicos ?? 0),
                 'facturadas' => (int) ($resumen->facturadas ?? 0),
+                'qrFacturadas' => (int) ($resumen->qr_facturadas ?? 0),
+                'electronicasFacturadas' => (int) ($resumen->electronicas_facturadas ?? 0),
+                'oficiales' => (int) ($resumen->oficiales ?? 0),
+                'conCufOtroEstado' => (int) ($resumen->con_cuf_otro_estado ?? 0),
                 'observadas' => (int) ($resumen->observadas ?? 0),
                 'pendientes' => (int) ($resumen->pendientes ?? 0),
+                'qrPagadoPendienteFactura' => (int) $qrSucursalMetrics->sum(fn ($row) => (int) ($row->qr_pagado_pendiente_factura ?? 0)),
+                'qrCancelado' => (int) $qrSucursalMetrics->sum(fn ($row) => (int) ($row->qr_cancelado ?? 0)),
+                'qrPendiente' => (int) $qrSucursalMetrics->sum(fn ($row) => (int) ($row->qr_pendiente ?? 0)),
+                'totalQrPagadoPendienteFactura' => (float) $qrSucursalMetrics->sum(fn ($row) => (float) ($row->total_qr_pagado_pendiente_factura ?? 0)),
+                'totalQrCancelado' => (float) $qrSucursalMetrics->sum(fn ($row) => (float) ($row->total_qr_cancelado ?? 0)),
+                'totalQrPendiente' => (float) $qrSucursalMetrics->sum(fn ($row) => (float) ($row->total_qr_pendiente ?? 0)),
             ],
-            'sucursales' => $porSucursal->map(fn ($row) => [
-                'id' => $row->sucursal_id,
-                'nombre' => $row->sucursal_nombre,
-                'codigoSucursal' => trim((string) $row->codigo_sucursal),
-                'puntoVenta' => trim((string) $row->punto_venta),
-                'departamento' => trim((string) ($row->departamento ?? '')) !== ''
-                    ? $row->departamento
-                    : $row->sucursal_nombre,
-                'sucursalNombre' => $row->sucursal_nombre,
-                'cantidadVentas' => (int) $row->cantidad_ventas,
-                'totalVendido' => (float) $row->total_vendido,
-                'cajerosUnicos' => (int) $row->cajeros_unicos,
-                'facturadas' => (int) $row->facturadas,
-                'observadas' => (int) $row->observadas,
-                'pendientes' => (int) $row->pendientes,
-                'primeraVenta' => $row->primera_venta,
-                'ultimaVenta' => $row->ultima_venta,
-            ])->values(),
+            'sucursales' => $porSucursal->map(function ($row) use ($qrSucursalMetrics) {
+                $qrMetrics = $qrSucursalMetrics->get($row->sucursal_id);
+
+                return [
+                    'id' => $row->sucursal_id,
+                    'nombre' => $row->sucursal_nombre,
+                    'codigoSucursal' => trim((string) $row->codigo_sucursal),
+                    'puntoVenta' => trim((string) $row->punto_venta),
+                    'kardexDisponible' => trim((string) $row->codigo_sucursal) !== '',
+                    'departamento' => trim((string) ($row->departamento ?? '')) !== ''
+                        ? $row->departamento
+                        : $row->sucursal_nombre,
+                    'sucursalNombre' => $row->sucursal_nombre,
+                    'cantidadVentas' => (int) $row->cantidad_ventas,
+                    'totalVendido' => (float) $row->total_vendido,
+                    'totalQrFacturado' => (float) $row->total_qr_facturado,
+                    'totalEfectivoFacturado' => (float) $row->total_efectivo_facturado,
+                    'cajerosUnicos' => (int) $row->cajeros_unicos,
+                    'facturadas' => (int) $row->facturadas,
+                    'qrFacturadas' => (int) $row->qr_facturadas,
+                    'electronicasFacturadas' => (int) $row->electronicas_facturadas,
+                    'oficiales' => (int) $row->oficiales,
+                    'conCufOtroEstado' => (int) $row->con_cuf_otro_estado,
+                    'observadas' => (int) $row->observadas,
+                    'pendientes' => (int) $row->pendientes,
+                    'qrPagadoPendienteFactura' => (int) ($qrMetrics->qr_pagado_pendiente_factura ?? 0),
+                    'qrCancelado' => (int) ($qrMetrics->qr_cancelado ?? 0),
+                    'qrPendiente' => (int) ($qrMetrics->qr_pendiente ?? 0),
+                    'totalQrPagadoPendienteFactura' => (float) ($qrMetrics->total_qr_pagado_pendiente_factura ?? 0),
+                    'totalQrCancelado' => (float) ($qrMetrics->total_qr_cancelado ?? 0),
+                    'totalQrPendiente' => (float) ($qrMetrics->total_qr_pendiente ?? 0),
+                    'primeraVenta' => $row->primera_venta,
+                    'ultimaVenta' => $row->ultima_venta,
+                ];
+            })->values(),
             'detalle' => $detalleRows->map(fn (Venta $venta) => [
                 'id' => $venta->id,
                 'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
@@ -1739,6 +2030,9 @@ class VentaController extends Controller
 
     public function reporteSucursalesUsuarios(Request $request)
     {
+        $startedAt = $this->reportStartedAt();
+        Log::info('ventas.reporteSucursalesUsuarios.start', $this->reportLogContext($request));
+
         $request->validate([
             'codigoSucursal' => ['required', 'integer', 'min:0'],
             'puntoVenta' => ['required', 'integer', 'min:0'],
@@ -1750,6 +2044,11 @@ class VentaController extends Controller
         $filters['codigoSucursal'] = (int) $request->query('codigoSucursal');
         $filters['puntoVenta'] = (int) $request->query('puntoVenta');
         $filters['q'] = trim((string) $request->query('q', '')) ?: null;
+        Log::info('ventas.reporteSucursalesUsuarios.filters', $this->reportLogContext($request, [
+            'filters' => $filters,
+            'codigoSucursal_is_zero' => $filters['codigoSucursal'] === 0,
+            'puntoVenta_is_zero' => $filters['puntoVenta'] === 0,
+        ]));
 
         $usuarios = $this->applySettledVentaFilters(clone $this->buildVentaReportQuery($filters))
             ->selectRaw(
@@ -1772,6 +2071,11 @@ class VentaController extends Controller
             ->orderByDesc('cantidad_ventas')
             ->orderBy('usuario_nombre')
             ->get();
+        Log::info('ventas.reporteSucursalesUsuarios.ready', $this->reportLogContext($request, [
+            'elapsed_ms' => $this->reportElapsedMs($startedAt),
+            'usuarios_count' => $usuarios->count(),
+            'first_usuario' => $usuarios->first(),
+        ]));
 
         return response()->json([
             'filters' => $filters,
@@ -1801,6 +2105,176 @@ class VentaController extends Controller
         ]);
     }
 
+    public function reporteSucursalesIncidencias(Request $request)
+    {
+        $startedAt = $this->reportStartedAt();
+        Log::info('ventas.reporteSucursalesIncidencias.start', $this->reportLogContext($request));
+
+        $request->validate([
+            'codigoSucursal' => ['required', 'integer', 'min:0'],
+            'puntoVenta' => ['required', 'integer', 'min:0'],
+            'q' => ['nullable', 'string', 'max:100'],
+        ]);
+
+        $filters = $this->requestIdentityFilters($request);
+        $filters['codigoSucursal'] = (int) $request->query('codigoSucursal');
+        $filters['puntoVenta'] = (int) $request->query('puntoVenta');
+        $filters['q'] = trim((string) $request->query('q', '')) ?: null;
+
+        Log::info('ventas.reporteSucursalesIncidencias.filters', $this->reportLogContext($request, [
+            'filters' => $filters,
+            'codigoSucursal_is_zero' => $filters['codigoSucursal'] === 0,
+            'puntoVenta_is_zero' => $filters['puntoVenta'] === 0,
+        ]));
+
+        $ventaIncidencias = $this->buildVentaReportQuery($filters)
+            ->where(function ($scope) {
+                $scope->whereRaw("upper(coalesce(estado_sufe, '')) = 'OBSERVADA'")
+                    ->orWhereRaw("upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA')")
+                    ->orWhere(function ($inner) {
+                        $inner->whereRaw("coalesce(cuf, '') <> ''")
+                            ->whereRaw("upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL', 'OBSERVADA', 'RECEPCIONADA', 'CONTINGENCIA_CREADA')");
+                    });
+            })
+            ->latest('created_at')
+            ->get([
+                'id',
+                'codigoOrden',
+                'codigoSeguimiento',
+                'razonSocial',
+                'total',
+                'created_at',
+                'estado_sufe',
+                'origen_usuario_nombre',
+                'origen_usuario_alias',
+                'origen_usuario_email',
+            ])
+            ->map(function ($venta) {
+                $estado = strtoupper(trim((string) ($venta->estado_sufe ?? '')));
+                $type = match ($estado) {
+                    'OBSERVADA' => 'observada',
+                    'RECEPCIONADA', 'CONTINGENCIA_CREADA' => 'pendiente',
+                    'ANULADA' => 'factura_anulada',
+                    default => 'otro_estado',
+                };
+
+                return [
+                    'key' => 'venta-' . $venta->id,
+                    'type' => $type,
+                    'title' => match ($type) {
+                        'observada' => 'Factura observada',
+                        'pendiente' => 'Factura pendiente',
+                        'factura_anulada' => 'Factura anulada',
+                        default => 'Factura con otro estado',
+                    },
+                    'status' => $estado !== '' ? $estado : 'SIN_ESTADO',
+                    'code' => trim((string) ($venta->codigoOrden ?? '')) ?: ('#' . $venta->id),
+                    'tracking' => trim((string) ($venta->codigoSeguimiento ?? '')),
+                    'customer' => trim((string) ($venta->razonSocial ?? '')) ?: 'Sin cliente',
+                    'amount' => (float) ($venta->total ?? 0),
+                    'createdAt' => $venta->created_at,
+                    'user' => trim((string) ($venta->origen_usuario_nombre ?? $venta->origen_usuario_alias ?? $venta->origen_usuario_email ?? '')) ?: 'Sin usuario',
+                    'message' => match ($type) {
+                        'observada' => 'La factura fue observada y requiere revisión.',
+                        'pendiente' => 'La factura sigue pendiente de procesamiento o confirmación.',
+                        'factura_anulada' => 'La factura fue anulada y no debe contarse como venta válida.',
+                        default => 'La factura tiene un estado fiscal distinto al esperado y requiere revisión.',
+                    },
+                ];
+            });
+
+        $qrIncidencias = collect();
+        if (Schema::hasTable('facturacion_carts')) {
+            $qrIncidencias = $this->buildFacturacionCartReportQuery($filters)
+                ->where(function ($scope) {
+                    $scope->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
+                        ->orWhereRaw("lower(coalesce(canal_emision, '')) = 'qr'")
+                        ->orWhereRaw("upper(coalesce(codigo_orden, '')) like 'VQ-%'")
+                        ->orWhereRaw("upper(coalesce(codigo_orden, '')) like 'VQC-%'");
+                })
+                ->where(function ($scope) {
+                    $scope->where(function ($paidNoFactura) {
+                        $paidNoFactura->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
+                            ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) <> 'FACTURADA'");
+                    })->orWhere(function ($cancelled) {
+                        $cancelled->whereRaw("lower(coalesce(estado_pago, 'pendiente')) in ('cancelado', 'fallido')");
+                    })->orWhere(function ($pending) {
+                        $pending->whereRaw("lower(coalesce(estado_pago, 'pendiente')) not in ('pagado', 'cancelado', 'fallido')");
+                    });
+                })
+                ->latest('created_at')
+                ->get([
+                    'id',
+                    'codigo_orden',
+                    'codigo_seguimiento',
+                    'razon_social',
+                    'total',
+                    'created_at',
+                    'estado_pago',
+                    'estado_emision',
+                    'origen_usuario_nombre',
+                    'origen_usuario_alias',
+                    'origen_usuario_email',
+                ])
+                ->map(function ($cart) {
+                    $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
+                    $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? 'NO_APLICA')));
+                    $type = 'qr_pendiente';
+
+                    if ($estadoPago === 'pagado' && $estadoEmision !== 'FACTURADA') {
+                        $type = 'qr_pagado_sin_factura';
+                    } elseif (in_array($estadoPago, ['cancelado', 'fallido'], true)) {
+                        $type = 'qr_anulado';
+                    }
+
+                    return [
+                        'key' => 'cart-' . $cart->id,
+                        'type' => $type,
+                        'title' => match ($type) {
+                            'qr_pagado_sin_factura' => 'QR pagado sin factura',
+                            'qr_anulado' => 'QR anulado',
+                            default => 'QR pendiente',
+                        },
+                        'status' => strtoupper($estadoPago !== '' ? $estadoPago : 'PENDIENTE'),
+                        'code' => trim((string) ($cart->codigo_orden ?? '')) ?: ('QR-' . $cart->id),
+                        'tracking' => trim((string) ($cart->codigo_seguimiento ?? '')),
+                        'customer' => trim((string) ($cart->razon_social ?? '')) ?: 'Sin cliente',
+                        'amount' => (float) ($cart->total ?? 0),
+                        'createdAt' => $cart->created_at,
+                        'user' => trim((string) ($cart->origen_usuario_nombre ?? $cart->origen_usuario_alias ?? $cart->origen_usuario_email ?? '')) ?: 'Sin usuario',
+                        'message' => match ($type) {
+                            'qr_pagado_sin_factura' => 'El cobro QR fue confirmado, pero la factura aún no fue emitida.',
+                            'qr_anulado' => 'El intento de cobro QR fue cancelado o falló.',
+                            default => 'El cobro QR sigue pendiente de pago.',
+                        },
+                    ];
+                });
+        }
+
+        $incidencias = $ventaIncidencias
+            ->concat($qrIncidencias)
+            ->sortByDesc(fn ($item) => (string) ($item['createdAt'] ?? ''))
+            ->values();
+
+        Log::info('ventas.reporteSucursalesIncidencias.ready', $this->reportLogContext($request, [
+            'elapsed_ms' => $this->reportElapsedMs($startedAt),
+            'incidencias_count' => $incidencias->count(),
+            'first_incidencia' => $incidencias->first(),
+        ]));
+
+        return response()->json([
+            'filters' => $filters,
+            'sucursal' => [
+                'codigoSucursal' => (int) $filters['codigoSucursal'],
+                'puntoVenta' => (int) $filters['puntoVenta'],
+            ],
+            'resumen' => [
+                'incidencias' => $incidencias->count(),
+            ],
+            'incidencias' => $incidencias->values(),
+        ]);
+    }
+
     private function buildFacturacionCartReportQuery(array $filters)
     {
         $query = DB::table('facturacion_carts')
@@ -1815,28 +2289,31 @@ class VentaController extends Controller
         }
 
         foreach (['origen_usuario_id', 'origen_sucursal_id'] as $field) {
-            if (!empty($filters[$field]) && Schema::hasColumn('facturacion_carts', $field)) {
+            $fieldExists = $field === 'origen_sucursal_id'
+                ? $this->hasCartOrigenSucursalIdColumn()
+                : Schema::hasColumn('facturacion_carts', $field);
+            if (!empty($filters[$field]) && $fieldExists) {
                 $query->where($field, (string) $filters[$field]);
             }
         }
 
-        if (!empty($filters['origen_usuario_email']) && Schema::hasColumn('facturacion_carts', 'origen_usuario_email')) {
+        if (!empty($filters['origen_usuario_email']) && $this->hasCartOrigenUsuarioEmailColumn()) {
             $query->whereRaw('lower(coalesce(origen_usuario_email, ?)) = ?', ['', strtolower((string) $filters['origen_usuario_email'])]);
         }
 
-        if (!empty($filters['origen_usuario_alias']) && Schema::hasColumn('facturacion_carts', 'origen_usuario_alias')) {
+        if (!empty($filters['origen_usuario_alias']) && $this->hasCartOrigenUsuarioAliasColumn()) {
             $query->whereRaw('lower(coalesce(origen_usuario_alias, ?)) = ?', ['', strtolower((string) $filters['origen_usuario_alias'])]);
         }
 
-        if (!empty($filters['origen_usuario_carnet']) && Schema::hasColumn('facturacion_carts', 'origen_usuario_carnet')) {
+        if (!empty($filters['origen_usuario_carnet']) && $this->hasCartOrigenUsuarioCarnetColumn()) {
             $query->whereRaw("upper(replace(coalesce(origen_usuario_carnet, ''), ' ', '')) = ?", [(string) $filters['origen_usuario_carnet']]);
         }
 
-        if (array_key_exists('codigoSucursal', $filters) && $filters['codigoSucursal'] !== null && Schema::hasColumn('facturacion_carts', 'origen_sucursal_codigo')) {
+        if (array_key_exists('codigoSucursal', $filters) && $filters['codigoSucursal'] !== null && $this->hasCartOrigenSucursalCodigoColumn()) {
             $query->where('origen_sucursal_codigo', (string) $filters['codigoSucursal']);
         }
 
-        if (array_key_exists('puntoVenta', $filters) && $filters['puntoVenta'] !== null && Schema::hasColumn('facturacion_carts', 'origen_sucursal_id')) {
+        if (array_key_exists('puntoVenta', $filters) && $filters['puntoVenta'] !== null && $this->hasCartOrigenSucursalIdColumn()) {
             $query->where('origen_sucursal_id', (string) $filters['puntoVenta']);
         }
 
@@ -1854,13 +2331,13 @@ class VentaController extends Controller
                     ->orWhere('origen_usuario_nombre', 'like', $term)
                     ->orWhere('origen_sucursal_nombre', 'like', $term);
 
-                if (Schema::hasColumn('facturacion_carts', 'origen_usuario_email')) {
+                if ($this->hasCartOrigenUsuarioEmailColumn()) {
                     $search->orWhere('origen_usuario_email', 'like', $term);
                 }
-                if (Schema::hasColumn('facturacion_carts', 'origen_usuario_alias')) {
+                if ($this->hasCartOrigenUsuarioAliasColumn()) {
                     $search->orWhere('origen_usuario_alias', 'like', $term);
                 }
-                if (Schema::hasColumn('facturacion_carts', 'origen_usuario_carnet')) {
+                if ($this->hasCartOrigenUsuarioCarnetColumn()) {
                     $search->orWhere('origen_usuario_carnet', 'like', $term);
                 }
             });
@@ -1914,20 +2391,27 @@ class VentaController extends Controller
         return $this->extractNumeroFacturaFromDetalle($respuestaEmision);
     }
 
-    private function mapFacturacionCartToVentaPayload(object $cart): array
+    private function facturacionCartItemsMapFromRows($cartRows): array
     {
-        $respuestaEmision = json_decode((string) ($cart->respuesta_emision ?? ''), true);
-        if (!is_array($respuestaEmision)) {
-            $respuestaEmision = [];
+        $cartIds = collect($cartRows)
+            ->pluck('id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($cartIds === [] || !$this->hasFacturacionCartItemsTable()) {
+            return [];
         }
 
-        $items = collect();
-        if (Schema::hasTable('facturacion_cart_items')) {
-            $items = DB::table('facturacion_cart_items')
-                ->where('cart_id', (int) $cart->id)
-                ->orderBy('id')
-                ->get()
-                ->map(function ($item) {
+        return DB::table('facturacion_cart_items')
+            ->whereIn('cart_id', $cartIds)
+            ->orderBy('id')
+            ->get()
+            ->groupBy('cart_id')
+            ->map(function ($items) {
+                return collect($items)->map(function ($item) {
                     $cantidad = (float) ($item->cantidad ?? 1);
                     $base = (float) ($item->monto_base ?? 0);
                     $extras = (float) ($item->monto_extras ?? 0);
@@ -1945,9 +2429,19 @@ class VentaController extends Controller
                         'subtitulo' => $item->nombre_destinatario,
                         'origen_tipo' => (string) ($item->origen_tipo ?? ''),
                     ];
-                })
-                ->values();
+                })->values()->all();
+            })
+            ->toArray();
+    }
+
+    private function mapFacturacionCartToVentaPayload(object $cart, array $preloadedItems = []): array
+    {
+        $respuestaEmision = json_decode((string) ($cart->respuesta_emision ?? ''), true);
+        if (!is_array($respuestaEmision)) {
+            $respuestaEmision = [];
         }
+
+        $items = collect($preloadedItems);
 
         $status = $this->facturacionCartStatusPayload($cart);
         $fecha = $cart->emitido_en ?: $cart->created_at;
@@ -1977,9 +2471,9 @@ class VentaController extends Controller
             'usuario' => [
                 'id' => $cart->origen_usuario_id,
                 'nombre' => $cart->origen_usuario_nombre,
-                'email' => Schema::hasColumn('facturacion_carts', 'origen_usuario_email') ? $cart->origen_usuario_email : null,
-                'alias' => Schema::hasColumn('facturacion_carts', 'origen_usuario_alias') ? $cart->origen_usuario_alias : null,
-                'carnet' => Schema::hasColumn('facturacion_carts', 'origen_usuario_carnet') ? $cart->origen_usuario_carnet : null,
+                'email' => $this->hasCartOrigenUsuarioEmailColumn() ? $cart->origen_usuario_email : null,
+                'alias' => $this->hasCartOrigenUsuarioAliasColumn() ? $cart->origen_usuario_alias : null,
+                'carnet' => $this->hasCartOrigenUsuarioCarnetColumn() ? $cart->origen_usuario_carnet : null,
             ],
             'sucursal' => [
                 'id' => $cart->origen_sucursal_id,
@@ -2001,7 +2495,15 @@ class VentaController extends Controller
     // =========================
     public function index(Request $request)
     {
+        $startedAt = $this->reportStartedAt();
+        Log::info('ventas.index.start', $this->reportLogContext($request));
+
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        Log::info('ventas.index.filters', $this->reportLogContext($request, [
+            'filters' => $filters,
+            'codigoSucursal_is_zero' => isset($filters['codigoSucursal']) && (int) $filters['codigoSucursal'] === 0,
+            'puntoVenta_is_zero' => isset($filters['puntoVenta']) && (int) $filters['puntoVenta'] === 0,
+        ]));
         $cartRows = collect();
 
         if (Schema::hasTable('facturacion_carts')) {
@@ -2011,6 +2513,10 @@ class VentaController extends Controller
                 ->orderByDesc('id')
                 ->get();
         }
+        Log::info('ventas.index.carts.ready', $this->reportLogContext($request, [
+            'elapsed_ms' => $this->reportElapsedMs($startedAt),
+            'cart_rows_count' => $cartRows->count(),
+        ]));
 
         $cartIds = $cartRows
             ->pluck('id')
@@ -2029,15 +2535,120 @@ class VentaController extends Controller
             });
         }
 
-        $ventas = $ventasQuery->get();
+        $ventas = $ventasQuery
+            ->latest('created_at')
+            ->get(array_values(array_filter([
+                'id',
+                'created_at',
+                'codigoOrden',
+                'codigoSeguimiento',
+                'origen_venta_id',
+                'origen_venta_tipo',
+                'origen_usuario_id',
+                'origen_usuario_nombre',
+                $this->hasOrigenUsuarioEmailColumn() ? 'origen_usuario_email' : null,
+                $this->hasOrigenUsuarioAliasColumn() ? 'origen_usuario_alias' : null,
+                $this->hasOrigenUsuarioCarnetColumn() ? 'origen_usuario_carnet' : null,
+                'origen_sucursal_id',
+                'origen_sucursal_nombre',
+                'codigoSucursal',
+                'puntoVenta',
+                'razonSocial',
+                'documentoIdentidad',
+                'codigoCliente',
+                'total',
+                'estado_sufe',
+                'tipo_emision_sufe',
+                'cuf',
+                'url_pdf',
+                'url_xml',
+                'observacion_sufe',
+                'fecha_notificacion_sufe',
+                'departamento',
+            ])));
+        Log::info('ventas.index.ventas.ready', $this->reportLogContext($request, [
+            'elapsed_ms' => $this->reportElapsedMs($startedAt),
+            'ventas_count' => $ventas->count(),
+        ]));
 
-        $list = $ventas->map(function ($venta) use ($request) {
-            $response = $this->show($request, $venta);
-            return json_decode((string) $response->getContent(), true);
+        $detalleMaps = $this->detalleMapsFromRows($ventas);
+        $itemsCountMaps = $this->itemsCountMapsFromRows($ventas);
+        $notificationsMap = $this->latestNotificationsMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
+
+        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap) {
+            $ventaId = (int) $venta->id;
+            $cartId = (int) ($venta->origen_venta_id ?? 0);
+            $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
+            $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
+            $status = $this->protocolStatusFromVentaNotification($venta, $notification);
+            $detalleNotificacion = $notification ? json_decode((string) $notification->detalle, true) : [];
+            $detalle = $detalleMaps['detalle'][$ventaId] ?? [];
+
+            if ($detalle === [] && $cartId > 0) {
+                $detalle = $detalleMaps['cart'][$cartId] ?? [];
+            }
+
+            $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
+            if ($itemsCount === 0 && $cartId > 0) {
+                $itemsCount = (int) ($itemsCountMaps['cart'][$cartId] ?? 0);
+            }
+
+            return [
+                'id' => $venta->id,
+                'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
+                'codigoOrden' => $venta->codigoOrden,
+                'codigoSeguimiento' => $venta->codigoSeguimiento,
+                'origenVentaId' => $venta->origen_venta_id,
+                'origenVentaTipo' => $venta->origen_venta_tipo,
+                'cliente' => [
+                    'razonSocial' => $venta->razonSocial,
+                    'documentoIdentidad' => $venta->documentoIdentidad,
+                    'codigoCliente' => $venta->codigoCliente,
+                ],
+                'usuario' => [
+                    'id' => $venta->origen_usuario_id,
+                    'nombre' => $venta->origen_usuario_nombre,
+                    'email' => $venta->origen_usuario_email,
+                    'alias' => $venta->origen_usuario_alias,
+                    'carnet' => $venta->origen_usuario_carnet,
+                ],
+                'sucursal' => [
+                    'id' => $venta->origen_sucursal_id,
+                    'nombre' => $venta->origen_sucursal_nombre,
+                    'codigoSucursal' => (int) $venta->codigoSucursal,
+                    'puntoVenta' => (int) $venta->puntoVenta,
+                    'departamento' => $venta->departamento,
+                ],
+                'detalle' => $detalle,
+                'itemsCount' => $itemsCount,
+                'cantidad' => max(1, $itemsCount ?: count($detalle)),
+                'total' => (float) $venta->total,
+                'estadoSufe' => $venta->estado_sufe,
+                'cuf' => $venta->cuf,
+                'status' => $status,
+                'seguimiento' => [
+                    'codigoSeguimiento' => $venta->codigoSeguimiento,
+                    'estadoSufe' => $venta->estado_sufe,
+                    'tipoEmision' => $status['tipoEmision'] ?? $venta->tipo_emision_sufe,
+                    'cuf' => $status['cuf'] ?? $venta->cuf,
+                    'urlPdf' => $venta->url_pdf,
+                    'urlXml' => $venta->url_xml,
+                    'observacion' => $venta->observacion_sufe,
+                    'fechaNotificacion' => $venta->fecha_notificacion_sufe,
+                    'notificacionEstado' => $notification?->estado,
+                    'notificacionMensaje' => $notification?->mensaje,
+                    'detalle' => is_array($detalleNotificacion) ? $detalleNotificacion : [],
+                ],
+            ];
         })->values();
+        Log::info('ventas.index.show-map.ready', $this->reportLogContext($request, [
+            'elapsed_ms' => $this->reportElapsedMs($startedAt),
+            'mapped_ventas_count' => $list->count(),
+        ]));
 
+        $cartItemsMap = $this->facturacionCartItemsMapFromRows($cartRows);
         $cartPayloads = $cartRows
-            ->map(fn ($cart) => $this->mapFacturacionCartToVentaPayload($cart))
+            ->map(fn ($cart) => $this->mapFacturacionCartToVentaPayload($cart, $cartItemsMap[(int) $cart->id] ?? []))
             ->values();
 
         $merged = $list
@@ -2046,6 +2657,10 @@ class VentaController extends Controller
                 return strtotime((string) ($row['fecha'] ?? '1970-01-01 00:00:00')) ?: 0;
             })
             ->values();
+        Log::info('ventas.index.ready', $this->reportLogContext($request, [
+            'elapsed_ms' => $this->reportElapsedMs($startedAt),
+            'merged_count' => $merged->count(),
+        ]));
 
         return response()->json($merged);
     }
