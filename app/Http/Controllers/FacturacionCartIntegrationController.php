@@ -215,6 +215,7 @@ class FacturacionCartIntegrationController extends Controller
             'titulo' => 'required|string|max:255',
             'nombre_servicio' => 'nullable|string|max:255',
             'nombre_destinatario' => 'nullable|string|max:255',
+            'cantidad' => 'nullable|integer|min:1|max:999',
             'contenido' => 'nullable|string|max:255',
             'direccion' => 'nullable|string|max:255',
             'ciudad' => 'nullable|string|max:255',
@@ -254,7 +255,9 @@ class FacturacionCartIntegrationController extends Controller
         $r['descripcion_servicio'] = trim((string) ($v['descripcion_servicio'] ?? ($r['descripcion_servicio'] ?? '')));
         $r['unidad_medida'] = isset($v['unidad_medida']) ? (int) $v['unidad_medida'] : ($r['unidad_medida'] ?? null);
 
-        $cantidad = max(1, (int) ($row->cantidad ?? 1));
+        $cantidad = isset($v['cantidad'])
+            ? max(1, (int) $v['cantidad'])
+            : max(1, (int) ($row->cantidad ?? 1));
         $montoExtras = isset($v['monto_extras']) ? round((float) $v['monto_extras'], 2) : round((float) ($row->monto_extras ?? 0), 2);
         $montoBase = isset($v['precio'])
             ? round((float) $v['precio'], 2)
@@ -274,6 +277,7 @@ class FacturacionCartIntegrationController extends Controller
             'nombre_servicio' => $this->nullBlank($v['nombre_servicio'] ?? null),
             'nombre_destinatario' => $this->nullBlank($v['nombre_destinatario'] ?? null),
             'resumen_origen' => json_encode($r, JSON_UNESCAPED_UNICODE),
+            'cantidad' => $cantidad,
             'monto_base' => $montoBase,
             'monto_extras' => $montoExtras,
             'total_linea' => $totalLinea,
