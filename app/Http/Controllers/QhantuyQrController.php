@@ -12,6 +12,61 @@ use Illuminate\Support\Facades\Log;
 
 class QhantuyQrController extends Controller
 {
+    private function summarizeCheckoutItems(array $items): array
+    {
+        return collect($items)
+            ->map(function ($item) {
+                return [
+                    'name' => trim((string) ($item['name'] ?? '')),
+                    'quantity' => (float) ($item['quantity'] ?? 0),
+                    'price' => round((float) ($item['price'] ?? 0), 2),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    private function maskQhantuyPayloadForLogs(array $payload): array
+    {
+        $masked = $payload;
+        if (isset($masked['appkey'])) {
+            $appkey = trim((string) $masked['appkey']);
+            $masked['appkey'] = $appkey !== '' ? substr($appkey, 0, 8) . '***' : '';
+        }
+
+        if (isset($masked['customer_email'])) {
+            $email = trim((string) $masked['customer_email']);
+            $parts = explode('@', $email, 2);
+            if (count($parts) === 2) {
+                $local = $parts[0];
+                $masked['customer_email'] = substr($local, 0, 3) . '***@' . $parts[1];
+            }
+        }
+
+        if (isset($masked['items']) && is_array($masked['items'])) {
+            $masked['items'] = $this->summarizeCheckoutItems($masked['items']);
+        }
+
+        return $masked;
+    }
+
+    private function summarizeQhantuyResponseBody($body): array
+    {
+        if (!is_array($body)) {
+            return ['type' => gettype($body)];
+        }
+
+        return [
+            'message' => (string) data_get($body, 'message', ''),
+            'transaction_id' => data_get($body, 'transaction_id') ?? data_get($body, 'id') ?? data_get($body, 'items.0.id'),
+            'payment_status' => data_get($body, 'payment_status') ?? data_get($body, 'items.0.payment_status') ?? data_get($body, 'status') ?? data_get($body, 'items.0.status'),
+            'checkout_amount' => data_get($body, 'checkout_amount') ?? data_get($body, 'items.0.checkout_amount'),
+            'checkout_currency' => data_get($body, 'checkout_currency') ?? data_get($body, 'items.0.checkout_currency'),
+            'has_image_data' => trim((string) (data_get($body, 'image_data') ?? data_get($body, 'qr_url') ?? data_get($body, 'items.0.image_data') ?? data_get($body, 'items.0.qr_url') ?? '')) !== '',
+            'items_count' => count((array) data_get($body, 'items', [])),
+        ];
+    }
+
     private function normalizeQrPaymentStatus(?string $status): string
     {
         return match (strtolower(trim((string) $status))) {
@@ -252,7 +307,7 @@ class QhantuyQrController extends Controller
         Log::debug('Qhantuy checkout payload prepared', [
             'internal_code' => $payload['internal_code'],
             'url' => $this->checkoutUrl(),
-            'payload' => $payload,
+            'payload' => $this->maskQhantuyPayloadForLogs($payload),
         ]);
 
         try {
@@ -263,9 +318,10 @@ class QhantuyQrController extends Controller
                 'internal_code' => $payload['internal_code'],
                 'status' => $response->status(),
                 'successful' => $response->successful(),
-                'headers' => $response->headers(),
-                'raw_body' => $response->body(),
-                'json_body' => $body,
+                'headers' => [
+                    'content_type' => $response->header('Content-Type'),
+                ],
+                'body_summary' => $this->summarizeQhantuyResponseBody($body),
             ]);
 
             if (!$response->successful()) {
@@ -582,8 +638,7 @@ class QhantuyQrController extends Controller
                 'payment_ids' => $paymentIds,
                 'status' => $response->status(),
                 'successful' => $response->successful(),
-                'raw_body' => $response->body(),
-                'json_body' => $body,
+                'body_summary' => $this->summarizeQhantuyResponseBody($body),
             ]);
 
             if (!$response->successful()) {
@@ -938,7 +993,7 @@ class QhantuyQrController extends Controller
         }
 
         $status = $this->normalizeQrPaymentStatus((string) ($row->payment_status ?? 'holding'));
-        $cacheSeconds = $status === 'holding' ? 3 : 20;
+        $cacheSeconds = $status === 'holding' ? 8 : 20;
 
         return abs(now()->diffInSeconds($updatedAt, false)) < $cacheSeconds;
     }
