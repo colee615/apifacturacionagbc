@@ -674,6 +674,11 @@ class FacturaVentaApiController extends Controller
         return array_merge($base, $verbose);
     }
 
+    private function shouldLogVerbose(Request $request): bool
+    {
+        return $this->wantsVerboseResponse($request);
+    }
+
     private function resolveBridgeStatus(string $currentStatus, ?Notificacione $notificacion = null, ?array $consulta = null): string
     {
         if ($notificacion) {
@@ -1210,11 +1215,13 @@ class FacturaVentaApiController extends Controller
         $codigoOrdenRecibido = (string) ($requestData['codigoOrden'] ?? '');
         $codigoOrden = $codigoOrdenRecibido;
 
-        Log::debug('FacturaVentaApi emitir started', [
-            'codigoOrden_recibido' => $codigoOrdenRecibido,
-            'ip' => $request->ip(),
-            'payload_keys' => array_keys($requestData),
-        ]);
+        if ($this->shouldLogVerbose($request)) {
+            Log::debug('FacturaVentaApi emitir started', [
+                'codigoOrden_recibido' => $codigoOrdenRecibido,
+                'ip' => $request->ip(),
+                'payload_keys' => array_keys($requestData),
+            ]);
+        }
 
         try {
             $validated = $this->sufeValidator->validateIndividualPayload($requestData);
@@ -1226,37 +1233,45 @@ class FacturaVentaApiController extends Controller
                 ]);
             }
 
-            Log::debug('FacturaVentaApi emitir payload validated', [
-                'codigoOrden_recibido' => $codigoOrdenRecibido,
-                'detalle_count' => $detalleCountOriginal,
-                'detalle_count_consolidado' => count($validated['detalle'] ?? []),
-                'montoTotal' => $validated['montoTotal'] ?? null,
-                'documentoIdentidad' => $validated['documentoIdentidad'] ?? null,
-                'codigoCliente' => $validated['codigoCliente'] ?? null,
-            ]);
+            if ($this->shouldLogVerbose($request)) {
+                Log::debug('FacturaVentaApi emitir payload validated', [
+                    'codigoOrden_recibido' => $codigoOrdenRecibido,
+                    'detalle_count' => $detalleCountOriginal,
+                    'detalle_count_consolidado' => count($validated['detalle'] ?? []),
+                    'montoTotal' => $validated['montoTotal'] ?? null,
+                    'documentoIdentidad' => $validated['documentoIdentidad'] ?? null,
+                    'codigoCliente' => $validated['codigoCliente'] ?? null,
+                ]);
+            }
             $this->assertFacturaVentaSector($validated);
             $this->assertCajaAbierta($validated);
-            Log::debug('FacturaVentaApi emitir sector validated', [
-                'codigoOrden_recibido' => $codigoOrdenRecibido,
-                'documentoSector' => $validated['documentoSector'] ?? null,
-            ]);
+            if ($this->shouldLogVerbose($request)) {
+                Log::debug('FacturaVentaApi emitir sector validated', [
+                    'codigoOrden_recibido' => $codigoOrdenRecibido,
+                    'documentoSector' => $validated['documentoSector'] ?? null,
+                ]);
 
-            Log::debug('FacturaVentaApi emitir snapshot prepared', [
-                'codigoOrden_recibido' => $codigoOrdenRecibido,
-                'codigoCliente' => $validated['codigoCliente'] ?? null,
-                'razonSocial' => $validated['razonSocial'] ?? null,
-                'documentoIdentidad' => $validated['documentoIdentidad'] ?? null,
-                'origen_usuario_nombre' => data_get($validated, 'origenUsuario.nombre'),
-            ]);
+                Log::debug('FacturaVentaApi emitir snapshot prepared', [
+                    'codigoOrden_recibido' => $codigoOrdenRecibido,
+                    'codigoCliente' => $validated['codigoCliente'] ?? null,
+                    'razonSocial' => $validated['razonSocial'] ?? null,
+                    'documentoIdentidad' => $validated['documentoIdentidad'] ?? null,
+                    'origen_usuario_nombre' => data_get($validated, 'origenUsuario.nombre'),
+                ]);
+            }
             $codigoOrden = $this->resolveCodigoOrden($validated);
-            Log::debug('FacturaVentaApi emitir codigoOrden resolved', [
-                'codigoOrden' => $codigoOrden,
-                'codigoOrden_recibido' => $codigoOrdenRecibido,
-            ]);
+            if ($this->shouldLogVerbose($request)) {
+                Log::debug('FacturaVentaApi emitir codigoOrden resolved', [
+                    'codigoOrden' => $codigoOrden,
+                    'codigoOrden_recibido' => $codigoOrdenRecibido,
+                ]);
+            }
             $requestPayload = $this->sanitizePayloadForAgetic($validated);
             $requestPayload['codigoOrden'] = $codigoOrden;
 
-            Log::debug('FacturaVentaApi emitir request', $requestPayload);
+            if ($this->shouldLogVerbose($request)) {
+                Log::debug('FacturaVentaApi emitir request', $requestPayload);
+            }
 
             $response = $this->ageticClient()->post(
                 $this->ageticBaseUrl() . '/facturacion/emision/individual',
@@ -1299,21 +1314,15 @@ class FacturaVentaApiController extends Controller
                     return $venta;
                 });
 
-                Log::debug('FacturaVentaApi emitir response accepted', [
-                    'status' => $response->status(),
-                    'codigoOrden' => $venta['codigoOrden'],
-                    'codigoSeguimiento' => $codigoSeguimiento,
-                    'venta_id' => $venta['id'],
-                    'is_final' => $reception['is_final'],
-                    'body' => $payload,
-                ]);
-
-                Log::debug('FacturaVentaApi emitir returning immediately after accepted response', [
-                    'codigoOrden' => $venta['codigoOrden'],
-                    'codigoSeguimiento' => $codigoSeguimiento,
-                    'status' => $response->status(),
-                    'is_final' => $reception['is_final'],
-                ]);
+                if ($this->shouldLogVerbose($request)) {
+                    Log::debug('FacturaVentaApi emitir accepted response payload', [
+                        'codigoOrden' => $venta['codigoOrden'],
+                        'codigoSeguimiento' => $codigoSeguimiento,
+                        'status' => $response->status(),
+                        'is_final' => $reception['is_final'],
+                        'body' => $payload,
+                    ]);
+                }
 
                 $payload = $this->emitResponsePayload($validated, $payload ?? [], $venta, $reception['is_final']);
 
@@ -1323,10 +1332,10 @@ class FacturaVentaApiController extends Controller
                 );
             }
 
-            Log::warning('FacturaVentaApi emitir response rejected', [
+            Log::warning('FacturaVentaApi emitir rejected', [
                 'status' => $response->status(),
                 'codigoOrden' => $codigoOrden,
-                'body' => $payload,
+                'mensaje' => data_get($payload, 'message', data_get($payload, 'mensaje')),
             ]);
 
             if (is_array($payload)) {
@@ -1339,10 +1348,6 @@ class FacturaVentaApiController extends Controller
                     ]);
                 }
             }
-
-            Log::warning('FacturaVentaApi emitir skipped persistence after rejected response', [
-                'codigoOrden' => $codigoOrden,
-            ]);
 
             $rejectedPayload = $this->rejectBridgePayload(is_array($payload) ? $payload : null);
 

@@ -93,14 +93,6 @@ class CajaDiariaController extends Controller
             'valorUnitarioFicha' => ['nullable', 'numeric', 'gt:0'],
             'observacion' => ['nullable', 'string', 'max:500'],
         ]);
-        Log::info('CajaDiariaController abrir request', [
-            'usuario_id' => $usuarioId,
-            'usuario_nombre' => $usuarioNombre,
-            'codigoSucursal' => $validated['codigoSucursal'] ?? null,
-            'puntoVenta' => $validated['puntoVenta'] ?? null,
-            'fecha' => $validated['fecha'] ?? now()->toDateString(),
-        ]);
-
         $fecha = (string) ($validated['fecha'] ?? now()->toDateString());
         $existente = CajaDiaria::query()
             ->where('usuario_id', $usuarioId)
@@ -108,14 +100,6 @@ class CajaDiariaController extends Controller
             ->where('codigo_sucursal', (int) $validated['codigoSucursal'])
             ->where('punto_venta', (int) $validated['puntoVenta'])
             ->first();
-        Log::info('CajaDiariaController abrir existente', [
-            'usuario_id' => $usuarioId,
-            'fecha' => $fecha,
-            'codigoSucursal' => (int) $validated['codigoSucursal'],
-            'puntoVenta' => (int) $validated['puntoVenta'],
-            'existente_id' => $existente?->id,
-            'existente_estado' => $existente?->estado,
-        ]);
 
         $context = [
             'usuario_id' => $usuarioId,
@@ -136,10 +120,6 @@ class CajaDiariaController extends Controller
         $montoApertura = round((float) ($validated['montoApertura'] ?? 0), 2);
 
         if ($existente && $existente->estado === 'ABIERTA') {
-            Log::info('CajaDiariaController abrir already-open', [
-                'usuario_id' => $usuarioId,
-                'caja_id' => $existente->id,
-            ]);
             return response()->json([
                 'ok' => true,
                 'message' => 'La caja ya se encontraba abierta para esta sucursal.',
@@ -222,12 +202,6 @@ class CajaDiariaController extends Controller
             'observacion_apertura' => isset($validated['observacion']) ? trim((string) $validated['observacion']) : null,
             'abierta_en' => now(),
         ]));
-        Log::info('CajaDiariaController abrir created', [
-            'usuario_id' => $usuarioId,
-            'caja_id' => $caja->id,
-            'codigoSucursal' => (int) $validated['codigoSucursal'],
-            'puntoVenta' => (int) $validated['puntoVenta'],
-        ]);
 
         return response()->json([
             'ok' => true,
