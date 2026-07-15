@@ -286,16 +286,41 @@ class FacturacionCartIntegrationController extends Controller
 
     public function removeItem(Request $request, int $itemId): JsonResponse
     {
-        $userId = (string) $request->validate(['origen_usuario_id' => 'required|string|max:60'])['origen_usuario_id'];
+        $validated = $request->validate([
+            'origen_usuario_id' => 'required|string|max:60',
+            'cantidad' => 'nullable|integer|min:1|max:999',
+            'current_quantity' => 'nullable|integer|min:1|max:999',
+        ]);
+        $userId = (string) $validated['origen_usuario_id'];
         $row = DB::table('facturacion_cart_items as i')
             ->join('facturacion_carts as c', 'c.id', '=', 'i.cart_id')
             ->where('i.id', $itemId)->where('c.origen_usuario_id', $userId)->where('c.estado', 'borrador')
-            ->select('i.id', 'c.id as cart_id_ref')->first();
+            ->select('i.*', 'c.id as cart_id_ref')->first();
         if (!$row) {
             return response()->json(['ok' => false, 'message' => 'Item no encontrado.'], 404);
         }
 
-        DB::table('facturacion_cart_items')->where('id', $itemId)->delete();
+        $cantidadActual = max(
+            1,
+            (int) ($row->cantidad ?? 1),
+            (int) ($validated['current_quantity'] ?? 1)
+        );
+        $cantidadAQuitar = max(1, min($cantidadActual, (int) ($validated['cantidad'] ?? $cantidadActual)));
+
+        if ($cantidadAQuitar < $cantidadActual) {
+            $montoBase = round((float) ($row->monto_base ?? 0), 2);
+            $montoExtras = round((float) ($row->monto_extras ?? 0), 2);
+            $cantidadRestante = max(1, $cantidadActual - $cantidadAQuitar);
+
+            DB::table('facturacion_cart_items')->where('id', $itemId)->update([
+                'cantidad' => $cantidadRestante,
+                'total_linea' => round(($montoBase + $montoExtras) * $cantidadRestante, 2),
+                'updated_at' => now(),
+            ]);
+        } else {
+            DB::table('facturacion_cart_items')->where('id', $itemId)->delete();
+        }
+
         $this->recalc((int) $row->cart_id_ref);
         return response()->json(['ok' => true, 'cart' => $this->cartById((int) $row->cart_id_ref)]);
     }
@@ -1240,7 +1265,13 @@ class FacturacionCartIntegrationController extends Controller
     private function recalc(int $cartId): void
     {
         $it = DB::table('facturacion_cart_items')->where('cart_id', $cartId)->get();
-        DB::table('facturacion_carts')->where('id', $cartId)->update(['cantidad_items' => $it->count(), 'subtotal' => round((float) $it->sum('monto_base'), 2), 'total_extras' => round((float) $it->sum('monto_extras'), 2), 'total' => round((float) $it->sum('total_linea'), 2), 'updated_at' => now()]);
+        DB::table('facturacion_carts')->where('id', $cartId)->update([
+            'cantidad_items' => (int) $it->sum(fn ($item) => max(1, (int) ($item->cantidad ?? 1))),
+            'subtotal' => round((float) $it->sum(fn ($item) => round((float) ($item->monto_base ?? 0), 2) * max(1, (int) ($item->cantidad ?? 1))), 2),
+            'total_extras' => round((float) $it->sum(fn ($item) => round((float) ($item->monto_extras ?? 0), 2) * max(1, (int) ($item->cantidad ?? 1))), 2),
+            'total' => round((float) $it->sum('total_linea'), 2),
+            'updated_at' => now(),
+        ]);
     }
 
     private function applyFilters($q, array $f): void
