@@ -370,12 +370,24 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         $note = trim((string) ($validated['note'] ?? '')) ?: 'Venta rechazada descartada localmente.';
+        $reviewer = auth()->user();
+        $reviewedBy = trim((string) (
+            $reviewer->email
+            ?? $reviewer->name
+            ?? $reviewer->nombre
+            ?? $reviewer->id
+            ?? 'sistema'
+        ));
+        $reviewNote = 'Factura rechazada descartada y revisada automaticamente al anular la venta.';
 
         DB::table('facturacion_carts')
             ->where('id', (int) $cart->id)
             ->update([
                 'estado' => 'descartado',
                 'mensaje_emision' => $note,
+                'incidencia_revisada_at' => now(),
+                'incidencia_revisada_por' => $reviewedBy,
+                'incidencia_revision_nota' => $reviewNote,
                 'updated_at' => now(),
             ]);
 
