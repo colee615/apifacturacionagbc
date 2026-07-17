@@ -442,6 +442,7 @@ class FacturacionCartIntegrationController extends Controller
             'complemento_documento' => 'nullable|string|max:30',
             'razon_social' => 'nullable|string|max:255',
             'correo_facturacion' => 'nullable|email|max:50',
+            'codigo_orden_mode' => 'nullable|in:same,new',
         ]);
         $userId = (string) $validated['origen_usuario_id'];
         $lock = Cache::lock($this->emitLockKey($userId), 15);
@@ -492,6 +493,9 @@ class FacturacionCartIntegrationController extends Controller
         $overrideMode = in_array((string) ($validated['modalidad_facturacion'] ?? ''), ['con_datos', 'sin_cliente'], true)
             ? (string) $validated['modalidad_facturacion']
             : (string) ($cart->modalidad_facturacion ?? 'con_datos');
+        $codigoOrdenMode = in_array((string) ($validated['codigo_orden_mode'] ?? 'same'), ['same', 'new'], true)
+            ? (string) ($validated['codigo_orden_mode'] ?? 'same')
+            : 'same';
         $preservePaidQrPayment = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
             && strtolower(trim((string) ($cart->estado_pago ?? ''))) === 'pagado'
             && trim((string) ($cart->qr_transaction_id ?? '')) !== '';
@@ -546,12 +550,19 @@ class FacturacionCartIntegrationController extends Controller
             }
         }
 
-        // En una venta QR ya cobrada debemos reenviar exactamente la misma venta y el mismo codigo.
-        $codigoOrdenIntento = $isPaidQrInvoiceConversion
+        $reusePaidQrInvoiceCode = $isPaidQrInvoiceConversion && $codigoOrdenMode !== 'new';
+
+        // El comportamiento actual conserva el mismo codigo para una venta QR ya pagada.
+        // Si el usuario solicita "otro codigo", forzamos un nuevo correlativo para el reintento.
+        $codigoOrdenIntento = $reusePaidQrInvoiceCode
             ? trim((string) ($cart->codigo_orden ?? ''))
-            : $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
+            : ($isPaidQrInvoiceConversion
+                ? $this->nextBridgeCodigoOrden($canalEmision)
+                : $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision));
         if ($codigoOrdenIntento === '') {
-            $codigoOrdenIntento = $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
+            $codigoOrdenIntento = $isPaidQrInvoiceConversion
+                ? $this->nextBridgeCodigoOrden($canalEmision)
+                : $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
         }
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
