@@ -586,7 +586,7 @@ class VentaController extends Controller
                         $draftCart->select(DB::raw('1'))
                             ->from('facturacion_carts as fc')
                             ->whereRaw("cast(fc.id as varchar) = cast(ventas.origen_venta_id as varchar)")
-                            ->whereRaw("lower(coalesce(fc.estado, '')) in ('borrador', 'descartado')");
+                            ->whereRaw("lower(coalesce(fc.estado, '')) = 'borrador'");
                     });
             });
         }
@@ -2362,7 +2362,7 @@ class VentaController extends Controller
     private function buildFacturacionCartReportQuery(array $filters)
     {
         $query = DB::table('facturacion_carts')
-            ->whereRaw("lower(coalesce(estado, '')) not in ('borrador', 'descartado')");
+            ->whereRaw("lower(coalesce(estado, '')) <> 'borrador'");
 
         if (!empty($filters['fechaInicio'])) {
             $query->whereDate('created_at', '>=', $filters['fechaInicio']);
@@ -2450,6 +2450,10 @@ class VentaController extends Controller
             ?: ''
         ));
         $canAnnul = $canal !== 'qr' && $estadoEmision === 'FACTURADA' && $cuf !== '';
+
+        if ($estado === 'descartado') {
+            return ['key' => 'DESCARTADA', 'label' => 'Descartada', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => false, 'cuf' => $cuf !== '' ? $cuf : null];
+        }
 
         if ($canal === 'qr') {
             if ($estadoPago === 'pagado' || $estado === 'emitido') {
