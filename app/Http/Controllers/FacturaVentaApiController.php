@@ -385,11 +385,13 @@ class FacturaVentaApiController extends Controller
     {
         $now = Date::now();
         $sucursal = $this->resolveSucursalContext($payload);
+        $origenVentaId = data_get($payload, 'origenVenta.id');
+        $origenVentaTipo = data_get($payload, 'origenVenta.tipo');
 
-        $ventaId = DB::table('ventas')->insertGetId([
+        $baseData = [
             'origen_sistema' => 'BOLIPOST',
-            'origen_venta_id' => data_get($payload, 'origenVenta.id'),
-            'origen_venta_tipo' => data_get($payload, 'origenVenta.tipo'),
+            'origen_venta_id' => $origenVentaId,
+            'origen_venta_tipo' => $origenVentaTipo,
             'origen_usuario_id' => data_get($payload, 'origenUsuario.id'),
             'origen_usuario_nombre' => data_get($payload, 'origenUsuario.nombre'),
             'origen_usuario_email' => data_get($payload, 'origenUsuario.email'),
@@ -422,9 +424,27 @@ class FacturaVentaApiController extends Controller
             'estado_sufe' => $estadoSufe,
             'numero_factura' => null,
             'estado' => 1,
-            'created_at' => $now,
             'updated_at' => $now,
-        ]);
+        ];
+
+        $ventaId = null;
+        if (trim((string) $origenVentaId) !== '' && trim((string) $origenVentaTipo) !== '') {
+            $ventaId = DB::table('ventas')
+                ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [(string) $origenVentaId])
+                ->where('origen_venta_tipo', (string) $origenVentaTipo)
+                ->orderByDesc('id')
+                ->value('id');
+        }
+
+        if ($ventaId) {
+            DB::table('ventas')
+                ->where('id', $ventaId)
+                ->update($baseData);
+        } else {
+            $ventaId = DB::table('ventas')->insertGetId(array_merge($baseData, [
+                'created_at' => $now,
+            ]));
+        }
 
         if (Schema::hasColumn('ventas', 'peso_total')) {
             DB::table('ventas')
@@ -444,6 +464,7 @@ class FacturaVentaApiController extends Controller
     private function createDetalleVentas(array $venta, array $payload): void
     {
         $now = Date::now();
+        DB::table('detalle_ventas')->where('venta_id', $venta['id'])->delete();
 
         foreach ($payload['detalle'] as $detalle) {
             $insert = [
