@@ -983,16 +983,65 @@ class FacturaVentaApiController extends Controller
         }
 
         $bridgeStatus = $bridgeStatus ?: (string) ($venta->estado_sufe ?? '');
+        $cart = DB::table('facturacion_carts')->where('id', $cartId)->first();
+        $existingResponse = json_decode((string) ($cart->respuesta_emision ?? '{}'), true);
+        if (!is_array($existingResponse)) {
+            $existingResponse = [];
+        }
+
+        $response = $this->mergeCartFiscalResponseFromVenta($existingResponse, $venta, $bridgeStatus);
 
         DB::table('facturacion_carts')
             ->where('id', $cartId)
             ->update([
                 'estado_emision' => $this->cashierStatusFromBridgeStatus($bridgeStatus),
                 'mensaje_emision' => $this->cashierMessageFromBridgeStatus($bridgeStatus),
+                'respuesta_emision' => json_encode($response, JSON_UNESCAPED_UNICODE),
                 'updated_at' => now(),
             ]);
 
         $this->reverseVentaFromCajaIfNeeded($venta, $bridgeStatus);
+    }
+
+    private function mergeCartFiscalResponseFromVenta(array $response, \stdClass $venta, string $bridgeStatus): array
+    {
+        $status = strtoupper(trim($bridgeStatus));
+        $cuf = trim((string) ($venta->cuf ?? ''));
+        $numeroFactura = trim((string) ($venta->numero_factura ?? ''));
+        $pdfUrl = $this->normalizeSefePublicUrl((string) ($venta->url_pdf ?? ''));
+        $xmlUrl = $this->normalizeSefePublicUrl((string) ($venta->url_xml ?? ''));
+
+        if ($pdfUrl === '' && $status === 'PROCESADA' && $cuf !== '') {
+            $pdfUrl = $this->sefePublicAssetUrl('pdf', $cuf);
+        }
+
+        if ($xmlUrl === '' && $status === 'PROCESADA' && $cuf !== '') {
+            $xmlUrl = $this->sefePublicAssetUrl('xml', $cuf);
+        }
+
+        $response['ok'] = true;
+        $response['facturada'] = $this->cashierFacturadaFromBridgeStatus($status);
+        $response['estado'] = $this->cashierStatusFromBridgeStatus($status);
+        $response['mensaje'] = $this->cashierMessageFromBridgeStatus($status);
+        $response['razon'] = $this->cashierReasonFromBridgeStatus($status, (string) ($venta->observacion_sufe ?? ''));
+        $response['codigoOrden'] = (string) ($venta->codigoOrden ?? ($response['codigoOrden'] ?? ''));
+        $response['codigoSeguimiento'] = (string) ($venta->codigoSeguimiento ?? ($response['codigoSeguimiento'] ?? ''));
+
+        if ($cuf !== '') {
+            data_set($response, 'factura.cuf', $cuf);
+        }
+        if ($numeroFactura !== '') {
+            data_set($response, 'factura.nroFactura', $numeroFactura);
+            data_set($response, 'factura.numeroFactura', $numeroFactura);
+        }
+        if ($pdfUrl !== '') {
+            data_set($response, 'factura.pdfUrl', $pdfUrl);
+        }
+        if ($xmlUrl !== '') {
+            data_set($response, 'factura.xmlUrl', $xmlUrl);
+        }
+
+        return $response;
     }
 
     private function latestNotificationByCodigoSeguimiento(string $codigoSeguimiento): ?Notificacione
