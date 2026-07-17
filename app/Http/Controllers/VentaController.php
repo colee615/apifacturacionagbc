@@ -1812,6 +1812,16 @@ class VentaController extends Controller
         $baseQuery = $this->buildVentaReportQuery($filters);
         $settledBaseQuery = $this->applySettledVentaFilters(clone $baseQuery);
         $limite = (int) ($filters['limite'] ?? 200);
+        $reviewedDiscardedLinkedVentaExpr = Schema::hasTable('facturacion_carts')
+            ? "exists (
+                select 1
+                from facturacion_carts as fc_review
+                where cast(fc_review.id as varchar) = cast(ventas.origen_venta_id as varchar)
+                    and lower(coalesce(fc_review.estado, '')) = 'descartado'
+                    and upper(coalesce(fc_review.estado_emision, 'NO_APLICA')) = 'RECHAZADA'
+                    and fc_review.incidencia_revisada_at is not null
+            )"
+            : 'false';
         $sucursalCodigoExpr = $this->hasOrigenSucursalCodigoColumn()
             ? "coalesce(nullif(origen_sucursal_codigo, ''), cast(coalesce(\"codigoSucursal\", 0) as varchar))"
             : "cast(coalesce(\"codigoSucursal\", 0) as varchar)";
@@ -1858,8 +1868,8 @@ class VentaController extends Controller
                     then 1 else 0
                 end) as electronicas_facturadas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'REGISTRADA_OFICIAL' then 1 else 0 end) as oficiales,
-                sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') then 1 else 0 end) as con_cuf_otro_estado,
-                sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' then 1 else 0 end) as observadas,
+                sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as con_cuf_otro_estado,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as observadas,
                 sum(case when upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA') then 1 else 0 end) as pendientes
             ")
             ->first();
@@ -1908,8 +1918,8 @@ class VentaController extends Controller
                     then 1 else 0
                 end) as electronicas_facturadas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'REGISTRADA_OFICIAL' then 1 else 0 end) as oficiales,
-                sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') then 1 else 0 end) as con_cuf_otro_estado,
-                sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' then 1 else 0 end) as observadas,
+                sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as con_cuf_otro_estado,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as observadas,
                 sum(case when upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA') then 1 else 0 end) as pendientes,
                 min(created_at) as primera_venta,
                 max(created_at) as ultima_venta
@@ -1994,6 +2004,19 @@ class VentaController extends Controller
                             and lower(coalesce(estado_pago, 'pendiente')) not in ('pagado', 'cancelado', 'fallido')
                         then total else 0
                     end), 0) as total_qr_pendiente
+                    ,
+                    sum(case
+                        when lower(coalesce(estado, '')) = 'descartado'
+                            and upper(coalesce(estado_emision, 'NO_APLICA')) = 'RECHAZADA'
+                            and incidencia_revisada_at is null
+                        then 1 else 0
+                    end) as cart_rechazado_descartado,
+                    coalesce(sum(case
+                        when lower(coalesce(estado, '')) = 'descartado'
+                            and upper(coalesce(estado_emision, 'NO_APLICA')) = 'RECHAZADA'
+                            and incidencia_revisada_at is null
+                        then total else 0
+                    end), 0) as total_cart_rechazado_descartado
                 ")
                 ->groupByRaw($cartSucursalIdExpr)
                 ->get()
@@ -2037,15 +2060,17 @@ class VentaController extends Controller
                 'qrFacturadas' => (int) ($resumen->qr_facturadas ?? 0),
                 'electronicasFacturadas' => (int) ($resumen->electronicas_facturadas ?? 0),
                 'oficiales' => (int) ($resumen->oficiales ?? 0),
-                'conCufOtroEstado' => (int) ($resumen->con_cuf_otro_estado ?? 0),
+                'conCufOtroEstado' => (int) ($resumen->con_cuf_otro_estado ?? 0) + (int) $qrSucursalMetrics->sum(fn ($row) => (int) ($row->cart_rechazado_descartado ?? 0)),
                 'observadas' => (int) ($resumen->observadas ?? 0),
                 'pendientes' => (int) ($resumen->pendientes ?? 0),
                 'qrPagadoPendienteFactura' => (int) $qrSucursalMetrics->sum(fn ($row) => (int) ($row->qr_pagado_pendiente_factura ?? 0)),
                 'qrCancelado' => (int) $qrSucursalMetrics->sum(fn ($row) => (int) ($row->qr_cancelado ?? 0)),
                 'qrPendiente' => (int) $qrSucursalMetrics->sum(fn ($row) => (int) ($row->qr_pendiente ?? 0)),
+                'cartRechazadoDescartado' => (int) $qrSucursalMetrics->sum(fn ($row) => (int) ($row->cart_rechazado_descartado ?? 0)),
                 'totalQrPagadoPendienteFactura' => (float) $qrSucursalMetrics->sum(fn ($row) => (float) ($row->total_qr_pagado_pendiente_factura ?? 0)),
                 'totalQrCancelado' => (float) $qrSucursalMetrics->sum(fn ($row) => (float) ($row->total_qr_cancelado ?? 0)),
                 'totalQrPendiente' => (float) $qrSucursalMetrics->sum(fn ($row) => (float) ($row->total_qr_pendiente ?? 0)),
+                'totalCartRechazadoDescartado' => (float) $qrSucursalMetrics->sum(fn ($row) => (float) ($row->total_cart_rechazado_descartado ?? 0)),
             ],
             'sucursales' => $porSucursal->map(function ($row) use ($qrSucursalMetrics) {
                 $qrMetrics = $qrSucursalMetrics->get($row->sucursal_id);
@@ -2069,15 +2094,17 @@ class VentaController extends Controller
                     'qrFacturadas' => (int) $row->qr_facturadas,
                     'electronicasFacturadas' => (int) $row->electronicas_facturadas,
                     'oficiales' => (int) $row->oficiales,
-                    'conCufOtroEstado' => (int) $row->con_cuf_otro_estado,
+                    'conCufOtroEstado' => (int) $row->con_cuf_otro_estado + (int) ($qrMetrics->cart_rechazado_descartado ?? 0),
                     'observadas' => (int) $row->observadas,
                     'pendientes' => (int) $row->pendientes,
                     'qrPagadoPendienteFactura' => (int) ($qrMetrics->qr_pagado_pendiente_factura ?? 0),
                     'qrCancelado' => (int) ($qrMetrics->qr_cancelado ?? 0),
                     'qrPendiente' => (int) ($qrMetrics->qr_pendiente ?? 0),
+                    'cartRechazadoDescartado' => (int) ($qrMetrics->cart_rechazado_descartado ?? 0),
                     'totalQrPagadoPendienteFactura' => (float) ($qrMetrics->total_qr_pagado_pendiente_factura ?? 0),
                     'totalQrCancelado' => (float) ($qrMetrics->total_qr_cancelado ?? 0),
                     'totalQrPendiente' => (float) ($qrMetrics->total_qr_pendiente ?? 0),
+                    'totalCartRechazadoDescartado' => (float) ($qrMetrics->total_cart_rechazado_descartado ?? 0),
                     'primeraVenta' => $row->primera_venta,
                     'ultimaVenta' => $row->ultima_venta,
                 ];
@@ -2208,6 +2235,16 @@ class VentaController extends Controller
         ]));
 
         $ventaIncidencias = $this->buildVentaReportQuery($filters)
+            ->when(Schema::hasTable('facturacion_carts'), function ($query) {
+                $query->whereNotExists(function ($reviewedDiscarded) {
+                    $reviewedDiscarded->select(DB::raw('1'))
+                        ->from('facturacion_carts as fc_review')
+                        ->whereRaw("cast(fc_review.id as varchar) = cast(ventas.origen_venta_id as varchar)")
+                        ->whereRaw("lower(coalesce(fc_review.estado, '')) = 'descartado'")
+                        ->whereRaw("upper(coalesce(fc_review.estado_emision, 'NO_APLICA')) = 'RECHAZADA'")
+                        ->whereNotNull('fc_review.incidencia_revisada_at');
+                });
+            })
             ->where(function ($scope) {
                 $scope->whereRaw("upper(coalesce(estado_sufe, '')) = 'OBSERVADA'")
                     ->orWhereRaw("upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA')")
@@ -2264,6 +2301,7 @@ class VentaController extends Controller
             });
 
         $qrIncidencias = collect();
+        $cartRejectedIncidencias = collect();
         if (Schema::hasTable('facturacion_carts')) {
             $qrIncidencias = $this->buildFacturacionCartReportQuery($filters)
                 ->where(function ($scope) {
@@ -2335,10 +2373,51 @@ class VentaController extends Controller
                         },
                     ];
                 });
+
+            $cartRejectedIncidencias = $this->buildFacturacionCartReportQuery($filters)
+                ->whereRaw("lower(coalesce(estado, '')) = 'descartado'")
+                ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) = 'RECHAZADA'")
+                ->whereNull('incidencia_revisada_at')
+                ->latest('created_at')
+                ->get([
+                    'id',
+                    'codigo_orden',
+                    'codigo_seguimiento',
+                    'razon_social',
+                    'total',
+                    'created_at',
+                    'estado',
+                    'estado_emision',
+                    'incidencia_revisada_at',
+                    'incidencia_revisada_por',
+                    'incidencia_revision_nota',
+                    'origen_usuario_nombre',
+                    'origen_usuario_alias',
+                    'origen_usuario_email',
+                ])
+                ->map(function ($cart) {
+                    return [
+                        'key' => 'cart-rejected-' . $cart->id,
+                        'type' => 'factura_descartada',
+                        'title' => 'Factura rechazada descartada',
+                        'status' => 'DESCARTADA',
+                        'code' => trim((string) ($cart->codigo_orden ?? '')) ?: ('FC-' . $cart->id),
+                        'tracking' => trim((string) ($cart->codigo_seguimiento ?? '')),
+                        'customer' => trim((string) ($cart->razon_social ?? '')) ?: 'Sin cliente',
+                        'amount' => (float) ($cart->total ?? 0),
+                        'createdAt' => $cart->created_at,
+                        'user' => trim((string) ($cart->origen_usuario_nombre ?? $cart->origen_usuario_alias ?? $cart->origen_usuario_email ?? '')) ?: 'Sin usuario',
+                        'reviewedAt' => $cart->incidencia_revisada_at,
+                        'reviewedBy' => $cart->incidencia_revisada_por,
+                        'reviewNote' => $cart->incidencia_revision_nota,
+                        'message' => 'La factura fue rechazada y la venta se descarto localmente; requiere revision manual.',
+                    ];
+                });
         }
 
         $incidencias = $ventaIncidencias
             ->concat($qrIncidencias)
+            ->concat($cartRejectedIncidencias)
             ->sortByDesc(fn ($item) => (string) ($item['createdAt'] ?? ''))
             ->values();
 

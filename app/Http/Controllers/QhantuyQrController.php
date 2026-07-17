@@ -1043,14 +1043,17 @@ class QhantuyQrController extends Controller
         }
 
         $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
+        $estado = strtolower(trim((string) ($cart->estado ?? '')));
+        $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? 'NO_APLICA')));
         $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? '')));
         $metodoPago = strtolower(trim((string) ($cart->metodo_pago ?? '')));
         $isQr = $canalEmision === 'qr' || $metodoPago === 'qr' || trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+        $isRejectedDiscarded = $estado === 'descartado' && $estadoEmision === 'RECHAZADA';
 
-        if (!$isQr || !in_array($estadoPago, ['cancelado', 'fallido'], true)) {
+        if (!(($isQr && in_array($estadoPago, ['cancelado', 'fallido'], true)) || $isRejectedDiscarded)) {
             return response()->json([
                 'ok' => false,
-                'message' => 'Solo se puede marcar como revisada una incidencia QR cancelada o fallida.',
+                'message' => 'Solo se puede marcar como revisada una incidencia QR cancelada/fallida o una factura rechazada descartada.',
             ], 422);
         }
 
@@ -1062,7 +1065,9 @@ class QhantuyQrController extends Controller
             ?? $reviewer->id
             ?? 'sistema'
         ));
-        $note = trim((string) ($validated['note'] ?? '')) ?: 'Incidencia QR revisada manualmente.';
+        $note = trim((string) ($validated['note'] ?? '')) ?: ($isRejectedDiscarded
+            ? 'Factura rechazada descartada y revisada manualmente.'
+            : 'Incidencia QR revisada manualmente.');
 
         DB::table('facturacion_carts')
             ->where('id', (int) $cart->id)
@@ -1075,7 +1080,9 @@ class QhantuyQrController extends Controller
 
         return response()->json([
             'ok' => true,
-            'message' => 'La incidencia QR fue marcada como revisada.',
+            'message' => $isRejectedDiscarded
+                ? 'La factura rechazada descartada fue marcada como revisada.'
+                : 'La incidencia QR fue marcada como revisada.',
             'cart' => DB::table('facturacion_carts')->where('id', (int) $cart->id)->first(),
         ]);
     }
