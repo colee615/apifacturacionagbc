@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\CajaDiariaController;
+use App\Http\Controllers\FacturacionCartIntegrationController;
 use App\Http\Controllers\IntegrationTokenController;
 use App\Http\Controllers\QhantuyQrController;
 use App\Http\Controllers\RbacController;
