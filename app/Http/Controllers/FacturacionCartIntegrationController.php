@@ -786,10 +786,21 @@ class FacturacionCartIntegrationController extends Controller
             };
         }
 
+        $existingResponse = json_decode((string) ($cart->respuesta_emision ?? '{}'), true);
+        if (!is_array($existingResponse)) {
+            $existingResponse = [];
+        }
+        $consultSucceeded = $statusCode < 400 && strtoupper((string) ($body['estado'] ?? '')) !== 'ERROR';
+        $mergedResponse = $consultSucceeded
+            ? array_replace_recursive($existingResponse, $body)
+            : $existingResponse;
+
         $updates = [
-            'estado_emision' => (string) ($body['estado'] ?? ($cart->estado_emision ?? 'ERROR')),
-            'mensaje_emision' => (string) ($body['mensaje'] ?? ($cart->mensaje_emision ?? '')),
-            'respuesta_emision' => json_encode($body, JSON_UNESCAPED_UNICODE),
+            'estado_emision' => $consultSucceeded
+                ? (string) ($body['estado'] ?? ($cart->estado_emision ?? 'ERROR'))
+                : (string) ($cart->estado_emision ?? 'ERROR'),
+            'mensaje_emision' => (string) ($body['mensaje'] ?? ($body['message'] ?? ($cart->mensaje_emision ?? ''))),
+            'respuesta_emision' => json_encode($mergedResponse, JSON_UNESCAPED_UNICODE),
             'updated_at' => now(),
         ];
 

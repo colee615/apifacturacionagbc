@@ -2511,7 +2511,31 @@ class VentaController extends Controller
         return $query;
     }
 
-    private function facturacionCartStatusPayload(object $cart): array
+    private function facturacionCartFiscalBackfillMap($cartRows): array
+    {
+        $cartIds = collect($cartRows)
+            ->pluck('id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($cartIds === []) {
+            return [];
+        }
+
+        return Venta::query()
+            ->whereIn('origen_venta_id', $cartIds)
+            ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+            ->orderByDesc('id')
+            ->get(['origen_venta_id', 'codigoSeguimiento', 'numero_factura', 'cuf'])
+            ->groupBy(fn ($venta) => (int) ($venta->origen_venta_id ?? 0))
+            ->map(fn ($rows) => $rows->first())
+            ->toArray();
+    }
+
+    private function facturacionCartStatusPayload(object $cart, ?object $linkedVenta = null): array
     {
         $canal = strtolower(trim((string) ($cart->canal_emision ?? '')));
         $estado = strtolower(trim((string) ($cart->estado ?? '')));
@@ -2528,6 +2552,7 @@ class VentaController extends Controller
             ?: data_get($respuestaEmision, 'factura.cuf')
             ?: data_get($respuestaEmision, 'datos.cuf')
             ?: data_get($respuestaEmision, 'detalle.cuf')
+            ?: ($linkedVenta->cuf ?? '')
             ?: ''
         ));
         $canAnnul = $canal !== 'qr' && $estadoEmision === 'FACTURADA' && $cuf !== '';
@@ -2620,25 +2645,40 @@ class VentaController extends Controller
             ->toArray();
     }
 
-    private function mapFacturacionCartToVentaPayload(object $cart, array $preloadedItems = []): array
+    private function mapFacturacionCartToVentaPayload(object $cart, array $preloadedItems = [], object|array|null $linkedVenta = null): array
     {
         $respuestaEmision = json_decode((string) ($cart->respuesta_emision ?? ''), true);
         if (!is_array($respuestaEmision)) {
             $respuestaEmision = [];
         }
+        if (is_array($linkedVenta)) {
+            $linkedVenta = (object) $linkedVenta;
+        }
 
         $items = collect($preloadedItems);
 
-        $status = $this->facturacionCartStatusPayload($cart);
+        $status = $this->facturacionCartStatusPayload($cart, $linkedVenta);
         $fecha = $cart->emitido_en ?: $cart->created_at;
+        $numeroFactura = $this->facturacionCartNumeroFactura((string) ($cart->respuesta_emision ?? ''))
+            ?: ($linkedVenta->numero_factura ?? null);
+        $codigoSeguimiento = (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''));
+        if ($codigoSeguimiento === '') {
+            $codigoSeguimiento = (string) ($linkedVenta->codigoSeguimiento ?? '');
+        }
+        if (!data_get($respuestaEmision, 'factura.cuf') && !data_get($respuestaEmision, 'cuf') && !blank($linkedVenta->cuf ?? null)) {
+            data_set($respuestaEmision, 'factura.cuf', $linkedVenta->cuf);
+        }
+        if (!data_get($respuestaEmision, 'factura.nroFactura') && !blank($linkedVenta->numero_factura ?? null)) {
+            data_set($respuestaEmision, 'factura.nroFactura', $linkedVenta->numero_factura);
+        }
 
         return [
             'id' => 'cart-' . (int) $cart->id,
             'cartId' => (int) $cart->id,
             'fecha' => $fecha ? date('Y-m-d H:i:s', strtotime((string) $fecha)) : null,
             'codigoOrden' => $this->normalizeFacturacionCartCodigoOrden($cart),
-            'codigoSeguimiento' => (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')),
-            'numeroFactura' => $this->facturacionCartNumeroFactura((string) ($cart->respuesta_emision ?? '')),
+            'codigoSeguimiento' => $codigoSeguimiento,
+            'numeroFactura' => $numeroFactura,
             'origenVentaId' => (int) $cart->id,
             'origenVentaTipo' => 'facturacion_cart',
             'canal_emision' => (string) ($cart->canal_emision ?? ''),
@@ -2836,8 +2876,13 @@ class VentaController extends Controller
         ]));
 
         $cartItemsMap = $this->facturacionCartItemsMapFromRows($cartRows);
+        $cartFiscalBackfillMap = $this->facturacionCartFiscalBackfillMap($cartRows);
         $cartPayloads = $cartRows
-            ->map(fn ($cart) => $this->mapFacturacionCartToVentaPayload($cart, $cartItemsMap[(int) $cart->id] ?? []))
+            ->map(fn ($cart) => $this->mapFacturacionCartToVentaPayload(
+                $cart,
+                $cartItemsMap[(int) $cart->id] ?? [],
+                $cartFiscalBackfillMap[(int) $cart->id] ?? null
+            ))
             ->values();
 
         $merged = $list
