@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Notificacione;
 use App\Models\Venta;
 use Dompdf\Dompdf;
 use Dompdf\Options;
@@ -794,6 +795,7 @@ class FacturacionCartIntegrationController extends Controller
         $mergedResponse = $consultSucceeded
             ? array_replace_recursive($existingResponse, $body)
             : $existingResponse;
+        $mergedResponse = $this->enrichCartResponseWithFiscalBackfill($cart, $mergedResponse);
 
         $updates = [
             'estado_emision' => $consultSucceeded
@@ -828,6 +830,7 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update($updates);
+        $this->syncLinkedVentaFiscalData($cart, $mergedResponse);
 
         return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $statusCode]);
     }
@@ -1624,6 +1627,151 @@ class FacturacionCartIntegrationController extends Controller
     {
         $d = json_decode($json, true);
         return is_array($d) ? $d : [];
+    }
+
+    private function latestNotificationDetailBySeguimiento(?string $codigoSeguimiento): array
+    {
+        $codigoSeguimiento = trim((string) $codigoSeguimiento);
+        if ($codigoSeguimiento === '') {
+            return [];
+        }
+
+        $notification = Notificacione::query()
+            ->where('codigo_seguimiento', $codigoSeguimiento)
+            ->latest('id')
+            ->first();
+
+        if (!$notification) {
+            return [];
+        }
+
+        $detalle = json_decode((string) $notification->detalle, true);
+        return is_array($detalle) ? $detalle : [];
+    }
+
+    private function enrichCartResponseWithFiscalBackfill(object $cart, array $response): array
+    {
+        $response = is_array($response) ? $response : [];
+        $codigoSeguimiento = trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')));
+
+        $linkedVenta = Venta::query()
+            ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [$cart->id])
+            ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+            ->latest('id')
+            ->first(['codigoSeguimiento', 'numero_factura', 'cuf', 'url_pdf', 'url_xml']);
+
+        if ($codigoSeguimiento === '' && !blank($linkedVenta?->codigoSeguimiento)) {
+            $codigoSeguimiento = trim((string) $linkedVenta->codigoSeguimiento);
+        }
+
+        $detalleNotificacion = $this->latestNotificationDetailBySeguimiento($codigoSeguimiento);
+
+        $cuf = trim((string) (
+            data_get($response, 'factura.cuf')
+            ?: data_get($response, 'cuf')
+            ?: ($linkedVenta->cuf ?? '')
+            ?: ($detalleNotificacion['cuf'] ?? '')
+        ));
+        $numeroFactura = trim((string) (
+            data_get($response, 'factura.nroFactura')
+            ?: data_get($response, 'nroFactura')
+            ?: ($linkedVenta->numero_factura ?? '')
+            ?: ($detalleNotificacion['nroFactura'] ?? '')
+        ));
+        $pdfUrl = trim((string) (
+            data_get($response, 'factura.pdfUrl')
+            ?: data_get($response, 'pdfUrl')
+            ?: ($linkedVenta->url_pdf ?? '')
+            ?: ($detalleNotificacion['urlPdf'] ?? '')
+        ));
+        $xmlUrl = trim((string) (
+            data_get($response, 'factura.xmlUrl')
+            ?: data_get($response, 'xmlUrl')
+            ?: ($linkedVenta->url_xml ?? '')
+            ?: ($detalleNotificacion['urlXml'] ?? '')
+        ));
+
+        if ($cuf !== '') {
+            data_set($response, 'factura.cuf', $cuf);
+        }
+        if ($numeroFactura !== '') {
+            data_set($response, 'factura.nroFactura', $numeroFactura);
+        }
+        if ($pdfUrl !== '') {
+            data_set($response, 'factura.pdfUrl', $pdfUrl);
+        }
+        if ($xmlUrl !== '') {
+            data_set($response, 'factura.xmlUrl', $xmlUrl);
+        }
+
+        return $response;
+    }
+
+    private function syncLinkedVentaFiscalData(object $cart, array $response): void
+    {
+        $linkedVenta = Venta::query()
+            ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [$cart->id])
+            ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+            ->latest('id')
+            ->first();
+
+        if (!$linkedVenta) {
+            return;
+        }
+
+        $numeroFactura = trim((string) (
+            data_get($response, 'factura.nroFactura')
+            ?: data_get($response, 'nroFactura')
+            ?: ''
+        ));
+        $cuf = trim((string) (
+            data_get($response, 'factura.cuf')
+            ?: data_get($response, 'cuf')
+            ?: ''
+        ));
+        $pdfUrl = trim((string) (
+            data_get($response, 'factura.pdfUrl')
+            ?: data_get($response, 'pdfUrl')
+            ?: ''
+        ));
+        $xmlUrl = trim((string) (
+            data_get($response, 'factura.xmlUrl')
+            ?: data_get($response, 'xmlUrl')
+            ?: ''
+        ));
+        $codigoSeguimiento = trim((string) (
+            data_get($response, 'codigoSeguimiento')
+            ?: $cart->codigo_seguimiento_fiscal
+            ?: $cart->codigo_seguimiento
+            ?: ''
+        ));
+
+        $updates = [];
+
+        if ($numeroFactura !== '' && blank($linkedVenta->numero_factura)) {
+            $updates['numero_factura'] = $numeroFactura;
+        }
+        if ($cuf !== '' && blank($linkedVenta->cuf)) {
+            $updates['cuf'] = $cuf;
+        }
+        if ($pdfUrl !== '' && blank($linkedVenta->url_pdf)) {
+            $updates['url_pdf'] = $pdfUrl;
+        }
+        if ($xmlUrl !== '' && blank($linkedVenta->url_xml)) {
+            $updates['url_xml'] = $xmlUrl;
+        }
+        if ($codigoSeguimiento !== '' && blank($linkedVenta->codigoSeguimiento)) {
+            $updates['codigoSeguimiento'] = $codigoSeguimiento;
+        }
+
+        if ($updates === []) {
+            return;
+        }
+
+        $updates['updated_at'] = now();
+        DB::table('ventas')
+            ->where('id', $linkedVenta->id)
+            ->update($updates);
     }
 
     private function nullBlank(mixed $value): ?string
