@@ -1975,11 +1975,13 @@ class VentaController extends Controller
                     sum(case
                         when {$cartIsQrExpr}
                             and lower(coalesce(estado_pago, 'pendiente')) in ('cancelado', 'fallido')
+                            and incidencia_revisada_at is null
                         then 1 else 0
                     end) as qr_cancelado,
                     coalesce(sum(case
                         when {$cartIsQrExpr}
                             and lower(coalesce(estado_pago, 'pendiente')) in ('cancelado', 'fallido')
+                            and incidencia_revisada_at is null
                         then total else 0
                     end), 0) as total_qr_cancelado,
                     sum(case
