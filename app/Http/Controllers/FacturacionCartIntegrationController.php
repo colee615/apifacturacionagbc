@@ -749,12 +749,22 @@ class FacturacionCartIntegrationController extends Controller
             strtolower(trim((string) ($cart['canal_emision'] ?? ''))) === 'qr'
         );
         $shouldOpenQrViewer = $this->shouldShowQrSessionData($qrData);
+        if ($shouldOpenQrViewer && !is_array($qrData)) {
+            $qrData = [
+                'image_data' => '',
+                'payment_status' => (string) ($cart['estado_pago'] ?? 'pendiente'),
+                'transaction_id' => (string) ($cart['qr_transaction_id'] ?? ''),
+                'internal_code' => (string) ($cart['codigo_orden'] ?? ''),
+                'message' => (string) ($respuesta['mensaje'] ?? $respuesta['message'] ?? 'QR vigente.'),
+            ];
+        }
         $feedback = $this->buildQrViewerFeedback($respuesta, $shouldOpenQrViewer);
 
         return response()->json([
             'ok' => true,
             'feedback' => $feedback,
             'qr_data' => $qrData,
+            'force_open_qr' => $shouldOpenQrViewer,
             'cart' => $cart,
             'status_code' => (int) ($payload['status_code'] ?? $consultResponse->getStatusCode()),
         ]);

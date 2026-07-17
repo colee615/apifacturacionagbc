@@ -134,6 +134,45 @@ class QhantuyQrController extends Controller
             ->update($updates);
     }
 
+    private function cancelCartLocally(object $cart, string $message, ?object $row = null): array
+    {
+        $updates = [
+            'metodo_pago' => 'qr',
+            'estado' => 'pendiente_pago',
+            'estado_pago' => 'cancelado',
+            'estado_emision' => 'NO_APLICA',
+            'mensaje_emision' => trim($message) !== '' ? trim($message) : 'Venta QR invalidada localmente.',
+            'emitido_en' => null,
+            'cerrado_en' => null,
+            'updated_at' => now(),
+        ];
+
+        DB::table('facturacion_carts')
+            ->where('id', (int) $cart->id)
+            ->update($updates);
+
+        if ($row) {
+            DB::table('qhantuy_qr_payments')
+                ->where('id', (int) $row->id)
+                ->update([
+                    'payment_status' => 'cancelled',
+                    'last_message' => $updates['mensaje_emision'],
+                    'cancelled_at' => now(),
+                    'updated_at' => now(),
+                ]);
+        }
+
+        return [
+            'ok' => true,
+            'message' => $updates['mensaje_emision'],
+            'transaction_id' => null,
+            'payment_status' => 'cancelled',
+            'estado_pago' => 'cancelado',
+            'cart' => DB::table('facturacion_carts')->where('id', (int) $cart->id)->first(),
+            'local_only' => true,
+        ];
+    }
+
     private function normalizeQrInternalCode(string $internalCode): string
     {
         $internalCode = trim($internalCode);
@@ -824,6 +863,14 @@ class QhantuyQrController extends Controller
         $transactionId = $transactionId > 0 ? $transactionId : (int) ($row->transaction_id ?? 0);
         $internalCode = $internalCode !== '' ? $internalCode : trim((string) ($row->internal_code ?? ($cart->codigo_orden ?? '')));
         $normalizedInternalCode = $internalCode !== '' ? $this->normalizeQrInternalCode($internalCode) : '';
+
+        if ($transactionId <= 0 && $cart) {
+            $localMessage = $reason !== ''
+                ? 'Venta QR invalidada localmente. Motivo: ' . $reason
+                : 'Venta QR invalidada localmente porque no existe un QR generado para anular.';
+
+            return response()->json($this->cancelCartLocally($cart, $localMessage, $row));
+        }
 
         if ($transactionId <= 0 || $internalCode === '') {
             return response()->json([
