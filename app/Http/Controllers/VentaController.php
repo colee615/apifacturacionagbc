@@ -855,6 +855,16 @@ class VentaController extends Controller
         return $map;
     }
 
+    private function normalizeNotificationAssetUrl(?string $url): ?string
+    {
+        $url = trim((string) $url);
+        if ($url === '') {
+            return null;
+        }
+
+        return preg_replace('#(?<!:)//+#', '/', $url);
+    }
+
     private function bridgeCartMetaMapFromVentasRows($ventasRows): array
     {
         $cartIds = collect($ventasRows)
@@ -2535,6 +2545,11 @@ class VentaController extends Controller
             ->toArray();
     }
 
+    private function facturacionCartNotificationBackfillMap(array $seguimientos): array
+    {
+        return $this->latestNotificationsMapFromSeguimientos($seguimientos);
+    }
+
     private function facturacionCartStatusPayload(object $cart, ?object $linkedVenta = null): array
     {
         $canal = strtolower(trim((string) ($cart->canal_emision ?? '')));
@@ -2645,7 +2660,12 @@ class VentaController extends Controller
             ->toArray();
     }
 
-    private function mapFacturacionCartToVentaPayload(object $cart, array $preloadedItems = [], object|array|null $linkedVenta = null): array
+    private function mapFacturacionCartToVentaPayload(
+        object $cart,
+        array $preloadedItems = [],
+        object|array|null $linkedVenta = null,
+        ?Notificacione $notification = null
+    ): array
     {
         $respuestaEmision = json_decode((string) ($cart->respuesta_emision ?? ''), true);
         if (!is_array($respuestaEmision)) {
@@ -2654,12 +2674,17 @@ class VentaController extends Controller
         if (is_array($linkedVenta)) {
             $linkedVenta = (object) $linkedVenta;
         }
+        $detalleNotificacion = $notification ? json_decode((string) $notification->detalle, true) : [];
+        if (!is_array($detalleNotificacion)) {
+            $detalleNotificacion = [];
+        }
 
         $items = collect($preloadedItems);
 
         $status = $this->facturacionCartStatusPayload($cart, $linkedVenta);
         $fecha = $cart->emitido_en ?: $cart->created_at;
         $numeroFactura = $this->facturacionCartNumeroFactura((string) ($cart->respuesta_emision ?? ''))
+            ?: ($detalleNotificacion['nroFactura'] ?? null)
             ?: ($linkedVenta->numero_factura ?? null);
         $codigoSeguimiento = (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''));
         if ($codigoSeguimiento === '') {
@@ -2670,6 +2695,12 @@ class VentaController extends Controller
         }
         if (!data_get($respuestaEmision, 'factura.nroFactura') && !blank($linkedVenta->numero_factura ?? null)) {
             data_set($respuestaEmision, 'factura.nroFactura', $linkedVenta->numero_factura);
+        }
+        if (!data_get($respuestaEmision, 'factura.pdfUrl') && !empty($detalleNotificacion['urlPdf'])) {
+            data_set($respuestaEmision, 'factura.pdfUrl', $this->normalizeNotificationAssetUrl((string) $detalleNotificacion['urlPdf']));
+        }
+        if (!data_get($respuestaEmision, 'factura.xmlUrl') && !empty($detalleNotificacion['urlXml'])) {
+            data_set($respuestaEmision, 'factura.xmlUrl', $this->normalizeNotificationAssetUrl((string) $detalleNotificacion['urlXml']));
         }
 
         return [
@@ -2877,11 +2908,18 @@ class VentaController extends Controller
 
         $cartItemsMap = $this->facturacionCartItemsMapFromRows($cartRows);
         $cartFiscalBackfillMap = $this->facturacionCartFiscalBackfillMap($cartRows);
+        $cartNotificationBackfillMap = $this->facturacionCartNotificationBackfillMap(
+            $cartRows->map(fn ($cart) => (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')))
+                ->filter()
+                ->values()
+                ->all()
+        );
         $cartPayloads = $cartRows
             ->map(fn ($cart) => $this->mapFacturacionCartToVentaPayload(
                 $cart,
                 $cartItemsMap[(int) $cart->id] ?? [],
-                $cartFiscalBackfillMap[(int) $cart->id] ?? null
+                $cartFiscalBackfillMap[(int) $cart->id] ?? null,
+                $cartNotificationBackfillMap[(string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''))] ?? null
             ))
             ->values();
 
