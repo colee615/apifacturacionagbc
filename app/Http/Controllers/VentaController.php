@@ -2525,8 +2525,8 @@ class VentaController extends Controller
     {
         $cartIds = collect($cartRows)
             ->pluck('id')
-            ->map(fn ($value) => (int) $value)
-            ->filter(fn ($value) => $value > 0)
+            ->map(fn ($value) => trim((string) $value))
+            ->filter(fn ($value) => $value !== '')
             ->unique()
             ->values()
             ->all();
@@ -2536,11 +2536,11 @@ class VentaController extends Controller
         }
 
         return Venta::query()
-            ->whereIn('origen_venta_id', $cartIds)
+            ->whereIn(DB::raw('cast(origen_venta_id as varchar)'), $cartIds)
             ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
             ->orderByDesc('id')
-            ->get(['origen_venta_id', 'codigoSeguimiento', 'numero_factura', 'cuf'])
-            ->groupBy(fn ($venta) => (int) ($venta->origen_venta_id ?? 0))
+            ->get(['id', 'origen_venta_id', 'codigoSeguimiento', 'numero_factura', 'cuf', 'url_pdf', 'url_xml'])
+            ->groupBy(fn ($venta) => trim((string) ($venta->origen_venta_id ?? '')))
             ->map(fn ($rows) => $rows->first())
             ->toArray();
     }
@@ -2701,6 +2701,45 @@ class VentaController extends Controller
         }
         if (!data_get($respuestaEmision, 'factura.xmlUrl') && !empty($detalleNotificacion['urlXml'])) {
             data_set($respuestaEmision, 'factura.xmlUrl', $this->normalizeNotificationAssetUrl((string) $detalleNotificacion['urlXml']));
+        }
+
+        $linkedVentaId = (int) ($linkedVenta->id ?? 0);
+        if ($linkedVentaId > 0) {
+            $ventaUpdates = [];
+            $backfillNumeroFactura = trim((string) ($numeroFactura ?? ''));
+            $backfillCuf = trim((string) (
+                data_get($respuestaEmision, 'factura.cuf')
+                ?: data_get($respuestaEmision, 'cuf')
+                ?: ''
+            ));
+            $backfillPdfUrl = trim((string) (
+                data_get($respuestaEmision, 'factura.pdfUrl')
+                ?: data_get($respuestaEmision, 'pdfUrl')
+                ?: ''
+            ));
+            $backfillXmlUrl = trim((string) (
+                data_get($respuestaEmision, 'factura.xmlUrl')
+                ?: data_get($respuestaEmision, 'xmlUrl')
+                ?: ''
+            ));
+
+            if ($backfillNumeroFactura !== '' && blank($linkedVenta->numero_factura ?? null)) {
+                $ventaUpdates['numero_factura'] = $backfillNumeroFactura;
+            }
+            if ($backfillCuf !== '' && blank($linkedVenta->cuf ?? null)) {
+                $ventaUpdates['cuf'] = $backfillCuf;
+            }
+            if ($backfillPdfUrl !== '' && blank($linkedVenta->url_pdf ?? null)) {
+                $ventaUpdates['url_pdf'] = $backfillPdfUrl;
+            }
+            if ($backfillXmlUrl !== '' && blank($linkedVenta->url_xml ?? null)) {
+                $ventaUpdates['url_xml'] = $backfillXmlUrl;
+            }
+
+            if ($ventaUpdates !== []) {
+                $ventaUpdates['updated_at'] = now();
+                DB::table('ventas')->where('id', $linkedVentaId)->update($ventaUpdates);
+            }
         }
 
         return [
