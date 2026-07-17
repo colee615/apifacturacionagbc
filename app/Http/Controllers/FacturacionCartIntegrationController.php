@@ -509,6 +509,18 @@ class FacturacionCartIntegrationController extends Controller
             ? ($cart->qr_transaction_id ?? null)
             : ($overrideCanal === 'qr' ? ($cart->qr_transaction_id ?? null) : null);
         $isPaidQrInvoiceConversion = $preservePaidQrPayment && $overrideCanal === 'factura_electronica';
+        Log::info('FacturacionCartIntegrationController emitir: configuracion de reintento.', [
+            'user_id' => $userId,
+            'cart_id' => $cart->id ?? null,
+            'codigo_orden_actual' => $cart->codigo_orden ?? null,
+            'codigo_orden_mode' => $codigoOrdenMode,
+            'override_canal' => $overrideCanal,
+            'preserve_paid_qr_payment' => $preservePaidQrPayment,
+            'is_paid_qr_invoice_conversion' => $isPaidQrInvoiceConversion,
+            'estado_pago' => $cart->estado_pago ?? null,
+            'estado_emision' => $cart->estado_emision ?? null,
+            'qr_transaction_id' => $cart->qr_transaction_id ?? null,
+        ]);
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'modalidad_facturacion' => $overrideMode,
@@ -564,6 +576,14 @@ class FacturacionCartIntegrationController extends Controller
                 ? $this->nextBridgeCodigoOrden($canalEmision)
                 : $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
         }
+        Log::info('FacturacionCartIntegrationController emitir: codigo orden resuelto.', [
+            'user_id' => $userId,
+            'cart_id' => $cart->id ?? null,
+            'codigo_orden_mode' => $codigoOrdenMode,
+            'reuse_paid_qr_invoice_code' => $reusePaidQrInvoiceCode,
+            'codigo_orden_anterior' => $cart->codigo_orden ?? null,
+            'codigo_orden_intento' => $codigoOrdenIntento,
+        ]);
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
             'qr_transaction_id' => $preservePaidQrPayment ? ($cart->qr_transaction_id ?? null) : null,

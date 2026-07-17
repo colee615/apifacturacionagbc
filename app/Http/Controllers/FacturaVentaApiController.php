@@ -437,10 +437,25 @@ class FacturaVentaApiController extends Controller
         }
 
         if ($ventaId) {
+            Log::info('FacturaVentaApiController createVenta: actualizando venta existente.', [
+                'venta_id' => $ventaId,
+                'origen_venta_id' => $origenVentaId,
+                'origen_venta_tipo' => $origenVentaTipo,
+                'codigo_orden' => $codigoOrden,
+                'codigo_seguimiento' => $codigoSeguimiento,
+                'estado_sufe' => $estadoSufe,
+            ]);
             DB::table('ventas')
                 ->where('id', $ventaId)
                 ->update($baseData);
         } else {
+            Log::info('FacturaVentaApiController createVenta: creando nueva venta.', [
+                'origen_venta_id' => $origenVentaId,
+                'origen_venta_tipo' => $origenVentaTipo,
+                'codigo_orden' => $codigoOrden,
+                'codigo_seguimiento' => $codigoSeguimiento,
+                'estado_sufe' => $estadoSufe,
+            ]);
             $ventaId = DB::table('ventas')->insertGetId(array_merge($baseData, [
                 'created_at' => $now,
             ]));
@@ -464,6 +479,11 @@ class FacturaVentaApiController extends Controller
     private function createDetalleVentas(array $venta, array $payload): void
     {
         $now = Date::now();
+        Log::info('FacturaVentaApiController createDetalleVentas: reemplazando detalle.', [
+            'venta_id' => $venta['id'],
+            'codigo_orden' => $venta['codigoOrden'] ?? null,
+            'items_count' => count($payload['detalle'] ?? []),
+        ]);
         DB::table('detalle_ventas')->where('venta_id', $venta['id'])->delete();
 
         foreach ($payload['detalle'] as $detalle) {
