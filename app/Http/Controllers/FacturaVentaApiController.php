@@ -853,6 +853,22 @@ class FacturaVentaApiController extends Controller
             ->first();
     }
 
+    private function ventaByConsultaIdentifier(string $identifier, ?string $tipo = null): ?\stdClass
+    {
+        $identifier = trim($identifier);
+        $tipo = strtoupper(trim((string) $tipo));
+
+        if ($identifier === '') {
+            return null;
+        }
+
+        return match ($tipo) {
+            'CO' => DB::table('ventas')->where('codigoOrden', $identifier)->first(),
+            'CUF' => DB::table('ventas')->where('cuf', $identifier)->first(),
+            default => $this->ventaByCodigoSeguimiento($identifier),
+        };
+    }
+
     private function ventaByCuf(string $cuf): ?\stdClass
     {
         return DB::table('ventas')
@@ -1676,7 +1692,7 @@ class FacturaVentaApiController extends Controller
             $payload = $response->json();
 
             if ($response->successful()) {
-                $venta = $this->ventaByCodigoSeguimiento($codigoSeguimiento);
+                $venta = $this->ventaByConsultaIdentifier($codigoSeguimiento, $tipo);
 
                 $validatedConsulta = null;
 
@@ -1694,7 +1710,13 @@ class FacturaVentaApiController extends Controller
 
                 if ($venta) {
                     if (is_array($validatedConsulta)) {
-                        $notificacion = $this->latestNotificationByCodigoSeguimiento($codigoSeguimiento);
+                        $resolvedCodigoSeguimiento = trim((string) (
+                            data_get($validatedConsulta, 'codigoSeguimiento')
+                            ?? data_get($payload, 'codigoSeguimiento')
+                            ?? $venta->codigoSeguimiento
+                            ?? $codigoSeguimiento
+                        ));
+                        $notificacion = $this->latestNotificationByCodigoSeguimiento($resolvedCodigoSeguimiento);
                         $resolvedStatus = $this->resolveBridgeStatus(
                             (string) ($venta->estado_sufe ?? 'RECEPCIONADA'),
                             $notificacion,
@@ -1711,11 +1733,15 @@ class FacturaVentaApiController extends Controller
                                 'updated_at' => now(),
                             ]);
 
-                        $venta = $this->ventaByCodigoSeguimiento($codigoSeguimiento) ?: $venta;
+                        $venta = $this->ventaByCodigoSeguimiento($resolvedCodigoSeguimiento)
+                            ?: $this->ventaByConsultaIdentifier($codigoSeguimiento, $tipo)
+                            ?: $venta;
                         $this->syncFacturacionCartFromVenta($venta, $resolvedStatus);
                     }
 
-                    $notificacion = $this->latestNotificationByCodigoSeguimiento($codigoSeguimiento);
+                    $notificacion = $this->latestNotificationByCodigoSeguimiento(
+                        trim((string) ($venta->codigoSeguimiento ?? $codigoSeguimiento))
+                    );
                     $bridgePayload = $this->bridgeConsultPayloadFromVenta(
                         $venta,
                         $notificacion,

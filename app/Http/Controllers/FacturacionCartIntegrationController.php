@@ -699,12 +699,63 @@ class FacturacionCartIntegrationController extends Controller
             $cReq->headers->set('Accept', 'application/json');
             $cRes = app(QhantuyQrController::class)->checkPayments($cReq);
         } else {
-            if ($codigoSeguimientoFiscal === '') {
-                return response()->json(['ok' => false, 'message' => 'No existe codigo de seguimiento fiscal para consultar.'], 422);
+            $consultaCandidates = [];
+            if ($codigoSeguimientoFiscal !== '') {
+                $consultaCandidates[] = ['identifier' => $codigoSeguimientoFiscal, 'tipo' => null];
             }
-            $cReq = Request::create('/api/factura-venta/consultar/' . urlencode($codigoSeguimientoFiscal), 'GET');
-            $cReq->headers->set('Accept', 'application/json');
-            $cRes = app(FacturaVentaApiController::class)->consultar($cReq, $codigoSeguimientoFiscal);
+            $codigoOrden = trim((string) ($cart->codigo_orden ?? ''));
+            if ($codigoOrden !== '') {
+                $consultaCandidates[] = ['identifier' => $codigoOrden, 'tipo' => 'CO'];
+            }
+
+            $cartRespuesta = json_decode((string) ($cart->respuesta_emision ?? '{}'), true);
+            $cuf = trim((string) (
+                $cart->cuf
+                ?? data_get($cartRespuesta, 'factura.cuf')
+                ?? data_get($cartRespuesta, 'respuesta.factura.cuf')
+                ?? data_get($cartRespuesta, 'cuf')
+                ?? ''
+            ));
+            if ($cuf === '') {
+                $ventaLink = DB::table('ventas')
+                    ->whereRaw("cast(origen_venta_id as varchar) = cast(? as varchar)", [$cart->id])
+                    ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                    ->orderByDesc('id')
+                    ->first(['cuf']);
+                $cuf = trim((string) ($ventaLink->cuf ?? ''));
+            }
+            if ($cuf !== '') {
+                $consultaCandidates[] = ['identifier' => $cuf, 'tipo' => 'CUF'];
+            }
+
+            $cRes = null;
+            $lastFailedResponse = null;
+            foreach (collect($consultaCandidates)->unique(fn ($item) => ($item['tipo'] ?? 'TRACKING') . '|' . ($item['identifier'] ?? '')) as $candidate) {
+                $identifier = trim((string) ($candidate['identifier'] ?? ''));
+                if ($identifier === '') {
+                    continue;
+                }
+                $query = [];
+                if (!empty($candidate['tipo'])) {
+                    $query['tipo'] = $candidate['tipo'];
+                }
+                $cReq = Request::create('/api/factura-venta/consultar/' . urlencode($identifier), 'GET', $query);
+                $cReq->headers->set('Accept', 'application/json');
+                $attemptResponse = app(FacturaVentaApiController::class)->consultar($cReq, $identifier);
+                if ($attemptResponse->getStatusCode() < 400) {
+                    $cRes = $attemptResponse;
+                    break;
+                }
+                $lastFailedResponse = $attemptResponse;
+            }
+
+            if (!$cRes) {
+                if ($lastFailedResponse) {
+                    $cRes = $lastFailedResponse;
+                } else {
+                    return response()->json(['ok' => false, 'message' => 'No existe identificador fiscal valido para consultar.'], 422);
+                }
+            }
         }
         $body = json_decode($cRes->getContent(), true);
         if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
