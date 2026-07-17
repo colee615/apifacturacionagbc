@@ -45,6 +45,9 @@ class CajaDiariaController extends Controller
         }
 
         $caja = $cajaQuery->first();
+        if ($caja) {
+            $caja = $this->syncCajaTotals($caja);
+        }
 
         $stock = $this->fichaPostalStockService->snapshot([
             'usuario_id' => $usuarioId,
@@ -865,7 +868,13 @@ class CajaDiariaController extends Controller
                     ->orWhereRaw('cast(origen_usuario_id as text) = ?', [$usuarioId]);
             })
             ->where('codigoSucursal', $codigoSucursal)
-            ->where('puntoVenta', $puntoVenta);
+            ->where('puntoVenta', $puntoVenta)
+            ->whereRaw("upper(coalesce(estado_sufe, '')) <> 'ANULADA'")
+            ->whereRaw("upper(coalesce(estado_sufe, '')) <> 'REGISTRADA_OFICIAL'")
+            ->where(function ($sub) {
+                $sub->whereNull('metodoPago')
+                    ->orWhere('metodoPago', '<>', 5);
+            });
 
         $row = $query
             ->selectRaw('count(*) as cantidad, coalesce(sum(total), 0) as total')
@@ -888,8 +897,44 @@ class CajaDiariaController extends Controller
             })
             ->where('codigoSucursal', $codigoSucursal)
             ->where('puntoVenta', $puntoVenta)
+            ->whereRaw("upper(coalesce(estado_sufe, '')) <> 'ANULADA'")
+            ->whereRaw("upper(coalesce(estado_sufe, '')) <> 'REGISTRADA_OFICIAL'")
+            ->where(function ($sub) {
+                $sub->whereNull('metodoPago')
+                    ->orWhere('metodoPago', '<>', 5);
+            })
             ->orderBy('id')
             ->get();
+    }
+
+    private function syncCajaTotals(CajaDiaria $caja): CajaDiaria
+    {
+        [$totalVentas, $cantidadVentas] = $this->ventasDelDia(
+            (string) $caja->usuario_id,
+            (string) $caja->fecha_operacion,
+            (int) $caja->codigo_sucursal,
+            (int) $caja->punto_venta
+        );
+
+        $montoVentas = round((float) $totalVentas, 2);
+        $cantidad = (int) $cantidadVentas;
+        $montoCierreEsperado = round((float) ($caja->monto_apertura ?? 0) + $montoVentas, 2);
+
+        $needsUpdate = round((float) ($caja->monto_ventas ?? 0), 2) !== $montoVentas
+            || (int) ($caja->cantidad_ventas ?? 0) !== $cantidad
+            || round((float) ($caja->monto_cierre_esperado ?? 0), 2) !== $montoCierreEsperado;
+
+        if (!$needsUpdate) {
+            return $caja;
+        }
+
+        $caja->update([
+            'monto_ventas' => $montoVentas,
+            'cantidad_ventas' => $cantidad,
+            'monto_cierre_esperado' => $montoCierreEsperado,
+        ]);
+
+        return $caja->fresh();
     }
 
     private function registrarArqueo(CajaDiaria $caja, $ventas): void

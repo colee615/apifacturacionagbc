@@ -137,6 +137,59 @@ class FacturaVentaApiController extends Controller
             ->update($updates);
     }
 
+    private function reverseVentaFromCajaIfNeeded(object $venta, ?string $resolvedStatus = null): void
+    {
+        $status = strtoupper(trim((string) ($resolvedStatus ?? $venta->estado_sufe ?? '')));
+        if ($status !== 'ANULADA' || !DB::getSchemaBuilder()->hasTable('cajas_diarias')) {
+            return;
+        }
+
+        if (Schema::hasColumn('ventas', 'estado_caja') && strtoupper(trim((string) ($venta->estado_caja ?? ''))) === 'ANULADA_DESCONTADA') {
+            return;
+        }
+
+        $usuarioId = trim((string) ($venta->origen_usuario_id ?? ''));
+        $metodoPago = (int) ($venta->metodoPago ?? 1);
+        $origenVentaTipo = strtoupper(trim((string) ($venta->origen_venta_tipo ?? '')));
+        $isOfficial = $origenVentaTipo === 'OFICIAL' || strtoupper(trim((string) ($venta->estado_sufe ?? ''))) === 'REGISTRADA_OFICIAL';
+        $isQr = $metodoPago === 5;
+        if ($usuarioId === '' || $isOfficial || $isQr) {
+            return;
+        }
+
+        $fecha = $venta->created_at ? date('Y-m-d', strtotime((string) $venta->created_at)) : now()->toDateString();
+        $codigoSucursal = (int) ($venta->codigoSucursal ?? 0);
+        $puntoVenta = (int) ($venta->puntoVenta ?? 0);
+        $montoTotal = round((float) ($venta->total ?? 0), 2);
+
+        $updates = ['updated_at' => now()];
+        if (Schema::hasColumn('cajas_diarias', 'monto_ventas')) {
+            $updates['monto_ventas'] = DB::raw('greatest(coalesce(monto_ventas, 0) - ' . $montoTotal . ', 0)');
+        }
+        if (Schema::hasColumn('cajas_diarias', 'monto_cierre_esperado')) {
+            $updates['monto_cierre_esperado'] = DB::raw('greatest(coalesce(monto_cierre_esperado, 0) - ' . $montoTotal . ', 0)');
+        }
+        if (Schema::hasColumn('cajas_diarias', 'cantidad_ventas')) {
+            $updates['cantidad_ventas'] = DB::raw('greatest(coalesce(cantidad_ventas, 0) - 1, 0)');
+        }
+
+        DB::table('cajas_diarias')
+            ->where('usuario_id', $usuarioId)
+            ->whereDate('fecha_operacion', $fecha)
+            ->where('codigo_sucursal', $codigoSucursal)
+            ->where('punto_venta', $puntoVenta)
+            ->update($updates);
+
+        if (Schema::hasColumn('ventas', 'estado_caja')) {
+            DB::table('ventas')
+                ->where('id', $venta->id)
+                ->update([
+                    'estado_caja' => 'ANULADA_DESCONTADA',
+                    'updated_at' => now(),
+                ]);
+        }
+    }
+
     private function resolveCodigoOrden(array $payload): string
     {
         $codigoOrdenRecibido = trim((string) ($payload['codigoOrden'] ?? ''));
@@ -833,6 +886,9 @@ class FacturaVentaApiController extends Controller
             }
 
             if (in_array($resolvedStatus, ['ANULADA', 'ANULACION_OBSERVADA'], true)) {
+                if ($resolvedStatus === 'ANULADA' && $lastVenta) {
+                    $this->reverseVentaFromCajaIfNeeded($lastVenta, $resolvedStatus);
+                }
                 break;
             }
 
@@ -894,6 +950,8 @@ class FacturaVentaApiController extends Controller
                 'mensaje_emision' => $this->cashierMessageFromBridgeStatus($bridgeStatus),
                 'updated_at' => now(),
             ]);
+
+        $this->reverseVentaFromCajaIfNeeded($venta, $bridgeStatus);
     }
 
     private function latestNotificationByCodigoSeguimiento(string $codigoSeguimiento): ?Notificacione
