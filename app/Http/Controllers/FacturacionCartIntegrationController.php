@@ -930,10 +930,12 @@ class FacturacionCartIntegrationController extends Controller
                 ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                 ->where('estado', 'emitido')
                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
+                ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) <> 'ANULADA'")
                 ->sum('total')),
             'montoTotal' => (float) ((clone $sum)
                 ->where('estado', 'emitido')
                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
+                ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) <> 'ANULADA'")
                 ->sum('total')),
         ];
 
@@ -1828,7 +1830,8 @@ class FacturacionCartIntegrationController extends Controller
                 if (!in_array($canalEmision, ['factura_electronica', 'qr', 'oficial'], true)) {
                     $canalEmision = 'factura_electronica';
                 }
-                $contabilizaEnCaja = $canalEmision !== 'qr';
+                $estadoEmision = strtoupper(trim((string) data_get($cart, 'estado_emision', 'NO_APLICA')));
+                $contabilizaEnCaja = $canalEmision !== 'qr' && $estadoEmision !== 'ANULADA';
 
                 return [
                     'fecha' => $fecha ? date('d/m/Y', strtotime((string) $fecha)) : '-',

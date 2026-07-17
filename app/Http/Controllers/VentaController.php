@@ -1434,7 +1434,8 @@ class VentaController extends Controller
                     'qr_pendiente' => 'Pendiente de pago QR.',
                     default => 'Cobro registrado en caja.',
                 },
-                'contabiliza_en_caja' => !in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true),
+                'contabiliza_en_caja' => !in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true)
+                    && $estadoEmision !== 'ANULADA',
                 'cobrada' => true,
                 'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
                 'importe_parcial' => round((float) ($venta->total ?? 0), 2),
@@ -1501,7 +1502,8 @@ class VentaController extends Controller
                 'estado_emision' => $cart->estado_emision,
                 'qr_transaction_id' => $cart->qr_transaction_id,
             ]);
-            $contabilizaEnCaja = !in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true);
+            $contabilizaEnCaja = !in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true)
+                && strtoupper(trim((string) ($cart->estado_emision ?? 'NO_APLICA'))) !== 'ANULADA';
             $emisionLabel = match ($sectionKey) {
                 'qr_facturado' => 'QR pagado + facturado',
                 'qr_pagado_pendiente_factura' => 'QR pagado',
