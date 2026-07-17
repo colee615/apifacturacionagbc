@@ -586,7 +586,7 @@ class VentaController extends Controller
                         $draftCart->select(DB::raw('1'))
                             ->from('facturacion_carts as fc')
                             ->whereRaw("cast(fc.id as varchar) = cast(ventas.origen_venta_id as varchar)")
-                            ->whereRaw("lower(coalesce(fc.estado, '')) = 'borrador'");
+                            ->whereRaw("lower(coalesce(fc.estado, '')) in ('borrador', 'descartado')");
                     });
             });
         }
@@ -2362,7 +2362,7 @@ class VentaController extends Controller
     private function buildFacturacionCartReportQuery(array $filters)
     {
         $query = DB::table('facturacion_carts')
-            ->whereRaw("lower(coalesce(estado, '')) <> 'borrador'");
+            ->whereRaw("lower(coalesce(estado, '')) not in ('borrador', 'descartado')");
 
         if (!empty($filters['fechaInicio'])) {
             $query->whereDate('created_at', '>=', $filters['fechaInicio']);

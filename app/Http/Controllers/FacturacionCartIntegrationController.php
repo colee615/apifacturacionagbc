@@ -346,6 +346,47 @@ class FacturacionCartIntegrationController extends Controller
         ]);
     }
 
+    public function discardRejected(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'cart_id' => 'required|integer|min:1',
+            'note' => 'nullable|string|max:500',
+        ]);
+
+        $cart = DB::table('facturacion_carts')->where('id', (int) $validated['cart_id'])->first();
+        if (!$cart) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'No se encontro la venta rechazada indicada.',
+            ], 404);
+        }
+
+        $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+        if ($estadoEmision !== 'RECHAZADA') {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Solo se puede descartar localmente una venta rechazada.',
+            ], 422);
+        }
+
+        $note = trim((string) ($validated['note'] ?? '')) ?: 'Venta rechazada descartada localmente.';
+
+        DB::table('facturacion_carts')
+            ->where('id', (int) $cart->id)
+            ->update([
+                'estado' => 'descartado',
+                'mensaje_emision' => $note,
+                'updated_at' => now(),
+            ]);
+
+        return response()->json([
+            'ok' => true,
+            'message' => $note,
+            'cart' => $this->cartById((int) $cart->id),
+            'local_only' => true,
+        ]);
+    }
+
     public function payment(Request $request): JsonResponse
     {
         $v = $request->validate([

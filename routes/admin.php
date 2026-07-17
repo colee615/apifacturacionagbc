@@ -35,6 +35,7 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::delete('/ventas/anulacion/autorizar', 'VentaController@revocarAutorizacionAnulacion')->middleware('permission:ventas.write');
    Route::post('/ventas/anulacion/guard/toggle', 'VentaController@toggleAnulacionGuard')->middleware('permission:rbac.manage');
    Route::patch('/ventas/anular/{cuf}', 'VentaController@anularFactura')->middleware('permission:ventas.write');
+   Route::post('/ventas/rechazadas/descartar', [FacturacionCartIntegrationController::class, 'discardRejected'])->middleware('permission:ventas.write');
    Route::get('/ventas/{venta}', 'VentaController@show')->middleware('permission:ventas.read');
 
    Route::get('/caja/estado', [CajaDiariaController::class, 'estado'])->middleware('permission:ventas.read');
