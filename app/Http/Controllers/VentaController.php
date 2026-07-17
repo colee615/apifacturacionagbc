@@ -1156,7 +1156,9 @@ class VentaController extends Controller
                         'estadoSufe' => $venta->estado_sufe,
                         'cuf' => $venta->cuf,
                     ];
-                });
+                })
+                ->reject(fn ($item) => ($item['type'] ?? '') === 'qr_anulado' && !empty($item['reviewedAt']))
+                ->values();
         }
 
         return response()->json([
@@ -2288,6 +2290,9 @@ class VentaController extends Controller
                     'created_at',
                     'estado_pago',
                     'estado_emision',
+                    'incidencia_revisada_at',
+                    'incidencia_revisada_por',
+                    'incidencia_revision_nota',
                     'origen_usuario_nombre',
                     'origen_usuario_alias',
                     'origen_usuario_email',
@@ -2318,6 +2323,9 @@ class VentaController extends Controller
                         'amount' => (float) ($cart->total ?? 0),
                         'createdAt' => $cart->created_at,
                         'user' => trim((string) ($cart->origen_usuario_nombre ?? $cart->origen_usuario_alias ?? $cart->origen_usuario_email ?? '')) ?: 'Sin usuario',
+                        'reviewedAt' => $cart->incidencia_revisada_at,
+                        'reviewedBy' => $cart->incidencia_revisada_por,
+                        'reviewNote' => $cart->incidencia_revision_nota,
                         'message' => match ($type) {
                             'qr_pagado_sin_factura' => 'El cobro QR fue confirmado, pero la factura aÃºn no fue emitida.',
                             'qr_anulado' => 'El intento de cobro QR fue cancelado o fallÃ³.',
@@ -2553,6 +2561,9 @@ class VentaController extends Controller
             'estado_pago' => (string) ($cart->estado_pago ?? ''),
             'estado_emision' => (string) ($cart->estado_emision ?? ''),
             'mensaje_emision' => (string) ($cart->mensaje_emision ?? ''),
+            'incidencia_revisada_at' => $cart->incidencia_revisada_at,
+            'incidencia_revisada_por' => $cart->incidencia_revisada_por,
+            'incidencia_revision_nota' => $cart->incidencia_revision_nota,
             'modalidad_facturacion' => (string) ($cart->modalidad_facturacion ?? ''),
             'qr_transaction_id' => $cart->qr_transaction_id,
             'respuesta_emision' => $respuestaEmision,

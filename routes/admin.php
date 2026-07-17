@@ -48,6 +48,7 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::get('/caja/arqueos', [CajaDiariaController::class, 'arqueos'])->middleware('permission:ventas.read');
    Route::get('/caja/reporte-diario', [CajaDiariaController::class, 'reporteDiario'])->middleware('permission:ventas.read');
    Route::post('/qr/cancel-payment', [QhantuyQrController::class, 'cancelPayment'])->middleware('permission:ventas.write');
+   Route::post('/qr/incidencia/revisar', [QhantuyQrController::class, 'markIncidentReviewed'])->middleware('permission:ventas.write');
 });
 
 Route::middleware(['jwt.auth'])->group(function () {

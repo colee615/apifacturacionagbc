@@ -1027,6 +1027,59 @@ class QhantuyQrController extends Controller
         }
     }
 
+    public function markIncidentReviewed(Request $request)
+    {
+        $validated = $request->validate([
+            'cart_id' => ['required', 'integer', 'min:1'],
+            'note' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        $cart = DB::table('facturacion_carts')->where('id', (int) $validated['cart_id'])->first();
+        if (!$cart) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'No se encontro la venta QR indicada.',
+            ], 404);
+        }
+
+        $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
+        $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? '')));
+        $metodoPago = strtolower(trim((string) ($cart->metodo_pago ?? '')));
+        $isQr = $canalEmision === 'qr' || $metodoPago === 'qr' || trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+
+        if (!$isQr || !in_array($estadoPago, ['cancelado', 'fallido'], true)) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Solo se puede marcar como revisada una incidencia QR cancelada o fallida.',
+            ], 422);
+        }
+
+        $reviewer = auth()->user();
+        $reviewedBy = trim((string) (
+            $reviewer->email
+            ?? $reviewer->name
+            ?? $reviewer->nombre
+            ?? $reviewer->id
+            ?? 'sistema'
+        ));
+        $note = trim((string) ($validated['note'] ?? '')) ?: 'Incidencia QR revisada manualmente.';
+
+        DB::table('facturacion_carts')
+            ->where('id', (int) $cart->id)
+            ->update([
+                'incidencia_revisada_at' => now(),
+                'incidencia_revisada_por' => $reviewedBy,
+                'incidencia_revision_nota' => $note,
+                'updated_at' => now(),
+            ]);
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'La incidencia QR fue marcada como revisada.',
+            'cart' => DB::table('facturacion_carts')->where('id', (int) $cart->id)->first(),
+        ]);
+    }
+
     private function shouldUseCachedCheckResponse(object $row): bool
     {
         if (empty($row->updated_at)) {
