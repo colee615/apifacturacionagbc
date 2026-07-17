@@ -717,6 +717,49 @@ class FacturacionCartIntegrationController extends Controller
         return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $statusCode]);
     }
 
+    public function verQr(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'origen_usuario_id' => 'required|string|max:60',
+            'cart_id' => 'required|integer|min:1',
+        ]);
+
+        $consultRequest = Request::create('/api/factura-venta/cart/consultar', 'POST', [
+            'origen_usuario_id' => (string) $v['origen_usuario_id'],
+            'cart_id' => (int) $v['cart_id'],
+            'auto_emit_invoice' => 0,
+        ]);
+        $consultRequest->headers->set('Accept', 'application/json');
+
+        $consultResponse = $this->consultar($consultRequest);
+        $payload = json_decode($consultResponse->getContent(), true);
+        if (!is_array($payload)) {
+            $payload = ['ok' => false, 'message' => 'Respuesta no valida al consultar QR.'];
+        }
+
+        if (($consultResponse->getStatusCode() >= 400) || empty($payload['ok'])) {
+            return response()->json($payload, $consultResponse->getStatusCode());
+        }
+
+        $cart = (array) ($payload['cart'] ?? []);
+        $respuesta = (array) ($payload['respuesta'] ?? []);
+        $qrData = $this->extractQrSessionData(
+            $respuesta,
+            (string) ($cart['codigo_orden'] ?? ''),
+            strtolower(trim((string) ($cart['canal_emision'] ?? ''))) === 'qr'
+        );
+        $shouldOpenQrViewer = $this->shouldShowQrSessionData($qrData);
+        $feedback = $this->buildQrViewerFeedback($respuesta, $shouldOpenQrViewer);
+
+        return response()->json([
+            'ok' => true,
+            'feedback' => $feedback,
+            'qr_data' => $qrData,
+            'cart' => $cart,
+            'status_code' => (int) ($payload['status_code'] ?? $consultResponse->getStatusCode()),
+        ]);
+    }
+
     public function ventas(Request $request): JsonResponse
     {
         $v = $request->validate([
@@ -1149,6 +1192,160 @@ class FacturacionCartIntegrationController extends Controller
             'cancelled', 'canceled', 'rejected', 'failed', 'failure', 'expired', 'error' => 'cancelado',
             default => 'pendiente',
         };
+    }
+
+    private function extractQrSessionData(array $respuesta, string $defaultInternalCode = '', bool $forceQr = false): ?array
+    {
+        $imageData = $this->extractFirstPayloadValue($respuesta, [
+            'image_data',
+            'qr_data.image_data',
+            'qr_url',
+            'qr_data.qr_url',
+            'qrUrl',
+            'image_url',
+            'imageUrl',
+            'qhantuy.qr_url',
+            'items.0.qr_url',
+        ]);
+        $transactionId = $this->extractFirstPayloadValue($respuesta, [
+            'transaction_id',
+            'qr_data.transaction_id',
+            'transactionId',
+            'payment_id',
+            'paymentId',
+            'items.0.id',
+        ]);
+        $paymentStatus = strtoupper(trim($this->extractFirstPayloadValue($respuesta, [
+            'payment_status',
+            'qr_data.payment_status',
+            'paymentStatus',
+            'payment_state',
+            'paymentState',
+            'estado_pago',
+            'estadoPago',
+            'items.0.payment_status',
+            'items.0.payment_status ',
+        ])));
+        $internalCode = trim($this->extractFirstPayloadValue($respuesta, [
+            'internal_code',
+            'internalCode',
+            'codigoOrden',
+            'codigo_orden',
+        ]));
+        $message = trim($this->extractFirstPayloadValue($respuesta, [
+            'message',
+            'mensaje',
+            'detail',
+            'descripcion',
+        ]));
+
+        $hasQrMarkers = $forceQr
+            || $imageData !== ''
+            || $transactionId !== ''
+            || $paymentStatus !== '';
+
+        if (!$hasQrMarkers) {
+            return null;
+        }
+
+        if ($imageData === '' && $transactionId === '') {
+            return null;
+        }
+
+        return [
+            'image_data' => $imageData,
+            'payment_status' => $paymentStatus !== '' ? $paymentStatus : 'HOLDING',
+            'transaction_id' => $transactionId,
+            'internal_code' => $internalCode !== '' ? $internalCode : $defaultInternalCode,
+            'message' => $message !== '' ? $message : 'QR generado.',
+        ];
+    }
+
+    private function shouldShowQrSessionData(?array $qrPayload): bool
+    {
+        if (!is_array($qrPayload) || $qrPayload === []) {
+            return false;
+        }
+
+        $status = strtolower(trim((string) ($qrPayload['payment_status'] ?? 'holding')));
+
+        return !in_array($status, [
+            'pagado',
+            'success',
+            'paid',
+            'completed',
+            'approved',
+            'confirmed',
+            'cancelado',
+            'cancelled',
+            'rejected',
+            'failed',
+            'expired',
+        ], true);
+    }
+
+    private function extractFirstPayloadValue(array $payload, array $keys): string
+    {
+        foreach ($keys as $key) {
+            $value = trim((string) data_get($payload, $key, ''));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    private function buildQrViewerFeedback(array $respuesta, bool $shouldOpenQrViewer): array
+    {
+        if ($shouldOpenQrViewer) {
+            return [
+                'type' => 'info',
+                'title' => 'QR actualizado',
+                'message' => 'Se consulto el estado actual del QR y sigue disponible para continuar con el cobro.',
+                'detail' => 'Si el cliente aun no pago, puedes volver a mostrar este mismo QR.',
+                'action' => 'ver_qr',
+            ];
+        }
+
+        $estadoPago = strtolower(trim((string) (
+            data_get($respuesta, 'estado_pago')
+            ?? data_get($respuesta, 'payment_status')
+            ?? ''
+        )));
+        $mensaje = trim((string) (
+            data_get($respuesta, 'mensaje')
+            ?? data_get($respuesta, 'message')
+            ?? ''
+        ));
+
+        if (in_array($estadoPago, ['pagado', 'success', 'paid', 'completed', 'approved', 'confirmed'], true)) {
+            return [
+                'type' => 'success',
+                'title' => 'Pago QR confirmado',
+                'message' => $mensaje !== '' ? $mensaje : 'El cobro QR ya fue confirmado.',
+                'detail' => 'La venta ya no requiere volver a mostrar el QR.',
+                'action' => 'ver_qr',
+            ];
+        }
+
+        if (in_array($estadoPago, ['cancelado', 'cancelled', 'rejected', 'failed', 'expired'], true)) {
+            return [
+                'type' => 'warning',
+                'title' => 'Pago QR no concretado',
+                'message' => $mensaje !== '' ? $mensaje : 'El QR fue cancelado o ya no esta vigente.',
+                'detail' => 'Si el cliente desea reintentar, sera necesario generar un nuevo cobro.',
+                'action' => 'ver_qr',
+            ];
+        }
+
+        return [
+            'type' => 'info',
+            'title' => 'Estado QR actualizado',
+            'message' => $mensaje !== '' ? $mensaje : 'Se actualizo el estado del QR.',
+            'detail' => '',
+            'action' => 'ver_qr',
+        ];
     }
 
 

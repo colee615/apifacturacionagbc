@@ -38,6 +38,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/cart/payment', [FacturacionCartIntegrationController::class, 'payment']);
     Route::post('/cart/emitir', [FacturacionCartIntegrationController::class, 'emitir']);
     Route::post('/cart/consultar', [FacturacionCartIntegrationController::class, 'consultar']);
+    Route::post('/cart/ver-qr', [FacturacionCartIntegrationController::class, 'verQr']);
     Route::get('/cart/ventas', [FacturacionCartIntegrationController::class, 'ventas']);
     Route::get('/cart/ventas/pdf', [FacturacionCartIntegrationController::class, 'ventasPdf']);
     Route::get('/cart/ventas/{cartId}', [FacturacionCartIntegrationController::class, 'show']);
