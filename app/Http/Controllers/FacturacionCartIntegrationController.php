@@ -1640,8 +1640,8 @@ class FacturacionCartIntegrationController extends Controller
     {
         if (($f['estado'] ?? 'all') !== 'all') $q->where('estado', $f['estado']);
         if (($f['estado_emision'] ?? 'all') !== 'all') $q->whereRaw('upper(coalesce(estado_emision, ?)) = ?', ['', strtoupper((string) $f['estado_emision'])]);
-        if (!empty($f['from'])) $q->whereDate('created_at', '>=', $f['from']);
-        if (!empty($f['to'])) $q->whereDate('created_at', '<=', $f['to']);
+        if (!empty($f['from'])) $q->whereRaw('DATE(COALESCE(emitido_en, created_at)) >= ?', [$f['from']]);
+        if (!empty($f['to'])) $q->whereRaw('DATE(COALESCE(emitido_en, created_at)) <= ?', [$f['to']]);
         if (!empty($f['q'])) {
             $like = '%' . $f['q'] . '%';
             $q->where(function ($s) use ($like) {
