@@ -81,7 +81,7 @@ class VentaController extends Controller
             ])
             ->connectTimeout(20)
             ->timeout(60)
-            // Reintenta solo si es problema de conexiÃƒÂ³n (timeouts, etc.)
+            // Reintenta solo si es problema de conexiÃƒÆ’Ã‚Â³n (timeouts, etc.)
             ->retry(3, 800, function ($exception) {
                 return $exception instanceof ConnectionException;
             });
@@ -148,7 +148,7 @@ class VentaController extends Controller
         if (blank($venta->codigoSeguimiento) || Str::startsWith((string) $venta->codigoSeguimiento, 'pendiente-')) {
             return [
                 'key' => 'PENDIENTE',
-                'label' => 'Pendiente de envÃ­o',
+                'label' => 'Pendiente de envÃƒÂ­o',
                 'can_emit' => true,
                 'can_massive' => true,
                 'can_cafc' => true,
@@ -161,6 +161,36 @@ class VentaController extends Controller
         }
 
         if (!$notification) {
+            if ($estadoSufe === 'ANULADA') {
+                return [
+                    'key' => 'ANULADA',
+                    'label' => 'Anulada',
+                    'can_emit' => false,
+                    'can_massive' => false,
+                    'can_cafc' => false,
+                    'can_consult' => true,
+                    'can_annul' => false,
+                    'notification_state' => null,
+                    'tipoEmision' => $venta->tipo_emision_sufe,
+                    'cuf' => $venta->cuf,
+                ];
+            }
+
+            if ($estadoSufe === 'ANULACION_SOLICITADA') {
+                return [
+                    'key' => 'ANULACION_SOLICITADA',
+                    'label' => 'Anulacion solicitada',
+                    'can_emit' => false,
+                    'can_massive' => false,
+                    'can_cafc' => false,
+                    'can_consult' => true,
+                    'can_annul' => false,
+                    'notification_state' => null,
+                    'tipoEmision' => $venta->tipo_emision_sufe,
+                    'cuf' => $venta->cuf,
+                ];
+            }
+
             if ($estadoSufe === 'REGISTRADA_OFICIAL') {
                 return [
                     'key' => 'REGISTRADA_OFICIAL',
@@ -318,6 +348,100 @@ class VentaController extends Controller
         return $this->protocolStatusFromVentaNotification($venta, $this->latestNotificationForVenta($venta));
     }
 
+    private function buildAnulacionAuditData($currentUser, array $guard, array $requestData): array
+    {
+        $allowedBy = (string) ($guard['allowed_by'] ?? 'NONE');
+        $authorizedUserId = null;
+        $authorizedEmail = null;
+
+        if ($allowedBy === 'SUPERVISOR_UNLOCK') {
+            $authorizedUserId = data_get($guard, 'user_unlock.authorized_by_user_id');
+            $authorizedEmail = data_get($guard, 'user_unlock.authorized_by_email');
+        } elseif ($allowedBy === 'GLOBAL_SWITCH') {
+            $authorizedUserId = data_get($guard, 'global.enabled_by_user_id');
+            $authorizedEmail = data_get($guard, 'global.enabled_by_email');
+        } elseif ($allowedBy === 'ROL_SUPERIOR' && $currentUser) {
+            $authorizedUserId = $currentUser->id ?? null;
+            $authorizedEmail = $currentUser->email ?? null;
+        }
+
+        return [
+            'anulada_at' => now(),
+            'anulada_por_user_id' => $currentUser->id ?? null,
+            'anulada_por_nombre' => trim((string) data_get($currentUser, 'nombre', data_get($currentUser, 'name', data_get($currentUser, 'email', '')))) ?: null,
+            'anulada_por_email' => trim((string) ($currentUser->email ?? '')) ?: null,
+            'anulacion_motivo' => trim((string) ($requestData['motivo'] ?? '')) ?: null,
+            'anulacion_tipo' => isset($requestData['tipoAnulacion']) ? ('TIPO ' . (string) $requestData['tipoAnulacion']) : null,
+            'anulacion_autorizada_por_user_id' => $authorizedUserId,
+            'anulacion_autorizada_por_email' => $authorizedEmail,
+        ];
+    }
+
+    private function anulacionPayloadForVenta(Venta $venta): array
+    {
+        return [
+            'anuladaAt' => $venta->anulada_at,
+            'anuladaPorUserId' => $venta->anulada_por_user_id,
+            'anuladaPorNombre' => $venta->anulada_por_nombre,
+            'anuladaPorEmail' => $venta->anulada_por_email,
+            'motivo' => $venta->anulacion_motivo,
+            'tipo' => $venta->anulacion_tipo,
+            'autorizadaPorUserId' => $venta->anulacion_autorizada_por_user_id,
+            'autorizadaPorEmail' => $venta->anulacion_autorizada_por_email,
+            'numeroFactura' => $venta->numero_factura,
+            'codigoOrden' => $venta->codigoOrden,
+            'cuf' => $venta->cuf,
+        ];
+    }
+
+    private function persistAnulacionAuditForVenta(?Venta $venta, array $auditData, ?string $message = null): void
+    {
+        if (!$venta) {
+            return;
+        }
+
+        $estadoSufe = strtoupper(trim((string) ($venta->estado_sufe ?? '')));
+        $ventaUpdates = array_filter([
+            'motivo' => $auditData['anulacion_motivo'] ?? null,
+            'updated_at' => now(),
+        ] + $auditData, fn ($value, $key) => $value !== null || $key === 'updated_at', ARRAY_FILTER_USE_BOTH);
+
+        if ($message !== null && trim($message) !== '') {
+            $ventaUpdates['observacion_sufe'] = trim($message);
+        }
+
+        DB::table('ventas')
+            ->where('id', (int) $venta->id)
+            ->update($ventaUpdates);
+
+        if (
+            !Schema::hasTable('facturacion_carts')
+            || !in_array((string) ($venta->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true)
+            || (int) ($venta->origen_venta_id ?? 0) <= 0
+        ) {
+            return;
+        }
+
+        $cartUpdates = array_filter([
+            'updated_at' => now(),
+        ] + $auditData, fn ($value, $key) => $value !== null || $key === 'updated_at', ARRAY_FILTER_USE_BOTH);
+
+        if ($message !== null && trim($message) !== '') {
+            $cartUpdates['mensaje_emision'] = trim($message);
+        }
+
+        if ($estadoSufe === 'ANULADA') {
+            $cartUpdates['estado'] = 'descartado';
+            $cartUpdates['estado_emision'] = 'ANULADA';
+        } elseif (in_array($estadoSufe, ['ANULACION_SOLICITADA', 'ANULACION_OBSERVADA'], true)) {
+            $cartUpdates['estado_emision'] = $estadoSufe;
+        }
+
+        DB::table('facturacion_carts')
+            ->where('id', (int) $venta->origen_venta_id)
+            ->update($cartUpdates);
+    }
+
     private function syncVentaFromConsulta(string $codigoSeguimiento, array $payload): void
     {
         $estadoConsulta = strtoupper((string) ($payload['estado'] ?? ''));
@@ -444,7 +568,7 @@ class VentaController extends Controller
 
         if ($ventas->count() !== count(array_unique($ventaIds))) {
             throw ValidationException::withMessages([
-                'venta_ids' => ['Una o mÃ¡s ventas no existen o no estÃ¡n disponibles.'],
+                'venta_ids' => ['Una o mÃƒÂ¡s ventas no existen o no estÃƒÂ¡n disponibles.'],
             ]);
         }
 
@@ -2316,10 +2440,10 @@ class VentaController extends Controller
                     'createdAt' => $venta->created_at,
                     'user' => trim((string) ($venta->origen_usuario_nombre ?? $venta->origen_usuario_alias ?? $venta->origen_usuario_email ?? '')) ?: 'Sin usuario',
                     'message' => match ($type) {
-                        'observada' => 'La factura fue observada y requiere revisiÃ³n.',
-                        'pendiente' => 'La factura sigue pendiente de procesamiento o confirmaciÃ³n.',
-                        'factura_anulada' => 'La factura fue anulada y no debe contarse como venta vÃ¡lida.',
-                        default => 'La factura tiene un estado fiscal distinto al esperado y requiere revisiÃ³n.',
+                        'observada' => 'La factura fue observada y requiere revisiÃƒÂ³n.',
+                        'pendiente' => 'La factura sigue pendiente de procesamiento o confirmaciÃƒÂ³n.',
+                        'factura_anulada' => 'La factura fue anulada y no debe contarse como venta vÃƒÂ¡lida.',
+                        default => 'La factura tiene un estado fiscal distinto al esperado y requiere revisiÃƒÂ³n.',
                     },
                 ];
             });
@@ -2391,8 +2515,8 @@ class VentaController extends Controller
                         'reviewedBy' => $cart->incidencia_revisada_por,
                         'reviewNote' => $cart->incidencia_revision_nota,
                         'message' => match ($type) {
-                            'qr_pagado_sin_factura' => 'El cobro QR fue confirmado, pero la factura aÃºn no fue emitida.',
-                            'qr_anulado' => 'El intento de cobro QR fue cancelado o fallÃ³.',
+                            'qr_pagado_sin_factura' => 'El cobro QR fue confirmado, pero la factura aÃƒÂºn no fue emitida.',
+                            'qr_anulado' => 'El intento de cobro QR fue cancelado o fallÃƒÂ³.',
                             default => 'El cobro QR sigue pendiente de pago.',
                         },
                     ];
@@ -2773,6 +2897,19 @@ class VentaController extends Controller
             'incidencia_revisada_at' => $cart->incidencia_revisada_at,
             'incidencia_revisada_por' => $cart->incidencia_revisada_por,
             'incidencia_revision_nota' => $cart->incidencia_revision_nota,
+            'anulacion' => [
+                'anuladaAt' => $cart->anulada_at ?? null,
+                'anuladaPorUserId' => $cart->anulada_por_user_id ?? null,
+                'anuladaPorNombre' => $cart->anulada_por_nombre ?? null,
+                'anuladaPorEmail' => $cart->anulada_por_email ?? null,
+                'motivo' => $cart->anulacion_motivo ?? null,
+                'tipo' => $cart->anulacion_tipo ?? null,
+                'autorizadaPorUserId' => $cart->anulacion_autorizada_por_user_id ?? null,
+                'autorizadaPorEmail' => $cart->anulacion_autorizada_por_email ?? null,
+                'numeroFactura' => $numeroFactura,
+                'codigoOrden' => $this->normalizeFacturacionCartCodigoOrden($cart),
+                'cuf' => data_get($respuestaEmision, 'factura.cuf') ?: data_get($respuestaEmision, 'cuf') ?: ($linkedVenta->cuf ?? null),
+            ],
             'modalidad_facturacion' => (string) ($cart->modalidad_facturacion ?? ''),
             'qr_transaction_id' => $cart->qr_transaction_id,
             'respuesta_emision' => $respuestaEmision,
@@ -2952,6 +3089,7 @@ class VentaController extends Controller
                     'notificacionMensaje' => $notification?->mensaje,
                     'detalle' => is_array($detalleNotificacion) ? $detalleNotificacion : [],
                 ],
+                'anulacion' => $this->anulacionPayloadForVenta($venta),
             ];
         })->values();
         Log::info('ventas.index.show-map.ready', $this->reportLogContext($request, [
@@ -3118,6 +3256,7 @@ class VentaController extends Controller
             'notificacionMensaje' => $notification?->mensaje,
             'detalle' => $detalleNotificacion,
         ];
+        $data['anulacion'] = $this->anulacionPayloadForVenta($venta);
 
         return response()->json($data);
     }
@@ -3213,7 +3352,7 @@ class VentaController extends Controller
                     try {
                         $this->sufeValidator->validateRejectedResponse($body);
                     } catch (ValidationException $validationException) {
-                        Log::warning('La respuesta de rechazo de emisiÃ³n individual no cumple el protocolo', [
+                        Log::warning('La respuesta de rechazo de emisiÃƒÂ³n individual no cumple el protocolo', [
                             'errores' => $validationException->errors(),
                             'body' => $body,
                         ]);
@@ -3232,7 +3371,7 @@ class VentaController extends Controller
             return response()->json($payload, $result['status'] ?? 202);
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => 'La solicitud de emisiÃ³n individual no cumple la validaciÃ³n del protocolo SEFE.',
+                'message' => 'La solicitud de emisiÃƒÂ³n individual no cumple la validaciÃƒÂ³n del protocolo SEFE.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (\Throwable $e) {
@@ -3276,7 +3415,7 @@ class VentaController extends Controller
             return response()->json($payload, $response->status());
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => 'La solicitud de documento de ajuste no cumple la validaciÃ³n del protocolo SEFE.',
+                'message' => 'La solicitud de documento de ajuste no cumple la validaciÃƒÂ³n del protocolo SEFE.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (RequestException $e) {
@@ -3318,7 +3457,7 @@ class VentaController extends Controller
             return response()->json($payload, $response->status());
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => 'La solicitud de emisiÃ³n masiva no cumple la validaciÃ³n del protocolo SEFE.',
+                'message' => 'La solicitud de emisiÃƒÂ³n masiva no cumple la validaciÃƒÂ³n del protocolo SEFE.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (RequestException $e) {
@@ -3328,7 +3467,7 @@ class VentaController extends Controller
             ], $e->response?->status() ?? 502);
         } catch (ConnectionException $e) {
             return response()->json([
-                'message' => 'No se pudo conectar con el servicio SEFE para emisiÃ³n masiva.',
+                'message' => 'No se pudo conectar con el servicio SEFE para emisiÃƒÂ³n masiva.',
                 'details' => $e->getMessage(),
             ], 504);
         } catch (\Throwable $e) {
@@ -3354,7 +3493,7 @@ class VentaController extends Controller
         foreach ($ventas as $venta) {
             if (!$this->canOperateVenta($venta)) {
                 throw ValidationException::withMessages([
-                    'venta_ids' => ["La venta {$venta->id} no estÃ¡ disponible para reenvÃ­o automÃ¡tico."],
+                    'venta_ids' => ["La venta {$venta->id} no estÃƒÂ¡ disponible para reenvÃƒÂ­o automÃƒÂ¡tico."],
                 ]);
             }
         }
@@ -3430,7 +3569,7 @@ class VentaController extends Controller
         }
 
         return response()->json([
-            'message' => 'Ventas enviadas en emisiÃ³n masiva correctamente.',
+            'message' => 'Ventas enviadas en emisiÃƒÂ³n masiva correctamente.',
             'modo' => 'masiva',
             'response' => $body,
         ]);
@@ -3456,7 +3595,7 @@ class VentaController extends Controller
             return response()->json($payload, $response->status());
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => 'La solicitud de contingencia CAFC no cumple la validaciÃ³n del protocolo SEFE.',
+                'message' => 'La solicitud de contingencia CAFC no cumple la validaciÃƒÂ³n del protocolo SEFE.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (RequestException $e) {
@@ -3495,12 +3634,12 @@ class VentaController extends Controller
         foreach ($ventas as $venta) {
             if (!$this->canOperateVenta($venta)) {
                 throw ValidationException::withMessages([
-                    'venta_ids' => ["La venta {$venta->id} no estÃ¡ disponible para contingencia CAFC."],
+                    'venta_ids' => ["La venta {$venta->id} no estÃƒÂ¡ disponible para contingencia CAFC."],
                 ]);
             }
             if (!isset($validated['nro_facturas'][$venta->id]) || (int) $validated['nro_facturas'][$venta->id] <= 0) {
                 throw ValidationException::withMessages([
-                    'nro_facturas' => ["Debe proporcionar un nroFactura manual vÃ¡lido para la venta {$venta->id}."],
+                    'nro_facturas' => ["Debe proporcionar un nroFactura manual vÃƒÂ¡lido para la venta {$venta->id}."],
                 ]);
             }
         }
@@ -3586,7 +3725,7 @@ class VentaController extends Controller
     }
 
     // =========================
-    //  Consultar emisiÃƒÂ³n
+    //  Consultar emisiÃƒÆ’Ã‚Â³n
     // =========================
     public function consultarVenta(Request $request, $codigoSeguimiento)
     {
@@ -3608,7 +3747,7 @@ class VentaController extends Controller
         if (in_array($tipo, ['CO', 'CUF'], true)) {
             $url .= '?tipo=' . $tipo;
         }
-        Log::info("CÃƒÂ³digo de Seguimiento: {$codigoSeguimiento}");
+        Log::info("CÃƒÆ’Ã‚Â³digo de Seguimiento: {$codigoSeguimiento}");
         Log::info("URL de Consulta: {$url}");
 
         try {
@@ -3629,7 +3768,7 @@ class VentaController extends Controller
                 ], $response->status());
             }
         } catch (\Throwable $e) {
-            Log::error("ExcepciÃƒÂ³n al consultar venta: " . $e->getMessage());
+            Log::error("ExcepciÃƒÆ’Ã‚Â³n al consultar venta: " . $e->getMessage());
             return response()->json([
                 'error'     => 'Error al consultar la venta',
                 'exception' => $e->getMessage(),
@@ -3656,7 +3795,7 @@ class VentaController extends Controller
         } catch (\Throwable $e) {
             Log::error('AGETIC homologarProductos error', ['msg' => $e->getMessage()]);
             return response()->json([
-                'message' => 'Error al consultar homologaciÃ³n de productos.',
+                'message' => 'Error al consultar homologaciÃƒÂ³n de productos.',
                 'details' => $e->getMessage(),
             ], 500);
         }
@@ -3678,7 +3817,7 @@ class VentaController extends Controller
 
         if (!in_array($tipoParametro, $allowed, true)) {
             throw ValidationException::withMessages([
-                'tipoParametro' => ['El tipoParametro solicitado no estÃ¡ soportado por el protocolo SEFE.'],
+                'tipoParametro' => ['El tipoParametro solicitado no estÃƒÂ¡ soportado por el protocolo SEFE.'],
             ]);
         }
 
@@ -3702,7 +3841,7 @@ class VentaController extends Controller
                 'msg' => $e->getMessage(),
             ]);
             return response()->json([
-                'message' => 'Error al consultar las paramÃ©tricas.',
+                'message' => 'Error al consultar las paramÃƒÂ©tricas.',
                 'details' => $e->getMessage(),
             ], 500);
         }
@@ -3711,7 +3850,7 @@ class VentaController extends Controller
     public function consultarPaquete($codigoSeguimientoPaquete)
     {
         $url = $this->ageticBaseUrl() . "/consulta/paquete/{$codigoSeguimientoPaquete}";
-        Log::info("CÃ³digo de Seguimiento Paquete: {$codigoSeguimientoPaquete}");
+        Log::info("CÃƒÂ³digo de Seguimiento Paquete: {$codigoSeguimientoPaquete}");
         Log::info("URL de Consulta Paquete: {$url}");
 
         try {
@@ -3731,7 +3870,7 @@ class VentaController extends Controller
                 'details' => $response->body(),
             ], $response->status());
         } catch (\Throwable $e) {
-            Log::error("ExcepciÃ³n al consultar paquete: " . $e->getMessage());
+            Log::error("ExcepciÃƒÂ³n al consultar paquete: " . $e->getMessage());
             return response()->json([
                 'error'     => 'Error al consultar el paquete',
                 'exception' => $e->getMessage(),
@@ -3814,7 +3953,7 @@ class VentaController extends Controller
 
         if (!$supervisor || !Hash::check((string) $validated['supervisor_password'], (string) $supervisor->password)) {
             return response()->json([
-                'message' => 'Credenciales de supervisor invÃ¡lidas.',
+                'message' => 'Credenciales de supervisor invÃƒÂ¡lidas.',
                 'code' => 'ANULACION_SUPERVISOR_INVALIDO',
             ], 422);
         }
@@ -3928,75 +4067,53 @@ class VentaController extends Controller
             ], 423);
         }
 
-        $url = $this->ageticBaseUrl() . "/anulacion/{$cuf}";
         $requestData = $this->sufeValidator->validateAnulacionPayload($request->all());
-        Log::info('Datos enviados para anulaciÃƒÂ³n de factura:', $requestData);
+        $auditData = $this->buildAnulacionAuditData($currentUser, $guard, $requestData);
+        Log::info('VentaController anularFactura delegating to FacturaVentaApiController', [
+            'cuf' => (string) $cuf,
+            'payload' => $requestData,
+            'guard' => $guard,
+        ]);
 
         try {
-            $response = $this->ageticClient()->patch($url, $requestData);
+            $delegatedResponse = app(FacturaVentaApiController::class)->anular($request, (string) $cuf);
+            $statusCode = method_exists($delegatedResponse, 'getStatusCode') ? $delegatedResponse->getStatusCode() : 200;
+            $body = method_exists($delegatedResponse, 'getData')
+                ? $delegatedResponse->getData(true)
+                : [];
 
-            $payload = $response->json();
-            Log::info('Respuesta de la API de anulaciÃƒÂ³n:', $payload);
+            if ($statusCode < 400 && (bool) data_get($body, 'ok', true) === true) {
+                $venta = Venta::query()
+                    ->where('cuf', (string) $cuf)
+                    ->orderByDesc('id')
+                    ->first();
 
-            if ($response->successful()) {
-                $this->sufeValidator->validateAcceptedAnulacionResponse($payload);
+                $this->persistAnulacionAuditForVenta(
+                    $venta,
+                    $auditData,
+                    (string) data_get($body, 'mensaje', ($requestData['motivo'] ?? 'Factura anulada.'))
+                );
 
-                return response()->json([
-                    'message'  => 'Factura anulada correctamente',
-                    'response' => $payload,
-                ], 200);
-            } else {
-                if (is_array($payload)) {
-                    try {
-                        $this->sufeValidator->validateRejectedResponse($payload);
-                    } catch (ValidationException $validationException) {
-                        Log::warning('La respuesta de rechazo de anulaciÃ³n no cumple el protocolo', [
-                            'errores' => $validationException->errors(),
-                            'body' => $payload,
-                        ]);
-                    }
-                }
-
-                return response()->json([
-                    'error'   => 'Error al anular la factura',
-                    'details' => $payload,
-                ], $response->status());
-            }
-        } catch (ValidationException $e) {
-            return response()->json([
-                'message' => 'La solicitud de anulaciÃ³n no cumple la validaciÃ³n del protocolo SEFE.',
-                'errors' => $e->errors(),
-            ], 422);
-        } catch (RequestException $e) {
-            $response = $e->response;
-            $payload = $response?->json();
-
-            if (is_array($payload)) {
-                try {
-                    $this->sufeValidator->validateRejectedResponse($payload);
-                } catch (ValidationException $validationException) {
-                    Log::warning('La respuesta de rechazo de anulaciÃ³n no cumple el protocolo', [
-                        'errores' => $validationException->errors(),
-                        'body' => $payload,
-                    ]);
-                }
+                $body['audit'] = [
+                    'cuf' => (string) $cuf,
+                    'motivo' => $requestData['motivo'] ?? null,
+                    'tipoAnulacion' => $requestData['tipoAnulacion'] ?? null,
+                    'anuladaPor' => $auditData['anulada_por_nombre'] ?? $auditData['anulada_por_email'] ?? null,
+                    'anuladaAt' => ($auditData['anulada_at'] ?? null)?->toIso8601String(),
+                    'autorizadaPor' => $auditData['anulacion_autorizada_por_email'] ?? null,
+                    'numeroFactura' => $venta->numero_factura ?? null,
+                    'codigoOrden' => $venta->codigoOrden ?? null,
+                    'estadoFinal' => $venta->estado_sufe ?? null,
+                ];
             }
 
-            Log::warning('AnulaciÃ³n rechazada por SEFE', [
-                'status' => $response?->status(),
-                'body' => $payload,
+            return response()->json($body, $statusCode);
+        } catch (\Throwable $delegationError) {
+            Log::error('VentaController delegated anulacion failed', [
+                'cuf' => (string) $cuf,
+                'message' => $delegationError->getMessage(),
             ]);
-
-            return response()->json([
-                'message' => data_get($payload, 'mensaje', 'No se pudo anular la factura.'),
-                'details' => $payload,
-            ], $response?->status() ?: 400);
-        } catch (\Throwable $e) {
-            Log::error('ExcepciÃƒÂ³n al anular factura: ' . $e->getMessage());
-            return response()->json([
-                'error'     => 'Error al anular la factura',
-                'exception' => $e->getMessage(),
-            ], 500);
+            throw $delegationError;
         }
     }
 
@@ -4061,4 +4178,5 @@ class VentaController extends Controller
     }
 
 }
+
 

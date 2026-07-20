@@ -386,6 +386,12 @@ class FacturacionCartIntegrationController extends Controller
             ->update([
                 'estado' => 'descartado',
                 'mensaje_emision' => $note,
+                'anulada_at' => now(),
+                'anulada_por_user_id' => $reviewer->id ?? null,
+                'anulada_por_nombre' => trim((string) ($reviewer->nombre ?? $reviewer->name ?? $reviewer->email ?? '')) ?: null,
+                'anulada_por_email' => trim((string) ($reviewer->email ?? '')) ?: null,
+                'anulacion_motivo' => $note,
+                'anulacion_tipo' => 'DESCARTE_LOCAL_RECHAZADA',
                 'incidencia_revisada_at' => now(),
                 'incidencia_revisada_por' => $reviewedBy,
                 'incidencia_revision_nota' => $reviewNote,
