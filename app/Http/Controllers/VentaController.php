@@ -2011,9 +2011,9 @@ class VentaController extends Controller
                 end) as electronicas_facturadas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'REGISTRADA_OFICIAL' then 1 else 0 end) as oficiales,
                 sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as con_cuf_otro_estado,
-                sum(case when upper(coalesce(estado_sufe, '')) = 'ANULADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as facturas_anuladas,
+                sum(case when upper(coalesce(estado_sufe, '')) in ('ANULADA', 'ANULADO') and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as facturas_anuladas,
                 coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'ANULADA' and not ({$reviewedDiscardedLinkedVentaExpr})
+                    when upper(coalesce(estado_sufe, '')) in ('ANULADA', 'ANULADO') and not ({$reviewedDiscardedLinkedVentaExpr})
                     then total else 0
                 end), 0) as total_facturas_anuladas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as observadas,
@@ -2072,9 +2072,9 @@ class VentaController extends Controller
                 end) as electronicas_facturadas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'REGISTRADA_OFICIAL' then 1 else 0 end) as oficiales,
                 sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as con_cuf_otro_estado,
-                sum(case when upper(coalesce(estado_sufe, '')) = 'ANULADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as facturas_anuladas,
+                sum(case when upper(coalesce(estado_sufe, '')) in ('ANULADA', 'ANULADO') and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as facturas_anuladas,
                 coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'ANULADA' and not ({$reviewedDiscardedLinkedVentaExpr})
+                    when upper(coalesce(estado_sufe, '')) in ('ANULADA', 'ANULADO') and not ({$reviewedDiscardedLinkedVentaExpr})
                     then total else 0
                 end), 0) as total_facturas_anuladas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as observadas,
@@ -2433,7 +2433,7 @@ class VentaController extends Controller
                 $type = match ($estado) {
                     'OBSERVADA' => 'observada',
                     'RECEPCIONADA', 'CONTINGENCIA_CREADA' => 'pendiente',
-                    'ANULADA' => 'factura_anulada',
+                    'ANULADA', 'ANULADO' => 'factura_anulada',
                     default => 'otro_estado',
                 };
 
