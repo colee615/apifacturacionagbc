@@ -1650,7 +1650,20 @@ class FacturaVentaApiController extends Controller
             $validated = $this->sufeValidator->validateAnulacionPayload($request->all());
             $venta = $this->ventaByCuf($cuf);
 
+            Log::info('FacturaVentaApi anular start', [
+                'cuf' => $cuf,
+                'payload' => $validated,
+                'venta_id' => $venta->id ?? null,
+                'codigo_orden' => $venta->codigoOrden ?? null,
+                'codigo_seguimiento' => $venta->codigoSeguimiento ?? null,
+                'estado_sufe' => $venta->estado_sufe ?? null,
+                'numero_factura' => $venta->numero_factura ?? null,
+            ]);
+
             if (!$venta) {
+                Log::warning('FacturaVentaApi anular venta not found by cuf', [
+                    'cuf' => $cuf,
+                ]);
                 return response()->json([
                     'ok' => false,
                     'estado' => 'RECHAZADA',
@@ -1664,14 +1677,32 @@ class FacturaVentaApiController extends Controller
                 ], 404);
             }
 
-            $estadoActual = strtoupper((string) ($venta->estado_sufe ?? ''));
+            $estadoActual = strtoupper(trim((string) ($venta->estado_sufe ?? '')));
+            $hasCuf = trim((string) ($venta->cuf ?? '')) !== '';
+            $canRequestAnnul = $hasCuf && !in_array($estadoActual, ['ANULADA', 'ANULACION_SOLICITADA'], true);
 
-            if (!in_array($estadoActual, ['PROCESADA', 'ANULACION_OBSERVADA'], true)) {
+            Log::info('FacturaVentaApi anular eligibility evaluated', [
+                'cuf' => $cuf,
+                'venta_id' => $venta->id ?? null,
+                'estado_actual' => $estadoActual,
+                'has_cuf' => $hasCuf,
+                'can_request_annul' => $canRequestAnnul,
+            ]);
+
+            if (!$canRequestAnnul) {
+                Log::warning('FacturaVentaApi anular blocked by eligibility', [
+                    'cuf' => $cuf,
+                    'venta_id' => $venta->id ?? null,
+                    'estado_actual' => $estadoActual,
+                    'has_cuf' => $hasCuf,
+                ]);
                 return response()->json([
                     'ok' => false,
                     'estado' => 'RECHAZADA',
                     'mensaje' => 'No se pudo anular la factura.',
-                    'razon' => 'Solo se puede anular una factura procesada correctamente.',
+                    'razon' => $hasCuf
+                        ? 'La factura ya fue anulada o tiene una anulacion en curso.'
+                        : 'Solo se puede anular una factura que tenga CUF valido.',
                     'factura' => [
                         'cuf' => $cuf,
                         'nroFactura' => $venta->numero_factura ?? null,
@@ -1692,6 +1723,12 @@ class FacturaVentaApiController extends Controller
             );
 
             $payload = $response->json();
+            Log::info('FacturaVentaApi anular sefe response', [
+                'cuf' => $cuf,
+                'venta_id' => $venta->id ?? null,
+                'http_status' => $response->status(),
+                'body' => $payload,
+            ]);
 
             if ($response->successful()) {
                 $this->sufeValidator->validateAcceptedAnulacionResponse($payload ?? []);
@@ -1717,8 +1754,24 @@ class FacturaVentaApiController extends Controller
                     $consultaFinal
                 );
 
+                Log::info('FacturaVentaApi anular post-wait resolved status', [
+                    'cuf' => $cuf,
+                    'venta_id' => $ventaFinal->id ?? $venta->id ?? null,
+                    'status_final' => $statusFinal,
+                    'estado_sufe_final' => $ventaFinal->estado_sufe ?? null,
+                    'notificacion_estado' => $notificacionFinal->estado ?? null,
+                    'consulta_estado' => data_get($consultaFinal, 'estado'),
+                ]);
+
                 if (in_array($statusFinal, ['ANULADA', 'ANULACION_OBSERVADA'], true)) {
                     $bridgePayload = $this->bridgeConsultPayloadFromVenta($ventaFinal, $notificacionFinal, $consultaFinal);
+
+                    Log::info('FacturaVentaApi anular final response ready', [
+                        'cuf' => $cuf,
+                        'venta_id' => $ventaFinal->id ?? $venta->id ?? null,
+                        'status_final' => $statusFinal,
+                        'response_base' => $bridgePayload['base'] ?? [],
+                    ]);
 
                     return response()->json(
                         $this->formatResponseForClient($request, $bridgePayload['base'], $bridgePayload['verbose']),
@@ -1745,6 +1798,13 @@ class FacturaVentaApiController extends Controller
                     'sefe' => $payload,
                 ];
 
+                Log::info('FacturaVentaApi anular pending response returned', [
+                    'cuf' => $cuf,
+                    'venta_id' => $venta->id ?? null,
+                    'base' => $base,
+                    'verbose' => $verbose,
+                ]);
+
                 return response()->json(
                     $this->formatResponseForClient($request, $base, $verbose),
                     $response->status()
@@ -1764,6 +1824,13 @@ class FacturaVentaApiController extends Controller
                 }
             }
 
+            Log::warning('FacturaVentaApi anular rejected by sefe', [
+                'cuf' => $cuf,
+                'venta_id' => $venta->id ?? null,
+                'http_status' => $response->status(),
+                'body' => $rejectedPayload,
+            ]);
+
             return response()->json([
                 'ok' => false,
                 'estado' => 'RECHAZADA',
@@ -1777,6 +1844,11 @@ class FacturaVentaApiController extends Controller
                 'sefe' => $rejectedPayload,
             ], $response->status());
         } catch (ValidationException $e) {
+            Log::warning('FacturaVentaApi anular validation failed', [
+                'cuf' => $cuf,
+                'payload_raw' => $request->all(),
+                'errors' => $e->errors(),
+            ]);
             return response()->json([
                 'ok' => false,
                 'estado' => 'RECHAZADA',
@@ -1787,6 +1859,14 @@ class FacturaVentaApiController extends Controller
         } catch (RequestException $e) {
             $rejectedPayload = $this->validatedRejectedPayloadFromResponse($e->response);
 
+            Log::error('FacturaVentaApi anular request exception', [
+                'cuf' => $cuf,
+                'status' => $e->response?->status(),
+                'body' => $e->response?->json(),
+                'validated_body' => $rejectedPayload,
+                'msg' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'ok' => false,
                 'estado' => 'RECHAZADA',
@@ -1796,6 +1876,10 @@ class FacturaVentaApiController extends Controller
                 'sefe' => $e->response?->json(),
             ], $e->response?->status() ?? 502);
         } catch (ConnectionException $e) {
+            Log::error('FacturaVentaApi anular connection exception', [
+                'cuf' => $cuf,
+                'msg' => $e->getMessage(),
+            ]);
             return response()->json([
                 'ok' => false,
                 'estado' => 'ERROR',
@@ -1809,6 +1893,7 @@ class FacturaVentaApiController extends Controller
                 'msg' => $e->getMessage(),
                 'trace_line' => $e->getLine(),
                 'trace_file' => $e->getFile(),
+                'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([

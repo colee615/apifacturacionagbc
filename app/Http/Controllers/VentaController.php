@@ -4059,7 +4059,20 @@ class VentaController extends Controller
     {
         $currentUser = Auth::guard('api')->user() ?? $request->user();
         $guard = $this->buildAnulacionGuardStatus($currentUser);
+        Log::info('VentaController anularFactura start', [
+            'cuf' => (string) $cuf,
+            'user_id' => $currentUser->id ?? null,
+            'user_email' => $currentUser->email ?? null,
+            'guard' => $guard,
+            'payload_raw' => $request->all(),
+        ]);
+
         if (($guard['allowed'] ?? false) !== true) {
+            Log::warning('VentaController anularFactura blocked by guard', [
+                'cuf' => (string) $cuf,
+                'user_id' => $currentUser->id ?? null,
+                'guard' => $guard,
+            ]);
             return response()->json([
                 'message' => 'Anulacion bloqueada. Requiere autorizacion de rol superior o habilitacion global de administrador.',
                 'code' => 'ANULACION_REQUIERE_AUTORIZACION',
@@ -4105,13 +4118,29 @@ class VentaController extends Controller
                     'codigoOrden' => $venta->codigoOrden ?? null,
                     'estadoFinal' => $venta->estado_sufe ?? null,
                 ];
+
+                Log::info('VentaController anularFactura success with audit', [
+                    'cuf' => (string) $cuf,
+                    'status_code' => $statusCode,
+                    'venta_id' => $venta->id ?? null,
+                    'estado_final' => $venta->estado_sufe ?? null,
+                    'audit' => $body['audit'],
+                ]);
+            } else {
+                Log::warning('VentaController anularFactura non-success response', [
+                    'cuf' => (string) $cuf,
+                    'status_code' => $statusCode,
+                    'body' => $body,
+                ]);
             }
 
             return response()->json($body, $statusCode);
         } catch (\Throwable $delegationError) {
             Log::error('VentaController delegated anulacion failed', [
                 'cuf' => (string) $cuf,
+                'user_id' => $currentUser->id ?? null,
                 'message' => $delegationError->getMessage(),
+                'trace' => $delegationError->getTraceAsString(),
             ]);
             throw $delegationError;
         }
