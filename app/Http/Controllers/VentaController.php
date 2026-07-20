@@ -539,9 +539,9 @@ class VentaController extends Controller
     private function resolveIdentityFilters(Request $request, array $filters): array
     {
         $usuario = Auth::guard('api')->user() ?? $request->user();
-        $isAdmin = $usuario && method_exists($usuario, 'hasRole') && $usuario->hasRole('admin');
+        $canViewGlobalReports = $this->isAnulacionSupervisor($usuario);
 
-        if ($isAdmin) {
+        if ($canViewGlobalReports) {
             $filters['origen_usuario_email'] = strtolower(trim((string) ($filters['origen_usuario_email'] ?? ''))) ?: null;
             $filters['origen_usuario_alias'] = strtolower(trim((string) ($filters['origen_usuario_alias'] ?? ''))) ?: null;
             $filters['origen_usuario_carnet'] = $this->normalizeCarnet($filters['origen_usuario_carnet'] ?? null);
@@ -1843,8 +1843,14 @@ class VentaController extends Controller
 
         $resumen = (clone $settledBaseQuery)
             ->selectRaw("
-                count(*) as cantidad_ventas,
-                coalesce(sum(total), 0) as total_vendido,
+                sum(case
+                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+                    then 1 else 0
+                end) as cantidad_ventas,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+                    then total else 0
+                end), 0) as total_vendido,
                 coalesce(sum(case
                     when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
                         and (
@@ -1893,8 +1899,14 @@ class VentaController extends Controller
                 {$sucursalCodigoExpr} as codigo_sucursal,
                 {$puntoVentaExpr} as punto_venta,
                 coalesce(max(nullif(departamento, '')), '') as departamento,
-                count(*) as cantidad_ventas,
-                coalesce(sum(total), 0) as total_vendido,
+                sum(case
+                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+                    then 1 else 0
+                end) as cantidad_ventas,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+                    then total else 0
+                end), 0) as total_vendido,
                 coalesce(sum(case
                     when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
                         and (
