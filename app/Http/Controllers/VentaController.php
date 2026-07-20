@@ -2011,6 +2011,11 @@ class VentaController extends Controller
                 end) as electronicas_facturadas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'REGISTRADA_OFICIAL' then 1 else 0 end) as oficiales,
                 sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as con_cuf_otro_estado,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'ANULADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as facturas_anuladas,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'ANULADA' and not ({$reviewedDiscardedLinkedVentaExpr})
+                    then total else 0
+                end), 0) as total_facturas_anuladas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as observadas,
                 sum(case when upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA') then 1 else 0 end) as pendientes
             ")
@@ -2067,6 +2072,11 @@ class VentaController extends Controller
                 end) as electronicas_facturadas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'REGISTRADA_OFICIAL' then 1 else 0 end) as oficiales,
                 sum(case when coalesce(cuf, '') <> '' and upper(coalesce(estado_sufe, '')) not in ('PROCESADA', 'REGISTRADA_OFICIAL') and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as con_cuf_otro_estado,
+                sum(case when upper(coalesce(estado_sufe, '')) = 'ANULADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as facturas_anuladas,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'ANULADA' and not ({$reviewedDiscardedLinkedVentaExpr})
+                    then total else 0
+                end), 0) as total_facturas_anuladas,
                 sum(case when upper(coalesce(estado_sufe, '')) = 'OBSERVADA' and not ({$reviewedDiscardedLinkedVentaExpr}) then 1 else 0 end) as observadas,
                 sum(case when upper(coalesce(estado_sufe, '')) in ('RECEPCIONADA', 'CONTINGENCIA_CREADA') then 1 else 0 end) as pendientes,
                 min(created_at) as primera_venta,
@@ -2208,6 +2218,8 @@ class VentaController extends Controller
                 'qrFacturadas' => (int) ($resumen->qr_facturadas ?? 0),
                 'electronicasFacturadas' => (int) ($resumen->electronicas_facturadas ?? 0),
                 'oficiales' => (int) ($resumen->oficiales ?? 0),
+                'facturasAnuladas' => (int) ($resumen->facturas_anuladas ?? 0),
+                'totalFacturasAnuladas' => (float) ($resumen->total_facturas_anuladas ?? 0),
                 'conCufOtroEstado' => (int) ($resumen->con_cuf_otro_estado ?? 0) + (int) $qrSucursalMetrics->sum(fn ($row) => (int) ($row->cart_rechazado_descartado ?? 0)),
                 'observadas' => (int) ($resumen->observadas ?? 0),
                 'pendientes' => (int) ($resumen->pendientes ?? 0),
@@ -2242,6 +2254,8 @@ class VentaController extends Controller
                     'qrFacturadas' => (int) $row->qr_facturadas,
                     'electronicasFacturadas' => (int) $row->electronicas_facturadas,
                     'oficiales' => (int) $row->oficiales,
+                    'facturasAnuladas' => (int) $row->facturas_anuladas,
+                    'totalFacturasAnuladas' => (float) $row->total_facturas_anuladas,
                     'conCufOtroEstado' => (int) $row->con_cuf_otro_estado + (int) ($qrMetrics->cart_rechazado_descartado ?? 0),
                     'observadas' => (int) $row->observadas,
                     'pendientes' => (int) $row->pendientes,
