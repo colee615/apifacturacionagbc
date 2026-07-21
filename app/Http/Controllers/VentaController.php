@@ -3938,16 +3938,27 @@ class VentaController extends Controller
     public function anulacionGuardStatus(Request $request)
     {
         $user = Auth::guard('api')->user() ?? $request->user();
+        $guard = $this->buildAnulacionGuardStatus($user);
+        Log::info('VentaController anulacionGuardStatus', [
+            'user_id' => $user->id ?? null,
+            'user_email' => $user->email ?? null,
+            'guard' => $guard,
+        ]);
 
         return response()->json([
             'ok' => true,
-            'guard' => $this->buildAnulacionGuardStatus($user),
+            'guard' => $guard,
         ]);
     }
 
     public function autorizarAnulacion(Request $request)
     {
         $currentUser = Auth::guard('api')->user() ?? $request->user();
+        Log::info('VentaController autorizarAnulacion start', [
+            'current_user_id' => $currentUser->id ?? null,
+            'current_user_email' => $currentUser->email ?? null,
+            'payload' => $request->except(['supervisor_password']),
+        ]);
         if (!$currentUser) {
             return response()->json([
                 'message' => 'No se pudo identificar al usuario autenticado.',
@@ -3964,8 +3975,21 @@ class VentaController extends Controller
             ->whereRaw('lower(email) = ?', [strtolower((string) $validated['supervisor_email'])])
             ->where('estado', 1)
             ->first();
+        Log::info('VentaController autorizarAnulacion supervisor lookup', [
+            'current_user_id' => $currentUser->id ?? null,
+            'supervisor_found' => (bool) $supervisor,
+            'supervisor_id' => $supervisor->id ?? null,
+            'supervisor_email' => $supervisor->email ?? null,
+            'supervisor_roles' => $supervisor && method_exists($supervisor, 'roleSlugs') ? $supervisor->roleSlugs() : [],
+            'supervisor_permissions' => $supervisor && method_exists($supervisor, 'permissions') ? $supervisor->permissions() : [],
+        ]);
 
         if (!$supervisor || !Hash::check((string) $validated['supervisor_password'], (string) $supervisor->password)) {
+            Log::warning('VentaController autorizarAnulacion invalid supervisor credentials', [
+                'current_user_id' => $currentUser->id ?? null,
+                'supervisor_email' => $validated['supervisor_email'] ?? null,
+                'supervisor_found' => (bool) $supervisor,
+            ]);
             return response()->json([
                 'message' => 'Credenciales de supervisor invÃƒÂ¡lidas.',
                 'code' => 'ANULACION_SUPERVISOR_INVALIDO',
@@ -3973,6 +3997,13 @@ class VentaController extends Controller
         }
 
         if (!$this->isAnulacionSupervisor($supervisor)) {
+            Log::warning('VentaController autorizarAnulacion supervisor without permission', [
+                'current_user_id' => $currentUser->id ?? null,
+                'supervisor_id' => $supervisor->id ?? null,
+                'supervisor_email' => $supervisor->email ?? null,
+                'supervisor_roles' => method_exists($supervisor, 'roleSlugs') ? $supervisor->roleSlugs() : [],
+                'supervisor_permissions' => method_exists($supervisor, 'permissions') ? $supervisor->permissions() : [],
+            ]);
             return response()->json([
                 'message' => 'El usuario supervisor no tiene permisos para autorizar anulaciones.',
                 'code' => 'ANULACION_SUPERVISOR_SIN_PERMISO',
@@ -3989,6 +4020,14 @@ class VentaController extends Controller
             'expires_at' => $expiresAt->toIso8601String(),
             'created_at' => now()->toIso8601String(),
         ], $expiresAt);
+        Log::info('VentaController autorizarAnulacion success', [
+            'current_user_id' => $currentUser->id ?? null,
+            'current_user_email' => $currentUser->email ?? null,
+            'supervisor_id' => $supervisor->id ?? null,
+            'supervisor_email' => $supervisor->email ?? null,
+            'expires_at' => $expiresAt->toIso8601String(),
+            'guard' => $this->buildAnulacionGuardStatus($currentUser),
+        ]);
 
         return response()->json([
             'ok' => true,
@@ -4206,18 +4245,39 @@ class VentaController extends Controller
     private function isAnulacionSupervisor($user): bool
     {
         if (!$user) {
+            Log::info('VentaController isAnulacionSupervisor evaluated', [
+                'user_id' => null,
+                'user_email' => null,
+                'roles' => [],
+                'permissions' => [],
+                'has_higher_role' => false,
+                'has_higher_permission' => false,
+                'result' => false,
+            ]);
             return false;
         }
 
-        if (method_exists($user, 'hasRole') && ($user->hasRole('admin') || $user->hasRole('administrador') || $user->hasRole('supervisor'))) {
-            return true;
-        }
-
-        return method_exists($user, 'hasPermission') && (
+        $roles = method_exists($user, 'roleSlugs') ? $user->roleSlugs() : [];
+        $permissions = method_exists($user, 'permissions') ? $user->permissions() : [];
+        $hasHigherRole = method_exists($user, 'hasRole') && ($user->hasRole('admin') || $user->hasRole('administrador') || $user->hasRole('supervisor'));
+        $hasHigherPermission = method_exists($user, 'hasPermission') && (
             $user->hasPermission('rbac.manage')
             || $user->hasPermission('usuarios.manage')
             || $user->hasPermission('ventas.manage')
         );
+        $result = $hasHigherRole || $hasHigherPermission;
+
+        Log::info('VentaController isAnulacionSupervisor evaluated', [
+            'user_id' => $user->id ?? null,
+            'user_email' => $user->email ?? null,
+            'roles' => $roles,
+            'permissions' => $permissions,
+            'has_higher_role' => $hasHigherRole,
+            'has_higher_permission' => $hasHigherPermission,
+            'result' => $result,
+        ]);
+
+        return $result;
     }
 
 }
