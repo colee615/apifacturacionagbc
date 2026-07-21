@@ -32,11 +32,11 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::get('/ventas/consultar-paquete/{codigoSeguimientoPaquete}', 'VentaController@consultarPaquete')->middleware('permission:ventas.read');
    Route::get('/ventas/consultar/{codigoSeguimiento}', 'VentaController@consultarVenta')->middleware('permission:ventas.read');
    Route::get('/ventas/anulacion/guard-status', 'VentaController@anulacionGuardStatus')->middleware('permission:ventas.read');
-   Route::post('/ventas/anulacion/autorizar', 'VentaController@autorizarAnulacion')->middleware('permission:ventas.write');
-   Route::delete('/ventas/anulacion/autorizar', 'VentaController@revocarAutorizacionAnulacion')->middleware('permission:ventas.write');
+   Route::post('/ventas/anulacion/autorizar', 'VentaController@autorizarAnulacion')->middleware('permission:ventas.read');
+   Route::delete('/ventas/anulacion/autorizar', 'VentaController@revocarAutorizacionAnulacion')->middleware('permission:ventas.read');
    Route::post('/ventas/anulacion/guard/toggle', 'VentaController@toggleAnulacionGuard')->middleware('permission:rbac.manage');
-   Route::patch('/ventas/anular/{cuf}', 'VentaController@anularFactura')->middleware('permission:ventas.write');
-   Route::post('/ventas/rechazadas/descartar', [FacturacionCartIntegrationController::class, 'discardRejected'])->middleware('permission:ventas.write');
+   Route::patch('/ventas/anular/{cuf}', 'VentaController@anularFactura')->middleware('permission:ventas.read');
+   Route::post('/ventas/rechazadas/descartar', [FacturacionCartIntegrationController::class, 'discardRejected'])->middleware('permission:ventas.read');
    Route::get('/ventas/{venta}', 'VentaController@show')->middleware('permission:ventas.read');
 
    Route::get('/caja/estado', [CajaDiariaController::class, 'estado'])->middleware('permission:ventas.read');
