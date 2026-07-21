@@ -18,7 +18,6 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::post('logout', [UsuarioController::class, 'logout']);
    Route::get('/ventas', 'VentaController@index')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/kardex-usuarios', 'VentaController@kardexUsuarios')->middleware('permission:ventas.read');
-   Route::get('/ventas/reportes/kardex-pdf', 'VentaController@reporteKardexPdf')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/resumen', 'VentaController@reporteVentas')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/sucursales', 'VentaController@reporteSucursales')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/sucursales/usuarios', 'VentaController@reporteSucursalesUsuarios')->middleware('permission:ventas.read');
