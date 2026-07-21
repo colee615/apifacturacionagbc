@@ -5,13 +5,14 @@
     <title>Kardex Diario de Rendicion</title>
     <style>
         @page {
-            margin: 16px 14px 18px 14px;
+            margin: 14px 14px 18px 14px;
         }
 
         body {
             font-family: Verdana, DejaVu Sans, sans-serif;
-            font-size: 11px;
-            color: #111;
+            font-size: 10px;
+            color: #1f2937;
+            margin: 0;
         }
 
         table {
@@ -19,21 +20,61 @@
             border-collapse: collapse;
         }
 
-        .header-banner {
+        .report-shell {
             width: 100%;
+        }
+
+        .report-title {
+            margin: 10px 0 3px;
+            text-align: center;
+            font-size: 19px;
+            font-weight: 700;
+            color: #1d3360;
+        }
+
+        .report-subtitle {
+            margin: 0 0 10px;
+            text-align: center;
+            font-size: 10px;
+            color: #6b7280;
+        }
+
+        .header-wrap {
+            width: 100%;
+            margin-bottom: 10px;
+        }
+
+        .header-wrap td {
+            border: 0;
+            padding: 0;
+            vertical-align: middle;
+        }
+
+        .header-logo-left {
+            width: 82mm;
             height: auto;
             display: block;
         }
 
+        .header-logo-right {
+            width: 46mm;
+            height: auto;
+            display: block;
+            margin-left: auto;
+        }
+
         .meta td {
-            border: 1px solid #333;
-            padding: 6px 8px;
+            border: 1px solid #6b7280;
+            padding: 7px 9px;
             font-size: 10px;
+            vertical-align: top;
         }
 
         .meta .field {
             width: 18%;
             font-weight: 700;
+            background: #f8fafc;
+            color: #111827;
         }
 
         .meta .value {
@@ -42,29 +83,33 @@
 
         .section-title {
             margin: 12px 0 6px;
-            padding: 5px 8px;
-            border: 1px solid #333;
-            background: #f4f6f9;
+            padding: 7px 9px;
+            border: 1px solid #6b7280;
+            background: #f3f4f6;
             font-size: 10px;
             font-weight: 700;
             text-transform: uppercase;
+            color: #111827;
         }
 
         .grid th,
         .grid td {
-            border: 1px solid #333;
-            padding: 4px 5px;
+            border: 1px solid #6b7280;
+            padding: 5px 6px;
         }
 
         .grid th {
             text-align: center;
             font-weight: 700;
-            font-size: 10px;
+            font-size: 9.4px;
+            background: #f8fafc;
+            color: #111827;
         }
 
         .grid td {
-            font-size: 9.4px;
-            height: 20px;
+            font-size: 8.9px;
+            line-height: 1.35;
+            vertical-align: top;
         }
 
         .center {
@@ -76,14 +121,14 @@
         }
 
         .totals td {
-            border: 1px solid #333;
-            padding: 5px 8px;
+            border: 1px solid #6b7280;
+            padding: 6px 8px;
             font-size: 10px;
             font-weight: 700;
         }
 
         .observaciones td {
-            border: 1px solid #333;
+            border: 1px solid #6b7280;
             padding: 8px;
             vertical-align: top;
         }
@@ -121,39 +166,80 @@
         }
 
         .cashier-meta td {
-            border: 1px solid #333;
-            padding: 5px 7px;
+            border: 1px solid #6b7280;
+            padding: 6px 8px;
             font-size: 9.5px;
+            vertical-align: middle;
         }
 
         .cashier-name {
             font-weight: 700;
             font-size: 11px;
+            color: #1d3360;
         }
 
         .cashier-muted {
-            color: #444;
+            color: #6b7280;
             font-size: 9px;
         }
 
         .summary-grid td {
-            border: 1px solid #333;
-            padding: 6px 8px;
+            border: 1px solid #6b7280;
+            padding: 7px 8px;
             font-size: 10px;
         }
 
         .summary-label {
             font-weight: 700;
             text-transform: uppercase;
-            background: #f4f6f9;
+            background: #f3f4f6;
+            color: #111827;
+        }
+
+        .summary-value-strong {
+            font-weight: 700;
+            color: #1d3360;
         }
     </style>
 </head>
 <body>
 @php
     $scope = $scope ?? 'own';
-    $headerImagePath = public_path('images/encabezado_contratos.jpeg');
-    $headerImage = file_exists($headerImagePath) ? 'data:image/jpeg;base64,' . base64_encode(file_get_contents($headerImagePath)) : null;
+    $resolveEmbeddedImage = function (array $candidates) {
+        foreach ($candidates as $candidate) {
+            if (! is_string($candidate) || trim($candidate) === '') {
+                continue;
+            }
+
+            if (! file_exists($candidate)) {
+                continue;
+            }
+
+            $extension = strtolower(pathinfo($candidate, PATHINFO_EXTENSION));
+            $mime = match ($extension) {
+                'jpg', 'jpeg' => 'image/jpeg',
+                'gif' => 'image/gif',
+                'svg' => 'image/svg+xml',
+                default => 'image/png',
+            };
+
+            return 'data:' . $mime . ';base64,' . base64_encode(file_get_contents($candidate));
+        }
+
+        return null;
+    };
+
+    $frontendStaticPath = 'C:/xampp/htdocs/Git proyectos/frontfacturacionagbc/static/assets/imagenes';
+    $ministerioLogo = $resolveEmbeddedImage([
+        public_path('assets/imagenes/MOPSV.png'),
+        public_path('images/MOPSV.png'),
+        $frontendStaticPath . '/MOPSV.png',
+    ]);
+    $correosLogo = $resolveEmbeddedImage([
+        public_path('assets/imagenes/AGBClogo1.png'),
+        public_path('images/AGBClogo1.png'),
+        $frontendStaticPath . '/AGBClogo1.png',
+    ]);
     $sucursal = $user->sucursal;
     $oficinaPostal = trim((string) ($sucursal->nombre ?? $sucursal->descripcion ?? $sucursal->municipio ?? ''));
     $isAdmisionesEms = collect($carts)->contains(function ($cart) {
@@ -240,11 +326,28 @@
         ->values();
 @endphp
 
-@if($headerImage)
-    <div style="margin-bottom: 8px;">
-        <img src="{{ $headerImage }}" class="header-banner" alt="Encabezado Contratos">
-    </div>
+<div class="report-shell">
+@if($ministerioLogo || $correosLogo)
+    <table class="header-wrap">
+        <tr>
+            <td style="width: 68%;">
+                @if($ministerioLogo)
+                    <img src="{{ $ministerioLogo }}" class="header-logo-left" alt="Ministerio de Obras Publicas">
+                @endif
+            </td>
+            <td style="width: 32%; text-align: right;">
+                @if($correosLogo)
+                    <img src="{{ $correosLogo }}" class="header-logo-right" alt="Correos de Bolivia">
+                @endif
+            </td>
+        </tr>
+    </table>
 @endif
+
+<div class="report-title">{{ $scope === 'branch' ? 'KARDEX DE SUCURSAL' : 'KARDEX DE VENTAS COBRADAS' }}</div>
+<div class="report-subtitle">
+    {{ $scope === 'branch' ? 'Resumen detallado por cajero y ventas del rango seleccionado' : 'Detalle consolidado de ventas del rango seleccionado' }}
+</div>
 
 <table class="meta" style="margin-bottom: 10px;">
     <tr>
@@ -266,15 +369,15 @@
     <table class="summary-grid" style="margin-bottom: 10px;">
         <tr>
             <td class="summary-label" style="width: 25%;">Cajeros con ventas</td>
-            <td style="width: 25%;">{{ $branchGroups->count() }}</td>
+            <td class="summary-value-strong" style="width: 25%;">{{ $branchGroups->count() }}</td>
             <td class="summary-label" style="width: 25%;">Total ventas</td>
-            <td style="width: 25%;">{{ collect($rows)->count() }}</td>
+            <td class="summary-value-strong" style="width: 25%;">{{ collect($rows)->count() }}</td>
         </tr>
         <tr>
             <td class="summary-label">Total en caja</td>
-            <td>Bs {{ number_format((float) $cashRows->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+            <td class="summary-value-strong">Bs {{ number_format((float) $cashRows->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
             <td class="summary-label">Total emitido</td>
-            <td>Bs {{ number_format((float) collect($rows)->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
+            <td class="summary-value-strong">Bs {{ number_format((float) collect($rows)->sum(fn ($row) => (float) data_get($row, 'importe_general', 0)), 2) }}</td>
         </tr>
     </table>
 
@@ -297,14 +400,12 @@
             <thead>
                 <tr>
                     <th style="width: 4%;">Nro.</th>
-                    <th style="width: 10%;">Fecha</th>
-                    <th style="width: 12%;">Orden</th>
-                    <th style="width: 14%;">Cliente</th>
-                    <th style="width: 23%;">Detalle</th>
-                    <th style="width: 17%;">Paquete / codigos</th>
+                    <th style="width: 12%;">Fecha</th>
+                    <th style="width: 45%;">Detalle</th>
+                    <th style="width: 25%;">Paquete / codigos</th>
                     <th style="width: 8%;">Factura</th>
                     <th style="width: 6%;">Estado</th>
-                    <th style="width: 6%;">Importe</th>
+                    <th style="width: 10%;">Importe</th>
                 </tr>
             </thead>
             <tbody>
@@ -312,10 +413,14 @@
                     <tr>
                         <td class="center">{{ $index + 1 }}</td>
                         <td class="center">{{ data_get($row, 'fecha_hora', data_get($row, 'fecha', '-')) }}</td>
-                        <td>{{ data_get($row, 'codigo_item', '-') }}</td>
-                        <td>{{ data_get($row, 'cliente', 'Sin cliente') }}</td>
                         <td>
                             <strong>{{ data_get($row, 'detalle_items', data_get($row, 'tipo_envio', 'Sin detalle')) }}</strong>
+                            @if((string) data_get($row, 'codigo_item', '') !== '')
+                                <br>{{ data_get($row, 'codigo_item') }}
+                            @endif
+                            @if((string) data_get($row, 'cliente', '') !== '')
+                                <br>{{ data_get($row, 'cliente') }}
+                            @endif
                             @if((string) data_get($row, 'detalle_resumen', '') !== '')
                                 <br>{{ data_get($row, 'detalle_resumen') }}
                             @endif
@@ -327,7 +432,7 @@
                     </tr>
                 @endforeach
                 <tr>
-                    <td colspan="8" class="right" style="font-weight: 700;">SUBTOTAL {{ strtoupper($group['nombre']) }}</td>
+                    <td colspan="6" class="right" style="font-weight: 700;">SUBTOTAL {{ strtoupper($group['nombre']) }}</td>
                     <td class="right" style="font-weight: 700;">Bs {{ number_format((float) $group['total'], 2) }}</td>
                 </tr>
             </tbody>
@@ -428,5 +533,6 @@
         </td>
     </tr>
 </table>
+</div>
 </body>
 </html>

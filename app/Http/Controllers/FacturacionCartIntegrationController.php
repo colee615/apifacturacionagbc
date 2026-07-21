@@ -1299,10 +1299,13 @@ class FacturacionCartIntegrationController extends Controller
             $correo = self::DEFAULT_BILLING_EMAIL;
         }
 
-        $fullName = trim((string) ($cart->razon_social ?? $cart->origen_usuario_nombre ?? 'CLIENTE QR'));
+        $fullName = trim((string) ($cart->razon_social ?? ''));
+        if ($fullName === '') {
+            $fullName = 'SIN CLIENTE';
+        }
         $parts = preg_split('/\s+/', $fullName) ?: [];
-        $firstName = trim((string) ($parts[0] ?? 'CLIENTE'));
-        $lastName = trim((string) (count($parts) > 1 ? implode(' ', array_slice($parts, 1)) : 'QR'));
+        $firstName = trim((string) ($parts[0] ?? 'SIN'));
+        $lastName = trim((string) (count($parts) > 1 ? implode(' ', array_slice($parts, 1)) : 'CLIENTE'));
 
         $itemsPayload = collect($items)->map(function ($i) {
             $nombre = trim((string) ($i->titulo ?? $i->nombre_servicio ?? 'Servicio postal'));
