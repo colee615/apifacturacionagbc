@@ -377,6 +377,47 @@ class VentaController extends Controller
         ];
     }
 
+    private function storeAnulacionRespaldo(Request $request, string $cuf): array
+    {
+        if (!$request->hasFile('respaldo')) {
+            return [];
+        }
+
+        $validated = $request->validate([
+            'respaldo' => ['file', 'max:5120', 'mimes:jpg,jpeg,png,pdf,webp,doc,docx'],
+        ]);
+
+        $file = $validated['respaldo'];
+        $folder = public_path('uploads/anulaciones/' . now()->format('Y/m'));
+
+        if (!is_dir($folder)) {
+            mkdir($folder, 0755, true);
+        }
+
+        $extension = strtolower((string) ($file->getClientOriginalExtension() ?: $file->guessExtension() ?: 'bin'));
+        $safeCuf = preg_replace('/[^A-Za-z0-9\-]/', '', $cuf) ?: 'sin-cuf';
+        $filename = 'anulacion-' . $safeCuf . '-' . now()->format('YmdHis') . '-' . Str::random(8) . '.' . $extension;
+
+        $file->move($folder, $filename);
+
+        return [
+            'anulacion_respaldo_path' => 'uploads/anulaciones/' . now()->format('Y/m') . '/' . $filename,
+            'anulacion_respaldo_nombre' => $file->getClientOriginalName(),
+            'anulacion_respaldo_mime' => $file->getClientMimeType(),
+            'anulacion_respaldo_size' => (int) $file->getSize(),
+        ];
+    }
+
+    private function anulacionRespaldoUrl(?string $path): ?string
+    {
+        $cleanPath = trim((string) $path);
+        if ($cleanPath === '') {
+            return null;
+        }
+
+        return url(str_replace('\\', '/', ltrim($cleanPath, '/')));
+    }
+
     private function anulacionPayloadForVenta(Venta $venta): array
     {
         return [
@@ -388,6 +429,11 @@ class VentaController extends Controller
             'tipo' => $venta->anulacion_tipo,
             'autorizadaPorUserId' => $venta->anulacion_autorizada_por_user_id,
             'autorizadaPorEmail' => $venta->anulacion_autorizada_por_email,
+            'respaldoPath' => $venta->anulacion_respaldo_path,
+            'respaldoNombre' => $venta->anulacion_respaldo_nombre,
+            'respaldoMime' => $venta->anulacion_respaldo_mime,
+            'respaldoSize' => $venta->anulacion_respaldo_size,
+            'respaldoUrl' => $this->anulacionRespaldoUrl($venta->anulacion_respaldo_path),
             'numeroFactura' => $venta->numero_factura,
             'codigoOrden' => $venta->codigoOrden,
             'cuf' => $venta->cuf,
@@ -4134,10 +4180,16 @@ class VentaController extends Controller
         }
 
         $requestData = $this->sufeValidator->validateAnulacionPayload($request->all());
-        $auditData = $this->buildAnulacionAuditData($currentUser, $guard, $requestData);
+        $respaldoData = $this->storeAnulacionRespaldo($request, (string) $cuf);
+        $auditData = array_merge(
+            $this->buildAnulacionAuditData($currentUser, $guard, $requestData),
+            $respaldoData
+        );
         Log::info('VentaController anularFactura delegating to FacturaVentaApiController', [
             'cuf' => (string) $cuf,
             'payload' => $requestData,
+            'has_respaldo' => !empty($respaldoData),
+            'respaldo_nombre' => $respaldoData['anulacion_respaldo_nombre'] ?? null,
             'guard' => $guard,
         ]);
 
@@ -4167,6 +4219,10 @@ class VentaController extends Controller
                     'anuladaPor' => $auditData['anulada_por_nombre'] ?? $auditData['anulada_por_email'] ?? null,
                     'anuladaAt' => ($auditData['anulada_at'] ?? null)?->toIso8601String(),
                     'autorizadaPor' => $auditData['anulacion_autorizada_por_email'] ?? null,
+                    'respaldoNombre' => $auditData['anulacion_respaldo_nombre'] ?? null,
+                    'respaldoMime' => $auditData['anulacion_respaldo_mime'] ?? null,
+                    'respaldoSize' => $auditData['anulacion_respaldo_size'] ?? null,
+                    'respaldoUrl' => $this->anulacionRespaldoUrl($auditData['anulacion_respaldo_path'] ?? null),
                     'numeroFactura' => $venta->numero_factura ?? null,
                     'codigoOrden' => $venta->codigoOrden ?? null,
                     'estadoFinal' => $venta->estado_sufe ?? null,

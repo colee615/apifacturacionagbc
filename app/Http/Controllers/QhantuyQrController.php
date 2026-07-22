@@ -141,7 +141,7 @@ class QhantuyQrController extends Controller
             'estado' => 'pendiente_pago',
             'estado_pago' => 'cancelado',
             'estado_emision' => 'NO_APLICA',
-            'mensaje_emision' => trim($message) !== '' ? trim($message) : 'Venta QR invalidada localmente.',
+            'mensaje_emision' => trim($message) !== '' ? trim($message) : 'Cobro QR cancelado localmente.',
             'emitido_en' => null,
             'cerrado_en' => null,
             'updated_at' => now(),
@@ -866,8 +866,8 @@ class QhantuyQrController extends Controller
 
         if ($transactionId <= 0 && $cart) {
             $localMessage = $reason !== ''
-                ? 'Venta QR invalidada localmente. Motivo: ' . $reason
-                : 'Venta QR invalidada localmente porque no existe un QR generado para anular.';
+                ? 'Cobro QR cancelado localmente. Motivo: ' . $reason
+                : 'Cobro QR cancelado localmente porque no existe un QR generado activo para anular.';
 
             return response()->json($this->cancelCartLocally($cart, $localMessage, $row));
         }
