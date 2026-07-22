@@ -9,9 +9,102 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class QhantuyQrController extends Controller
 {
+    private static ?bool $hasQrCancelAuditColumns = null;
+
+    private function hasQrCancelAuditColumns(): bool
+    {
+        if (self::$hasQrCancelAuditColumns === null) {
+            self::$hasQrCancelAuditColumns =
+                Schema::hasColumn('facturacion_carts', 'qr_cancelado_at')
+                && Schema::hasColumn('facturacion_carts', 'qr_cancelado_por_user_id')
+                && Schema::hasColumn('facturacion_carts', 'qr_cancelado_por_nombre')
+                && Schema::hasColumn('facturacion_carts', 'qr_cancelado_por_email')
+                && Schema::hasColumn('facturacion_carts', 'qr_cancelacion_motivo')
+                && Schema::hasColumn('facturacion_carts', 'qr_cancelacion_origen')
+                && Schema::hasColumn('facturacion_carts', 'qr_cancelacion_transaction_id')
+                && Schema::hasColumn('facturacion_carts', 'qr_cancelacion_mensaje');
+        }
+
+        return self::$hasQrCancelAuditColumns;
+    }
+
+    private function qrCancellationAuditColumns(
+        string $message,
+        string $reason = '',
+        ?int $transactionId = null,
+        string $origin = 'LOCAL'
+    ): array {
+        if (!$this->hasQrCancelAuditColumns()) {
+            return [];
+        }
+
+        $user = auth('api')->user() ?? request()->user();
+
+        return [
+            'qr_cancelado_at' => now(),
+            'qr_cancelado_por_user_id' => $user?->id,
+            'qr_cancelado_por_nombre' => $user?->name,
+            'qr_cancelado_por_email' => $user?->email,
+            'qr_cancelacion_motivo' => trim($reason) !== '' ? trim($reason) : null,
+            'qr_cancelacion_origen' => trim($origin) !== '' ? trim($origin) : 'LOCAL',
+            'qr_cancelacion_transaction_id' => $transactionId && $transactionId > 0 ? (string) $transactionId : null,
+            'qr_cancelacion_mensaje' => trim($message) !== '' ? trim($message) : null,
+        ];
+    }
+
+    private function applyQrCancellationAuditToCart(
+        ?object $cart,
+        string $message,
+        string $reason = '',
+        ?int $transactionId = null,
+        string $origin = 'LOCAL',
+        ?string $internalCode = null,
+        ?string $normalizedInternalCode = null
+    ): ?object {
+        $auditUpdates = $this->qrCancellationAuditColumns($message, $reason, $transactionId, $origin);
+        if ($auditUpdates === []) {
+            return $cart;
+        }
+
+        $query = DB::table('facturacion_carts');
+        if ($cart && !empty($cart->id)) {
+            $query->where('id', (int) $cart->id);
+        } elseif (!blank($internalCode)) {
+            $query->where(function ($builder) use ($internalCode, $normalizedInternalCode) {
+                $builder->where('codigo_orden', $internalCode);
+                if (!blank($normalizedInternalCode) && $normalizedInternalCode !== $internalCode) {
+                    $builder->orWhere('codigo_orden', $normalizedInternalCode);
+                }
+            });
+        } else {
+            return $cart;
+        }
+
+        $query->update(array_merge($auditUpdates, ['updated_at' => now()]));
+
+        if ($cart && !empty($cart->id)) {
+            return DB::table('facturacion_carts')->where('id', (int) $cart->id)->first();
+        }
+
+        if (!blank($internalCode)) {
+            return DB::table('facturacion_carts')
+                ->where(function ($builder) use ($internalCode, $normalizedInternalCode) {
+                    $builder->where('codigo_orden', $internalCode);
+                    if (!blank($normalizedInternalCode) && $normalizedInternalCode !== $internalCode) {
+                        $builder->orWhere('codigo_orden', $normalizedInternalCode);
+                    }
+                })
+                ->orderByDesc('id')
+                ->first();
+        }
+
+        return $cart;
+    }
+
     private function summarizeCheckoutItems(array $items): array
     {
         return collect($items)
@@ -134,7 +227,7 @@ class QhantuyQrController extends Controller
             ->update($updates);
     }
 
-    private function cancelCartLocally(object $cart, string $message, ?object $row = null): array
+    private function cancelCartLocally(object $cart, string $message, ?object $row = null, string $reason = ''): array
     {
         $updates = [
             'metodo_pago' => 'qr',
@@ -146,6 +239,16 @@ class QhantuyQrController extends Controller
             'cerrado_en' => null,
             'updated_at' => now(),
         ];
+
+        $updates = array_merge(
+            $updates,
+            $this->qrCancellationAuditColumns(
+                $updates['mensaje_emision'],
+                $reason,
+                (int) ($row->transaction_id ?? $cart->qr_transaction_id ?? 0),
+                'LOCAL'
+            )
+        );
 
         DB::table('facturacion_carts')
             ->where('id', (int) $cart->id)
@@ -869,7 +972,7 @@ class QhantuyQrController extends Controller
                 ? 'Cobro QR cancelado localmente. Motivo: ' . $reason
                 : 'Cobro QR cancelado localmente porque no existe un QR generado activo para anular.';
 
-            return response()->json($this->cancelCartLocally($cart, $localMessage, $row));
+            return response()->json($this->cancelCartLocally($cart, $localMessage, $row, $reason));
         }
 
         if ($transactionId <= 0 || $internalCode === '') {
@@ -892,7 +995,17 @@ class QhantuyQrController extends Controller
             ], 422);
         }
 
-        if ($currentStatus === 'cancelled') {
+            if ($currentStatus === 'cancelled') {
+            $updatedCart = $this->applyQrCancellationAuditToCart(
+                $cart,
+                (string) ($row->last_message ?? 'El cobro QR ya estaba cancelado.'),
+                $reason,
+                $transactionId,
+                'LOCAL',
+                $internalCode,
+                $normalizedInternalCode
+            );
+
             if ($row) {
                 $this->syncCartPaymentState(
                     (string) ($row->internal_code ?? $internalCode),
@@ -908,6 +1021,7 @@ class QhantuyQrController extends Controller
                 'transaction_id' => $transactionId,
                 'payment_status' => 'cancelled',
                 'estado_pago' => $this->qrPaymentStateFromStatus('cancelled'),
+                'cart' => $updatedCart,
             ]);
         }
 
@@ -985,15 +1099,15 @@ class QhantuyQrController extends Controller
 
             $this->syncCartPaymentState($internalCode, $status, $transactionId, $message);
 
-            $updatedCart = DB::table('facturacion_carts')
-                ->where(function ($query) use ($internalCode, $normalizedInternalCode) {
-                    $query->where('codigo_orden', $internalCode);
-                    if ($normalizedInternalCode !== '' && $normalizedInternalCode !== $internalCode) {
-                        $query->orWhere('codigo_orden', $normalizedInternalCode);
-                    }
-                })
-                ->orderByDesc('id')
-                ->first();
+            $updatedCart = $this->applyQrCancellationAuditToCart(
+                $cart,
+                $message,
+                $reason,
+                $transactionId,
+                'PROVEEDOR',
+                $internalCode,
+                $normalizedInternalCode
+            );
 
             return response()->json([
                 'ok' => true,
