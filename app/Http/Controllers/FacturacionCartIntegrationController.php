@@ -879,6 +879,18 @@ class FacturacionCartIntegrationController extends Controller
             'cart_id' => 'required|integer|min:1',
         ]);
 
+        $cart = DB::table('facturacion_carts')
+            ->where('id', (int) $v['cart_id'])
+            ->where('origen_usuario_id', (string) $v['origen_usuario_id'])
+            ->first();
+
+        if (!$cart) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'No se encontro la venta QR solicitada.',
+            ], 404);
+        }
+
         $consultRequest = Request::create('/api/factura-venta/cart/consultar', 'POST', [
             'origen_usuario_id' => (string) $v['origen_usuario_id'],
             'cart_id' => (int) $v['cart_id'],
@@ -893,6 +905,35 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         if (($consultResponse->getStatusCode() >= 400) || empty($payload['ok'])) {
+            if ($this->isQrOriginCart($cart) && $this->shouldReusePendingQr($cart)) {
+                $existingResponse = $this->buildReusableQrResponse($cart);
+                $qrData = is_array($existingResponse)
+                    ? $this->extractQrSessionData(
+                        $existingResponse,
+                        (string) ($cart->codigo_orden ?? ''),
+                        true
+                    )
+                    : null;
+
+                if (is_array($qrData) && $qrData !== []) {
+                    return response()->json([
+                        'ok' => true,
+                        'feedback' => [
+                            'type' => 'info',
+                            'title' => 'QR vigente',
+                            'message' => 'La consulta del QR no respondio correctamente, pero el ultimo QR pendiente sigue disponible.',
+                            'detail' => 'Se muestra el respaldo local para continuar con el cobro.',
+                            'action' => 'ver_qr',
+                        ],
+                        'qr_data' => $qrData,
+                        'force_open_qr' => true,
+                        'cart' => $this->cartById((int) $cart->id),
+                        'status_code' => 200,
+                        'reused_active_qr' => true,
+                    ]);
+                }
+            }
+
             return response()->json($payload, $consultResponse->getStatusCode());
         }
 
@@ -904,6 +945,21 @@ class FacturacionCartIntegrationController extends Controller
             strtolower(trim((string) ($cart['canal_emision'] ?? ''))) === 'qr'
         );
         $shouldOpenQrViewer = $this->shouldShowQrSessionData($qrData);
+        if (!$shouldOpenQrViewer && strtolower(trim((string) ($cart['estado_pago'] ?? 'pendiente'))) === 'pendiente') {
+            $existingResponse = $this->buildReusableQrResponse((object) $cart);
+            $fallbackQrData = is_array($existingResponse)
+                ? $this->extractQrSessionData(
+                    $existingResponse,
+                    (string) ($cart['codigo_orden'] ?? ''),
+                    true
+                )
+                : null;
+
+            if (is_array($fallbackQrData) && $fallbackQrData !== []) {
+                $qrData = $fallbackQrData;
+                $shouldOpenQrViewer = true;
+            }
+        }
         if ($shouldOpenQrViewer && !is_array($qrData)) {
             $qrData = [
                 'image_data' => '',
@@ -1925,10 +1981,18 @@ class FacturacionCartIntegrationController extends Controller
     private function buildReusableQrResponse(object $cart): ?array
     {
         $response = $this->decode((string) ($cart->respuesta_emision ?? ''));
-        $transactionId = trim((string) ($cart->qr_transaction_id ?? data_get($response, 'transaction_id', '')));
+        $transactionId = trim((string) (
+            $cart->qr_transaction_id
+            ?? data_get($response, 'transaction_id')
+            ?? data_get($response, 'payment_id')
+            ?? data_get($response, 'items.0.id')
+            ?? ''
+        ));
         $imageData = trim((string) (
             data_get($response, 'image_data')
             ?? data_get($response, 'qr_url')
+            ?? data_get($response, 'items.0.image_data')
+            ?? data_get($response, 'items.0.qr_url')
             ?? ''
         ));
 
@@ -1940,8 +2004,15 @@ class FacturacionCartIntegrationController extends Controller
             'ok' => true,
             'estado' => 'NO_APLICA',
             'estado_pago' => 'pendiente',
-            'payment_status' => (string) (data_get($response, 'payment_status') ?: 'holding'),
-            'transaction_id' => $transactionId !== '' ? $transactionId : data_get($response, 'transaction_id'),
+            'payment_status' => (string) (
+                data_get($response, 'payment_status')
+                ?: data_get($response, 'items.0.payment_status')
+                ?: 'holding'
+            ),
+            'transaction_id' => $transactionId !== '' ? $transactionId : (
+                data_get($response, 'transaction_id')
+                ?: data_get($response, 'items.0.id')
+            ),
             'internal_code' => $this->normalizeBridgeCodigoOrden(
                 trim((string) ($cart->codigo_orden ?? data_get($response, 'internal_code', ''))),
                 'qr'
