@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Str;
 
 class CajaDiariaController extends Controller
 {
@@ -833,6 +834,163 @@ class CajaDiariaController extends Controller
         ]);
     }
 
+    public function conciliaciones(Request $request)
+    {
+        $validated = $request->validate([
+            'fecha' => ['nullable', 'date_format:Y-m-d'],
+        ]);
+
+        $fecha = (string) ($validated['fecha'] ?? now()->toDateString());
+
+        if (!Schema::hasTable('cierre_diario_sucursales')) {
+            return response()->json([
+                'ok' => true,
+                'fecha' => $fecha,
+                'conciliaciones' => [],
+            ]);
+        }
+
+        $rows = DB::table('cierre_diario_sucursales')
+            ->whereDate('fecha_operacion', $fecha)
+            ->orderBy('codigo_sucursal')
+            ->orderBy('punto_venta')
+            ->get();
+
+        return response()->json([
+            'ok' => true,
+            'fecha' => $fecha,
+            'conciliaciones' => $rows->map(fn ($row) => $this->conciliacionPayload($row))->values(),
+        ]);
+    }
+
+    public function conciliacionDetalle(Request $request)
+    {
+        $validated = $request->validate([
+            'fecha' => ['required', 'date_format:Y-m-d'],
+            'codigoSucursal' => ['required', 'integer', 'min:0'],
+            'puntoVenta' => ['nullable', 'integer', 'min:0'],
+        ]);
+
+        $fecha = (string) $validated['fecha'];
+        $codigoSucursal = (int) $validated['codigoSucursal'];
+        $puntoVenta = (int) ($validated['puntoVenta'] ?? 0);
+
+        $row = $this->findOrCreateConciliacionRow($fecha, $codigoSucursal, $puntoVenta, []);
+        $receipts = $this->conciliacionReceipts($row->id);
+
+        return response()->json([
+            'ok' => true,
+            'fecha' => $fecha,
+            'conciliacion' => $this->conciliacionPayload($row),
+            'comprobantes' => $receipts,
+        ]);
+    }
+
+    public function storeConciliacionComprobante(Request $request)
+    {
+        [$actorId, $actorNombre, $actorEmail] = $this->resolveActor($request);
+
+        $validated = $request->validate([
+            'fecha' => ['required', 'date_format:Y-m-d'],
+            'codigoSucursal' => ['required', 'integer', 'min:0'],
+            'puntoVenta' => ['nullable', 'integer', 'min:0'],
+            'sucursalNombre' => ['nullable', 'string', 'max:180'],
+            'totalEfectivoSistema' => ['nullable', 'numeric', 'min:0'],
+            'totalQrSistema' => ['nullable', 'numeric', 'min:0'],
+            'totalGeneralSistema' => ['nullable', 'numeric', 'min:0'],
+            'montoDepositado' => ['required', 'numeric', 'min:0.01'],
+            'banco' => ['nullable', 'string', 'max:120'],
+            'referencia' => ['nullable', 'string', 'max:120'],
+            'observacion' => ['nullable', 'string', 'max:500'],
+            'archivo' => ['required', 'file', 'max:10240', 'mimes:jpg,jpeg,png,pdf,webp'],
+            'origen_usuario_id' => ['nullable', 'string', 'max:100'],
+            'origen_usuario_nombre' => ['nullable', 'string', 'max:255'],
+            'origen_usuario_email' => ['nullable', 'string', 'max:120'],
+        ]);
+
+        $fecha = (string) $validated['fecha'];
+        $codigoSucursal = (int) $validated['codigoSucursal'];
+        $puntoVenta = (int) ($validated['puntoVenta'] ?? 0);
+
+        $row = $this->findOrCreateConciliacionRow($fecha, $codigoSucursal, $puntoVenta, [
+            'sucursal_nombre' => trim((string) ($validated['sucursalNombre'] ?? '')) ?: null,
+            'total_efectivo_sistema' => round((float) ($validated['totalEfectivoSistema'] ?? 0), 2),
+            'total_qr_sistema' => round((float) ($validated['totalQrSistema'] ?? 0), 2),
+            'total_general_sistema' => round((float) ($validated['totalGeneralSistema'] ?? 0), 2),
+        ]);
+
+        $file = $validated['archivo'];
+        $folderRelative = 'uploads/conciliaciones/' . now()->format('Y/m');
+        $folder = public_path($folderRelative);
+        if (!is_dir($folder)) {
+            mkdir($folder, 0755, true);
+        }
+
+        $extension = strtolower((string) ($file->getClientOriginalExtension() ?: $file->guessExtension() ?: 'bin'));
+        $filename = 'comp-' . $fecha . '-s' . str_pad((string) $codigoSucursal, 3, '0', STR_PAD_LEFT) . '-pv' . $puntoVenta . '-' . now()->format('His') . '-' . Str::random(8) . '.' . $extension;
+        $file->move($folder, $filename);
+
+        DB::table('cierre_diario_comprobantes')->insert([
+            'cierre_diario_sucursal_id' => (int) $row->id,
+            'fecha_deposito' => $fecha,
+            'monto_depositado' => round((float) $validated['montoDepositado'], 2),
+            'banco' => trim((string) ($validated['banco'] ?? '')) ?: null,
+            'referencia' => trim((string) ($validated['referencia'] ?? '')) ?: null,
+            'observacion' => trim((string) ($validated['observacion'] ?? '')) ?: null,
+            'archivo_path' => $folderRelative . '/' . $filename,
+            'archivo_nombre' => $file->getClientOriginalName(),
+            'archivo_mime' => $file->getClientMimeType(),
+            'archivo_size' => (int) $file->getSize(),
+            'subido_por_user_id' => is_numeric($actorId) ? (int) $actorId : null,
+            'subido_por_nombre' => $actorNombre ?: null,
+            'subido_por_email' => $actorEmail ?: null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $row = $this->refreshConciliacionRow((int) $row->id);
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Comprobante cargado correctamente.',
+            'conciliacion' => $this->conciliacionPayload($row),
+            'comprobantes' => $this->conciliacionReceipts((int) $row->id),
+        ]);
+    }
+
+    public function deleteConciliacionComprobante(Request $request, int $comprobanteId)
+    {
+        if (!Schema::hasTable('cierre_diario_comprobantes')) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'No existe la estructura de conciliaciones.',
+            ], 404);
+        }
+
+        $row = DB::table('cierre_diario_comprobantes')->where('id', $comprobanteId)->first();
+        if (!$row) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'No se encontró el comprobante solicitado.',
+            ], 404);
+        }
+
+        $fullPath = public_path((string) $row->archivo_path);
+        if (is_file($fullPath)) {
+            @unlink($fullPath);
+        }
+
+        DB::table('cierre_diario_comprobantes')->where('id', $comprobanteId)->delete();
+        $conciliacion = $this->refreshConciliacionRow((int) $row->cierre_diario_sucursal_id);
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Comprobante eliminado correctamente.',
+            'conciliacion' => $this->conciliacionPayload($conciliacion),
+            'comprobantes' => $this->conciliacionReceipts((int) $conciliacion->id),
+        ]);
+    }
+
     private function resolveActor(Request $request): array
     {
         $authUser = Auth::guard('api')->user() ?? $request->user();
@@ -905,6 +1063,161 @@ class CajaDiariaController extends Controller
             })
             ->orderBy('id')
             ->get();
+    }
+
+    private function findOrCreateConciliacionRow(string $fecha, int $codigoSucursal, int $puntoVenta, array $snapshot): object
+    {
+        if (!Schema::hasTable('cierre_diario_sucursales')) {
+            throw ValidationException::withMessages([
+                'conciliacion' => ['No existe la tabla de conciliación diaria.'],
+            ]);
+        }
+
+        $existing = DB::table('cierre_diario_sucursales')
+            ->whereDate('fecha_operacion', $fecha)
+            ->where('codigo_sucursal', $codigoSucursal)
+            ->where('punto_venta', $puntoVenta)
+            ->first();
+
+        if ($existing) {
+            $updates = array_filter([
+                'sucursal_nombre' => $snapshot['sucursal_nombre'] ?? null,
+                'total_efectivo_sistema' => $snapshot['total_efectivo_sistema'] ?? null,
+                'total_qr_sistema' => $snapshot['total_qr_sistema'] ?? null,
+                'total_general_sistema' => $snapshot['total_general_sistema'] ?? null,
+            ], fn ($value) => $value !== null && $value !== '');
+
+            if ($updates !== []) {
+                $updates['updated_at'] = now();
+                DB::table('cierre_diario_sucursales')->where('id', (int) $existing->id)->update($updates);
+            }
+
+            return $this->refreshConciliacionRow((int) $existing->id);
+        }
+
+        $id = DB::table('cierre_diario_sucursales')->insertGetId([
+            'fecha_operacion' => $fecha,
+            'codigo_sucursal' => $codigoSucursal,
+            'punto_venta' => $puntoVenta,
+            'sucursal_nombre' => $snapshot['sucursal_nombre'] ?? null,
+            'total_efectivo_sistema' => round((float) ($snapshot['total_efectivo_sistema'] ?? 0), 2),
+            'total_qr_sistema' => round((float) ($snapshot['total_qr_sistema'] ?? 0), 2),
+            'total_general_sistema' => round((float) ($snapshot['total_general_sistema'] ?? 0), 2),
+            'total_comprobantes' => 0,
+            'diferencia' => 0,
+            'estado' => 'sin_comprobante',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return $this->refreshConciliacionRow((int) $id);
+    }
+
+    private function refreshConciliacionRow(int $rowId): object
+    {
+        $row = DB::table('cierre_diario_sucursales')->where('id', $rowId)->first();
+        if (!$row) {
+            throw ValidationException::withMessages([
+                'conciliacion' => ['No se encontró la fila de conciliación diaria.'],
+            ]);
+        }
+
+        $totalComprobantes = Schema::hasTable('cierre_diario_comprobantes')
+            ? round((float) DB::table('cierre_diario_comprobantes')->where('cierre_diario_sucursal_id', $rowId)->sum('monto_depositado'), 2)
+            : 0;
+        $expected = round((float) ($row->total_efectivo_sistema ?? 0), 2);
+        $difference = round($totalComprobantes - $expected, 2);
+        $status = $this->resolveConciliacionEstado($expected, $totalComprobantes);
+
+        DB::table('cierre_diario_sucursales')->where('id', $rowId)->update([
+            'total_comprobantes' => $totalComprobantes,
+            'diferencia' => $difference,
+            'estado' => $status,
+            'updated_at' => now(),
+        ]);
+
+        return DB::table('cierre_diario_sucursales')->where('id', $rowId)->first();
+    }
+
+    private function resolveConciliacionEstado(float $expected, float $receipts): string
+    {
+        if ($receipts <= 0) {
+            return 'sin_comprobante';
+        }
+
+        if (abs(round($receipts - $expected, 2)) < 0.01) {
+            return 'conciliado';
+        }
+
+        if ($receipts < $expected) {
+            return 'parcial';
+        }
+
+        return 'con_diferencia';
+    }
+
+    private function conciliacionPayload(object $row): array
+    {
+        $receiptCount = Schema::hasTable('cierre_diario_comprobantes')
+            ? (int) DB::table('cierre_diario_comprobantes')
+                ->where('cierre_diario_sucursal_id', (int) $row->id)
+                ->count()
+            : 0;
+
+        return [
+            'id' => (int) $row->id,
+            'fecha' => (string) $row->fecha_operacion,
+            'codigoSucursal' => (int) $row->codigo_sucursal,
+            'puntoVenta' => (int) $row->punto_venta,
+            'sucursalNombre' => $row->sucursal_nombre,
+            'totalEfectivoSistema' => round((float) ($row->total_efectivo_sistema ?? 0), 2),
+            'totalQrSistema' => round((float) ($row->total_qr_sistema ?? 0), 2),
+            'totalGeneralSistema' => round((float) ($row->total_general_sistema ?? 0), 2),
+            'totalComprobantes' => round((float) ($row->total_comprobantes ?? 0), 2),
+            'diferencia' => round((float) ($row->diferencia ?? 0), 2),
+            'estado' => (string) ($row->estado ?? 'sin_comprobante'),
+            'receiptCount' => $receiptCount,
+            'observacionGeneral' => $row->observacion_general,
+            'createdAt' => $this->formatDateTimeValue($row->created_at ?? null),
+            'updatedAt' => $this->formatDateTimeValue($row->updated_at ?? null),
+        ];
+    }
+
+    private function conciliacionReceipts(int $rowId): array
+    {
+        if (!Schema::hasTable('cierre_diario_comprobantes')) {
+            return [];
+        }
+
+        return DB::table('cierre_diario_comprobantes')
+            ->where('cierre_diario_sucursal_id', $rowId)
+            ->orderByDesc('fecha_deposito')
+            ->orderByDesc('id')
+            ->get()
+            ->map(function ($receipt) {
+                return [
+                    'id' => (int) $receipt->id,
+                    'fechaDeposito' => (string) $receipt->fecha_deposito,
+                    'montoDepositado' => round((float) ($receipt->monto_depositado ?? 0), 2),
+                    'banco' => $receipt->banco,
+                    'referencia' => $receipt->referencia,
+                    'observacion' => $receipt->observacion,
+                    'archivoNombre' => $receipt->archivo_nombre,
+                    'archivoMime' => $receipt->archivo_mime,
+                    'archivoSize' => (int) ($receipt->archivo_size ?? 0),
+                    'archivoUrl' => url(str_replace('\\', '/', ltrim((string) $receipt->archivo_path, '/'))),
+                    'subidoPorUserId' => $receipt->subido_por_user_id,
+                    'subidoPorNombre' => $receipt->subido_por_nombre,
+                    'subidoPorEmail' => $receipt->subido_por_email,
+                    'validadoPorUserId' => $receipt->validado_por_user_id,
+                    'validadoPorNombre' => $receipt->validado_por_nombre,
+                    'validadoPorEmail' => $receipt->validado_por_email,
+                    'validadoAt' => $this->formatDateTimeValue($receipt->validado_at ?? null),
+                    'createdAt' => $this->formatDateTimeValue($receipt->created_at ?? null),
+                ];
+            })
+            ->values()
+            ->all();
     }
 
     private function syncCajaTotals(CajaDiaria $caja): CajaDiaria
