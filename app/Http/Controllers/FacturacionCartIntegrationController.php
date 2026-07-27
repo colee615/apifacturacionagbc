@@ -52,6 +52,13 @@ class FacturacionCartIntegrationController extends Controller
             'complemento_documento' => 'nullable|string|max:30',
             'razon_social' => 'nullable|string|max:255',
             'correo_facturacion' => 'nullable|email|max:50',
+            'canal_operativo' => 'nullable|in:normal,contrato',
+            'contabiliza_en_caja' => 'nullable|boolean',
+            'es_cuenta_por_cobrar' => 'nullable|boolean',
+            'empresa_id' => 'nullable|integer|min:1',
+            'empresa_codigo_cliente' => 'nullable|string|max:60',
+            'empresa_nombre' => 'nullable|string|max:255',
+            'empresa_sigla' => 'nullable|string|max:60',
         ]);
 
         $draftQuery = DB::table('facturacion_carts')
@@ -110,6 +117,19 @@ class FacturacionCartIntegrationController extends Controller
             : (array_key_exists('complemento_documento', $v)
                 ? Str::upper((string) $this->nullBlank($v['complemento_documento']))
                 : ($draft->complemento_documento !== null ? Str::upper((string) $draft->complemento_documento) : null));
+        $canalOperativo = array_key_exists('canal_operativo', $v)
+            ? (in_array((string) $v['canal_operativo'], ['normal', 'contrato'], true) ? (string) $v['canal_operativo'] : 'normal')
+            : (string) ($draft->canal_operativo ?? 'normal');
+        $esCuentaPorCobrar = array_key_exists('es_cuenta_por_cobrar', $v)
+            ? (bool) $v['es_cuenta_por_cobrar']
+            : ((bool) ($draft->es_cuenta_por_cobrar ?? false) || $canalOperativo === 'contrato');
+        $contabilizaEnCaja = array_key_exists('contabiliza_en_caja', $v)
+            ? (bool) $v['contabiliza_en_caja']
+            : (isset($draft->contabiliza_en_caja) ? (bool) $draft->contabiliza_en_caja : true);
+        if ($canalOperativo === 'contrato') {
+            $esCuentaPorCobrar = true;
+            $contabilizaEnCaja = false;
+        }
 
         $updates = array_merge([
             'origen_usuario_nombre' => array_key_exists('origen_usuario_nombre', $v) ? $this->nullBlank($v['origen_usuario_nombre']) : $this->nullBlank($draft->origen_usuario_nombre ?? null),
@@ -126,6 +146,13 @@ class FacturacionCartIntegrationController extends Controller
             'complemento_documento' => $complemento,
             'razon_social' => $razon,
             'correo_facturacion' => $correoFacturacion,
+            'canal_operativo' => $canalOperativo,
+            'contabiliza_en_caja' => $contabilizaEnCaja,
+            'es_cuenta_por_cobrar' => $esCuentaPorCobrar,
+            'empresa_id' => array_key_exists('empresa_id', $v) ? ($v['empresa_id'] ?? null) : ($draft->empresa_id ?? null),
+            'empresa_codigo_cliente' => array_key_exists('empresa_codigo_cliente', $v) ? $this->nullBlank($v['empresa_codigo_cliente']) : $this->nullBlank($draft->empresa_codigo_cliente ?? null),
+            'empresa_nombre' => array_key_exists('empresa_nombre', $v) ? $this->nullBlank($v['empresa_nombre']) : $this->nullBlank($draft->empresa_nombre ?? null),
+            'empresa_sigla' => array_key_exists('empresa_sigla', $v) ? $this->nullBlank($v['empresa_sigla']) : $this->nullBlank($draft->empresa_sigla ?? null),
         ], $this->identityColumnsForCart($v));
 
         if (!empty($v['cart_id'])) {
@@ -449,6 +476,13 @@ class FacturacionCartIntegrationController extends Controller
             'razon_social' => 'nullable|string|max:255',
             'correo_facturacion' => 'nullable|email|max:50',
             'codigo_orden_mode' => 'nullable|in:same,new',
+            'canal_operativo' => 'nullable|in:normal,contrato',
+            'contabiliza_en_caja' => 'nullable|boolean',
+            'es_cuenta_por_cobrar' => 'nullable|boolean',
+            'empresa_id' => 'nullable|integer|min:1',
+            'empresa_codigo_cliente' => 'nullable|string|max:60',
+            'empresa_nombre' => 'nullable|string|max:255',
+            'empresa_sigla' => 'nullable|string|max:60',
         ]);
         $userId = (string) $validated['origen_usuario_id'];
         $lock = Cache::lock($this->emitLockKey($userId), 15);
@@ -514,6 +548,19 @@ class FacturacionCartIntegrationController extends Controller
         $resolvedQrTransactionId = $preservePaidQrPayment
             ? ($cart->qr_transaction_id ?? null)
             : ($overrideCanal === 'qr' ? ($cart->qr_transaction_id ?? null) : null);
+        $canalOperativo = in_array((string) ($validated['canal_operativo'] ?? ($cart->canal_operativo ?? 'normal')), ['normal', 'contrato'], true)
+            ? (string) ($validated['canal_operativo'] ?? ($cart->canal_operativo ?? 'normal'))
+            : 'normal';
+        $esCuentaPorCobrar = array_key_exists('es_cuenta_por_cobrar', $validated)
+            ? (bool) $validated['es_cuenta_por_cobrar']
+            : ((bool) ($cart->es_cuenta_por_cobrar ?? false) || $canalOperativo === 'contrato');
+        $contabilizaEnCaja = array_key_exists('contabiliza_en_caja', $validated)
+            ? (bool) $validated['contabiliza_en_caja']
+            : (isset($cart->contabiliza_en_caja) ? (bool) $cart->contabiliza_en_caja : true);
+        if ($canalOperativo === 'contrato') {
+            $esCuentaPorCobrar = true;
+            $contabilizaEnCaja = false;
+        }
         $isPaidQrInvoiceConversion = $preservePaidQrPayment && $overrideCanal === 'factura_electronica';
         Log::info('FacturacionCartIntegrationController emitir: configuracion de reintento.', [
             'user_id' => $userId,
@@ -540,6 +587,13 @@ class FacturacionCartIntegrationController extends Controller
             'complemento_documento' => $validated['complemento_documento'] ?? $cart->complemento_documento,
             'razon_social' => isset($validated['razon_social']) ? Str::upper((string) $validated['razon_social']) : $cart->razon_social,
             'correo_facturacion' => $validated['correo_facturacion'] ?? $cart->correo_facturacion,
+            'canal_operativo' => $canalOperativo,
+            'contabiliza_en_caja' => $contabilizaEnCaja,
+            'es_cuenta_por_cobrar' => $esCuentaPorCobrar,
+            'empresa_id' => $validated['empresa_id'] ?? ($cart->empresa_id ?? null),
+            'empresa_codigo_cliente' => $validated['empresa_codigo_cliente'] ?? ($cart->empresa_codigo_cliente ?? null),
+            'empresa_nombre' => $validated['empresa_nombre'] ?? ($cart->empresa_nombre ?? null),
+            'empresa_sigla' => $validated['empresa_sigla'] ?? ($cart->empresa_sigla ?? null),
             'updated_at' => now(),
         ]);
         $cart = DB::table('facturacion_carts')->where('id', $cart->id)->first();
@@ -1029,6 +1083,7 @@ class FacturacionCartIntegrationController extends Controller
                 ->where('estado', 'emitido')
                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
                 ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) <> 'ANULADA'")
+                ->whereRaw("coalesce(contabiliza_en_caja, true) = true")
                 ->sum('total')),
         ];
 
@@ -1338,6 +1393,15 @@ class FacturacionCartIntegrationController extends Controller
             'origenSucursal' => ['id' => (string) $cart->origen_sucursal_id, 'codigo' => (string) $cart->origen_sucursal_codigo, 'nombre' => $sucursalContext['nombre']],
             'codigoSucursal' => $codigoSucursal, 'puntoVenta' => $puntoVenta, 'documentoSector' => 1,
             'canalEmision' => $canalEmision,
+            'canalOperativo' => (string) ($cart->canal_operativo ?? 'normal'),
+            'contabilizaEnCaja' => isset($cart->contabiliza_en_caja) ? (bool) $cart->contabiliza_en_caja : true,
+            'esCuentaPorCobrar' => isset($cart->es_cuenta_por_cobrar) ? (bool) $cart->es_cuenta_por_cobrar : false,
+            'empresaContrato' => [
+                'id' => $cart->empresa_id ?? null,
+                'codigoCliente' => $cart->empresa_codigo_cliente ?? null,
+                'nombre' => $cart->empresa_nombre ?? null,
+                'sigla' => $cart->empresa_sigla ?? null,
+            ],
             'municipio' => $sucursalContext['municipio'], 'departamento' => $sucursalContext['departamento'], 'telefono' => $sucursalContext['telefono'],
             'codigoCliente' => $sinCliente ? 'SN-' . str_pad((string) $cart->id, 8, '0', STR_PAD_LEFT) : Str::limit($this->sanitizeCodigoClienteFromDocument($doc), 35, ''),
             'razonSocial' => Str::upper($razon), 'documentoIdentidad' => $doc, 'tipoDocumentoIdentidad' => $tipo, 'correo' => $correo,
@@ -1676,7 +1740,7 @@ class FacturacionCartIntegrationController extends Controller
             $canal = strtolower(trim((string) ($c->metodo_pago ?? ''))) === 'qr' ? 'qr' : 'factura_electronica';
         }
 
-        return ['id' => (int) $c->id, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $c->tipo_documento, 'numero_documento' => $c->numero_documento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $c->razon_social, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $this->decode((string) ($c->respuesta_emision ?? '')), 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'items' => $items];
+        return ['id' => (int) $c->id, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $c->tipo_documento, 'numero_documento' => $c->numero_documento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $c->razon_social, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $this->decode((string) ($c->respuesta_emision ?? '')), 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'items' => $items];
     }
 
     private function ensureDraft(string $userId, array $updates): int
@@ -1686,7 +1750,7 @@ class FacturacionCartIntegrationController extends Controller
             DB::table('facturacion_carts')->where('id', $draft->id)->update(array_merge($updates, ['updated_at' => now()]));
             return (int) $draft->id;
         }
-        return (int) DB::table('facturacion_carts')->insertGetId(array_merge(['origen_usuario_id' => $userId, 'estado' => 'borrador', 'modalidad_facturacion' => 'con_datos', 'canal_emision' => 'factura_electronica', 'metodo_pago' => 'efectivo', 'estado_pago' => 'pendiente', 'cantidad_items' => 0, 'subtotal' => 0, 'total_extras' => 0, 'total' => 0, 'abierto_en' => now(), 'created_at' => now(), 'updated_at' => now()], $updates));
+        return (int) DB::table('facturacion_carts')->insertGetId(array_merge(['origen_usuario_id' => $userId, 'estado' => 'borrador', 'modalidad_facturacion' => 'con_datos', 'canal_emision' => 'factura_electronica', 'canal_operativo' => 'normal', 'contabiliza_en_caja' => true, 'es_cuenta_por_cobrar' => false, 'metodo_pago' => 'efectivo', 'estado_pago' => 'pendiente', 'cantidad_items' => 0, 'subtotal' => 0, 'total_extras' => 0, 'total' => 0, 'abierto_en' => now(), 'created_at' => now(), 'updated_at' => now()], $updates));
     }
 
     private function recalc(int $cartId): void
@@ -1927,7 +1991,10 @@ class FacturacionCartIntegrationController extends Controller
                     $canalEmision = 'factura_electronica';
                 }
                 $estadoEmision = strtoupper(trim((string) data_get($cart, 'estado_emision', 'NO_APLICA')));
-                $contabilizaEnCaja = $canalEmision !== 'qr' && $estadoEmision !== 'ANULADA';
+                $esCuentaPorCobrar = (bool) data_get($cart, 'es_cuenta_por_cobrar', false);
+                $contabilizaEnCaja = (bool) data_get($cart, 'contabiliza_en_caja', ($canalEmision !== 'qr' && $estadoEmision !== 'ANULADA'));
+                $contabilizaEnCaja = $contabilizaEnCaja && $estadoEmision !== 'ANULADA';
+                $emisionLabel = $esCuentaPorCobrar ? 'Cuenta por cobrar' : $this->labelCanalEmision($canalEmision);
 
                 return [
                     'fecha' => $fecha ? date('d/m/Y', strtotime((string) $fecha)) : '-',
@@ -1937,8 +2004,10 @@ class FacturacionCartIntegrationController extends Controller
                     'peso' => (float) ($resumen['peso'] ?? 0),
                     'cantidad' => max(1, (int) data_get($item, 'cantidad', 1)),
                     'canal_emision' => $canalEmision,
-                    'emision_label' => $this->labelCanalEmision($canalEmision),
+                    'emision_label' => $emisionLabel,
                     'contabiliza_en_caja' => $contabilizaEnCaja,
+                    'es_cuenta_por_cobrar' => $esCuentaPorCobrar,
+                    'empresa_nombre' => trim((string) data_get($cart, 'empresa_nombre', '')),
                     'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
                     'importe_parcial' => round((float) data_get($item, 'monto_base', 0), 2),
                     'importe_general' => round((float) data_get($item, 'total_linea', 0), 2),

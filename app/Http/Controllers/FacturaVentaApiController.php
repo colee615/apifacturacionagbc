@@ -426,6 +426,7 @@ class FacturaVentaApiController extends Controller
             'estado' => 1,
             'updated_at' => $now,
         ];
+        $baseData = array_merge($baseData, $this->optionalContractVentaData($payload));
 
         $ventaId = null;
         if (trim((string) $origenVentaId) !== '' && trim((string) $origenVentaTipo) !== '') {
@@ -474,6 +475,38 @@ class FacturaVentaApiController extends Controller
             'codigoOrden' => $codigoOrden,
             'codigoSeguimiento' => $codigoSeguimiento,
         ];
+    }
+
+    private function optionalContractVentaData(array $payload): array
+    {
+        $data = [];
+
+        if (Schema::hasColumn('ventas', 'canal_operativo')) {
+            $data['canal_operativo'] = in_array((string) data_get($payload, 'canalOperativo', 'normal'), ['normal', 'contrato'], true)
+                ? (string) data_get($payload, 'canalOperativo', 'normal')
+                : 'normal';
+        }
+        if (Schema::hasColumn('ventas', 'contabiliza_en_caja')) {
+            $data['contabiliza_en_caja'] = (bool) data_get($payload, 'contabilizaEnCaja', true);
+        }
+        if (Schema::hasColumn('ventas', 'es_cuenta_por_cobrar')) {
+            $data['es_cuenta_por_cobrar'] = (bool) data_get($payload, 'esCuentaPorCobrar', false);
+        }
+        if (Schema::hasColumn('ventas', 'empresa_id')) {
+            $empresaId = (int) data_get($payload, 'empresaContrato.id', 0);
+            $data['empresa_id'] = $empresaId > 0 ? $empresaId : null;
+        }
+        if (Schema::hasColumn('ventas', 'empresa_codigo_cliente')) {
+            $data['empresa_codigo_cliente'] = ($codigo = trim((string) data_get($payload, 'empresaContrato.codigoCliente', ''))) !== '' ? $codigo : null;
+        }
+        if (Schema::hasColumn('ventas', 'empresa_nombre')) {
+            $data['empresa_nombre'] = ($nombre = trim((string) data_get($payload, 'empresaContrato.nombre', ''))) !== '' ? $nombre : null;
+        }
+        if (Schema::hasColumn('ventas', 'empresa_sigla')) {
+            $data['empresa_sigla'] = ($sigla = trim((string) data_get($payload, 'empresaContrato.sigla', ''))) !== '' ? $sigla : null;
+        }
+
+        return $data;
     }
 
     private function createDetalleVentas(array $venta, array $payload): void
