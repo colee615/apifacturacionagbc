@@ -4158,6 +4158,20 @@ class VentaController extends Controller
                 'user_id' => $currentUser->id ?? null,
                 'guard' => $guard,
             ]);
+            Log::warning('ANULACION_FLOW_RESULT', [
+                'layer' => 'VentaController',
+                'cuf' => (string) $cuf,
+                'user_id' => $currentUser->id ?? null,
+                'user_email' => $currentUser->email ?? null,
+                'guard_allowed' => (bool) ($guard['allowed'] ?? false),
+                'guard_allowed_by' => (string) ($guard['allowed_by'] ?? 'NONE'),
+                'guard_is_supervisor' => (bool) ($guard['is_supervisor'] ?? false),
+                'status_code' => 423,
+                'ok' => false,
+                'estado' => 'RECHAZADA',
+                'estado_puente' => 'ANULACION_REQUIERE_AUTORIZACION',
+                'razon' => 'Anulacion bloqueada. Requiere autorizacion de rol superior o habilitacion global de administrador.',
+            ]);
             return response()->json([
                 'message' => 'Anulacion bloqueada. Requiere autorizacion de rol superior o habilitacion global de administrador.',
                 'code' => 'ANULACION_REQUIERE_AUTORIZACION',
@@ -4229,6 +4243,22 @@ class VentaController extends Controller
                 ]);
             }
 
+            Log::info('ANULACION_FLOW_RESULT', [
+                'layer' => 'VentaController',
+                'cuf' => (string) $cuf,
+                'user_id' => $currentUser->id ?? null,
+                'user_email' => $currentUser->email ?? null,
+                'guard_allowed' => (bool) ($guard['allowed'] ?? false),
+                'guard_allowed_by' => (string) ($guard['allowed_by'] ?? 'NONE'),
+                'guard_is_supervisor' => (bool) ($guard['is_supervisor'] ?? false),
+                'status_code' => $statusCode,
+                'ok' => (bool) data_get($body, 'ok', false),
+                'estado' => data_get($body, 'estado'),
+                'estado_puente' => data_get($body, 'estadoPuente'),
+                'razon' => data_get($body, 'razon', data_get($body, 'message')),
+                'mensaje' => data_get($body, 'mensaje', data_get($body, 'message')),
+            ]);
+
             return response()->json($body, $statusCode);
         } catch (\Throwable $delegationError) {
             Log::error('VentaController delegated anulacion failed', [
@@ -4236,6 +4266,20 @@ class VentaController extends Controller
                 'user_id' => $currentUser->id ?? null,
                 'message' => $delegationError->getMessage(),
                 'trace' => $delegationError->getTraceAsString(),
+            ]);
+            Log::error('ANULACION_FLOW_RESULT', [
+                'layer' => 'VentaController',
+                'cuf' => (string) $cuf,
+                'user_id' => $currentUser->id ?? null,
+                'user_email' => $currentUser->email ?? null,
+                'guard_allowed' => (bool) ($guard['allowed'] ?? false),
+                'guard_allowed_by' => (string) ($guard['allowed_by'] ?? 'NONE'),
+                'guard_is_supervisor' => (bool) ($guard['is_supervisor'] ?? false),
+                'status_code' => 500,
+                'ok' => false,
+                'estado' => 'ERROR',
+                'estado_puente' => 'EXCEPCION_DELEGACION',
+                'razon' => $delegationError->getMessage(),
             ]);
             throw $delegationError;
         }
