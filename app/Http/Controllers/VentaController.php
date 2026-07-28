@@ -379,33 +379,7 @@ class VentaController extends Controller
 
     private function storeAnulacionRespaldo(Request $request, string $cuf): array
     {
-        if (!$request->hasFile('respaldo')) {
-            return [];
-        }
-
-        $validated = $request->validate([
-            'respaldo' => ['file', 'max:5120', 'mimes:jpg,jpeg,png,pdf,webp,doc,docx'],
-        ]);
-
-        $file = $validated['respaldo'];
-        $folder = public_path('uploads/anulaciones/' . now()->format('Y/m'));
-
-        if (!is_dir($folder)) {
-            mkdir($folder, 0755, true);
-        }
-
-        $extension = strtolower((string) ($file->getClientOriginalExtension() ?: $file->guessExtension() ?: 'bin'));
-        $safeCuf = preg_replace('/[^A-Za-z0-9\-]/', '', $cuf) ?: 'sin-cuf';
-        $filename = 'anulacion-' . $safeCuf . '-' . now()->format('YmdHis') . '-' . Str::random(8) . '.' . $extension;
-
-        $file->move($folder, $filename);
-
-        return [
-            'anulacion_respaldo_path' => 'uploads/anulaciones/' . now()->format('Y/m') . '/' . $filename,
-            'anulacion_respaldo_nombre' => $file->getClientOriginalName(),
-            'anulacion_respaldo_mime' => $file->getClientMimeType(),
-            'anulacion_respaldo_size' => (int) $file->getSize(),
-        ];
+        return [];
     }
 
     private function anulacionRespaldoUrl(?string $path): ?string
