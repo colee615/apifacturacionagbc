@@ -2814,18 +2814,30 @@ class VentaController extends Controller
                     $base = (float) ($item->monto_base ?? 0);
                     $extras = (float) ($item->monto_extras ?? 0);
                     $totalLinea = (float) ($item->total_linea ?? round(($base + $extras) * max(1, $cantidad), 2));
+                    $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
+                    if (!is_array($resumen)) {
+                        $resumen = [];
+                    }
+                    $descripcionServicio = trim((string) ($resumen['descripcion_servicio'] ?? ''));
+                    $titulo = trim((string) ($item->titulo ?? ''));
+                    $nombreServicio = trim((string) ($item->nombre_servicio ?? ''));
+                    $descripcion = $descripcionServicio !== ''
+                        ? $descripcionServicio
+                        : ($titulo !== '' ? $titulo : ($nombreServicio !== '' ? $nombreServicio : 'Sin detalle'));
 
                     return [
                         'codigo' => (string) (($item->codigo ?? '') !== '' ? $item->codigo : ('ITEM-' . $item->id)),
-                        'descripcion' => (string) (($item->titulo ?? '') !== '' ? $item->titulo : (($item->nombre_servicio ?? '') !== '' ? $item->nombre_servicio : 'Sin detalle')),
+                        'descripcion' => $descripcion,
                         'cantidad' => $cantidad,
                         'precio' => $base,
                         'monto_base' => $base,
                         'monto_extras' => $extras,
                         'total_linea' => $totalLinea,
-                        'titulo' => $item->nombre_servicio,
+                        'titulo' => $titulo !== '' ? $titulo : $descripcion,
+                        'nombre_servicio' => $nombreServicio !== '' ? $nombreServicio : $descripcion,
                         'subtitulo' => $item->nombre_destinatario,
                         'origen_tipo' => (string) ($item->origen_tipo ?? ''),
+                        'resumen_origen' => $resumen,
                     ];
                 })->values()->all();
             })
