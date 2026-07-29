@@ -3243,6 +3243,10 @@ class VentaController extends Controller
                         $titulo = trim((string) ($item->titulo ?? ''));
                         $servicio = trim((string) ($item->nombre_servicio ?? ''));
                         $destinatario = trim((string) ($item->nombre_destinatario ?? ''));
+                        $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
+                        if (!is_array($resumen)) {
+                            $resumen = [];
+                        }
                         return [
                             'codigo' => (string) ($item->codigo ?: ('ITEM-' . $item->id)),
                             // Priorizamos "titulo" para que UI muestre "Admision EMS"
@@ -3254,8 +3258,10 @@ class VentaController extends Controller
                             'monto_extras' => $extras,
                             'total_linea' => $totalLinea,
                             'titulo' => $servicio,
+                            'nombre_servicio' => $servicio,
                             'subtitulo' => $destinatario,
                             'origen_tipo' => (string) ($item->origen_tipo ?? ''),
+                            'resumen_origen' => $resumen,
                         ];
                     })
                     ->values()
