@@ -348,8 +348,8 @@ class QhantuyQrController extends Controller
     private function qhantuyClient()
     {
         $verify = filter_var(config('services.qhantuy_checkout.ssl_verify', true), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? true;
-        $connectTimeout = max(5, (int) config('services.qhantuy_checkout.connect_timeout', 15));
-        $timeout = max(10, (int) config('services.qhantuy_checkout.timeout', 45));
+        $connectTimeout = max(5, (int) config('services.qhantuy_checkout.connect_timeout', 20));
+        $timeout = max(10, (int) config('services.qhantuy_checkout.timeout', 60));
 
         return Http::withHeaders([
             'X-API-Token' => $this->token(),
@@ -360,8 +360,7 @@ class QhantuyQrController extends Controller
             'force_ip_resolve' => 'v4',
             'http_version' => 1.1,
         ])->connectTimeout($connectTimeout)
-            ->timeout($timeout)
-            ->retry(2, 600, fn ($e) => $e instanceof ConnectionException);
+            ->timeout($timeout);
     }
 
     private function maskedCheckoutConfig(): array
@@ -377,8 +376,8 @@ class QhantuyQrController extends Controller
             'currency_code' => $this->currencyCode(),
             'image_method' => $this->imageMethod(),
             'ssl_verify' => filter_var(config('services.qhantuy_checkout.ssl_verify', true), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? true,
-            'connect_timeout' => (int) config('services.qhantuy_checkout.connect_timeout', 15),
-            'timeout' => (int) config('services.qhantuy_checkout.timeout', 45),
+            'connect_timeout' => (int) config('services.qhantuy_checkout.connect_timeout', 20),
+            'timeout' => (int) config('services.qhantuy_checkout.timeout', 60),
             'has_token' => $token !== '',
             'token_prefix' => $token !== '' ? substr($token, 0, 6) : '',
             'has_appkey' => $appkey !== '',
@@ -556,8 +555,8 @@ class QhantuyQrController extends Controller
             Log::error('Qhantuy checkout connection error', [
                 'url' => $this->checkoutBaseUrl() . '/checkout',
                 'normalized_url' => $this->checkoutUrl(),
-                'connect_timeout' => (int) config('services.qhantuy_checkout.connect_timeout', 15),
-                'timeout' => (int) config('services.qhantuy_checkout.timeout', 45),
+                'connect_timeout' => (int) config('services.qhantuy_checkout.connect_timeout', 20),
+                'timeout' => (int) config('services.qhantuy_checkout.timeout', 60),
                 'ssl_verify' => filter_var(config('services.qhantuy_checkout.ssl_verify', true), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? true,
                 'elapsed_ms' => (int) round((microtime(true) - $requestStartedAt) * 1000),
                 'msg' => $e->getMessage(),
