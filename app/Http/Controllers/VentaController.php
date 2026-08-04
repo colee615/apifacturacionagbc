@@ -81,7 +81,7 @@ class VentaController extends Controller
             ])
             ->connectTimeout(20)
             ->timeout(60)
-            // Reintenta solo si es problema de conexiÃƒÆ’Ã‚Â³n (timeouts, etc.)
+            // Reintenta solo si es problema de conexiÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n (timeouts, etc.)
             ->retry(3, 800, function ($exception) {
                 return $exception instanceof ConnectionException;
             });
@@ -140,144 +140,119 @@ class VentaController extends Controller
         return $map;
     }
 
+    private function statusCatalog(string $channel, string $key): array
+    {
+        $catalog = (array) config("venta_statuses.{$channel}.{$key}", []);
+
+        if ($catalog !== []) {
+            return $catalog;
+        }
+
+        return [
+            'label' => ucfirst(strtolower(str_replace('_', ' ', $key))),
+            'normalized' => 'UNKNOWN',
+            'group' => 'unknown',
+            'ui_class' => 'desconocido',
+            'help' => 'No hay informacion adicional del estado.',
+        ];
+    }
+
+    private function makeStatusPayload(string $channel, string $key, array $overrides = []): array
+    {
+        return array_merge([
+            'key' => $key,
+            'label' => $key,
+            'normalized' => 'UNKNOWN',
+            'group' => 'unknown',
+            'ui_class' => 'desconocido',
+            'help' => 'No hay informacion adicional del estado.',
+            'can_emit' => false,
+            'can_massive' => false,
+            'can_cafc' => false,
+            'can_consult' => false,
+            'can_annul' => false,
+            'can_cancel' => false,
+            'notification_state' => null,
+            'tipoEmision' => null,
+            'cuf' => null,
+        ], $this->statusCatalog($channel, $key), $overrides);
+    }
+
     private function protocolStatusFromVentaNotification(Venta $venta, ?Notificacione $notification): array
     {
         $detalle = $notification ? json_decode((string) $notification->detalle, true) : [];
         $estadoSufe = strtoupper((string) ($venta->estado_sufe ?? ''));
 
         if (blank($venta->codigoSeguimiento) || Str::startsWith((string) $venta->codigoSeguimiento, 'pendiente-')) {
-            return [
-                'key' => 'PENDIENTE',
-                'label' => 'Pendiente de envÃƒÂ­o',
+            return $this->makeStatusPayload('fiscal', 'PENDIENTE', [
                 'can_emit' => true,
                 'can_massive' => true,
                 'can_cafc' => true,
-                'can_consult' => false,
-                'can_annul' => false,
-                'notification_state' => null,
-                'tipoEmision' => null,
-                'cuf' => null,
-            ];
+            ]);
         }
 
         if (!$notification) {
             if ($estadoSufe === 'ANULADA') {
-                return [
-                    'key' => 'ANULADA',
-                    'label' => 'Anulada',
-                    'can_emit' => false,
-                    'can_massive' => false,
-                    'can_cafc' => false,
+                return $this->makeStatusPayload('fiscal', 'ANULADA', [
                     'can_consult' => true,
-                    'can_annul' => false,
-                    'notification_state' => null,
                     'tipoEmision' => $venta->tipo_emision_sufe,
                     'cuf' => $venta->cuf,
-                ];
+                ]);
             }
 
             if ($estadoSufe === 'ANULACION_SOLICITADA') {
-                return [
-                    'key' => 'ANULACION_SOLICITADA',
-                    'label' => 'Anulacion solicitada',
-                    'can_emit' => false,
-                    'can_massive' => false,
-                    'can_cafc' => false,
+                return $this->makeStatusPayload('fiscal', 'ANULACION_SOLICITADA', [
                     'can_consult' => true,
-                    'can_annul' => false,
-                    'notification_state' => null,
                     'tipoEmision' => $venta->tipo_emision_sufe,
                     'cuf' => $venta->cuf,
-                ];
+                ]);
             }
 
             if ($estadoSufe === 'REGISTRADA_OFICIAL') {
-                return [
-                    'key' => 'REGISTRADA_OFICIAL',
-                    'label' => 'Registrada sin facturacion',
-                    'can_emit' => false,
-                    'can_massive' => false,
-                    'can_cafc' => false,
-                    'can_consult' => false,
-                    'can_annul' => false,
-                    'notification_state' => null,
-                    'tipoEmision' => null,
-                    'cuf' => null,
-                ];
+                return $this->makeStatusPayload('fiscal', 'REGISTRADA_OFICIAL');
             }
 
             if ($estadoSufe === 'PROCESADA' || !blank($venta->cuf)) {
-                return [
-                    'key' => 'PROCESADO',
-                    'label' => 'Facturada',
-                    'can_emit' => false,
-                    'can_massive' => false,
-                    'can_cafc' => false,
+                return $this->makeStatusPayload('fiscal', 'PROCESADO', [
                     'can_consult' => true,
                     'can_annul' => !blank($venta->cuf),
-                    'notification_state' => null,
                     'tipoEmision' => $venta->tipo_emision_sufe,
                     'cuf' => $venta->cuf,
-                ];
+                ]);
             }
 
             if ($estadoSufe === 'OBSERVADA') {
-                return [
-                    'key' => 'OBSERVADO',
-                    'label' => 'Observado',
+                return $this->makeStatusPayload('fiscal', 'OBSERVADO', [
                     'can_emit' => true,
                     'can_massive' => true,
                     'can_cafc' => true,
                     'can_consult' => true,
-                    'can_annul' => false,
-                    'notification_state' => null,
                     'tipoEmision' => $venta->tipo_emision_sufe,
                     'cuf' => $venta->cuf,
-                ];
+                ]);
             }
 
             if ($estadoSufe === 'CONTINGENCIA_CREADA') {
-                return [
-                    'key' => 'CONTINGENCIA_CREADA',
-                    'label' => 'Pendiente por contingencia',
-                    'can_emit' => false,
-                    'can_massive' => false,
-                    'can_cafc' => false,
+                return $this->makeStatusPayload('fiscal', 'CONTINGENCIA_CREADA', [
                     'can_consult' => true,
-                    'can_annul' => false,
-                    'notification_state' => null,
                     'tipoEmision' => $venta->tipo_emision_sufe,
                     'cuf' => $venta->cuf,
-                ];
+                ]);
             }
 
             if ($estadoSufe === 'RECEPCIONADA' || $estadoSufe === '') {
-                return [
-                    'key' => 'RECEPCIONADA',
-                    'label' => 'En proceso',
-                    'can_emit' => false,
-                    'can_massive' => false,
-                    'can_cafc' => false,
+                return $this->makeStatusPayload('fiscal', 'RECEPCIONADA', [
                     'can_consult' => true,
-                    'can_annul' => false,
-                    'notification_state' => null,
                     'tipoEmision' => $venta->tipo_emision_sufe,
                     'cuf' => $venta->cuf,
-                ];
+                ]);
             }
 
-            return [
-                'key' => 'PENDIENTE_CONFIRMACION',
-                'label' => 'En proceso',
-                'can_emit' => false,
-                'can_massive' => false,
-                'can_cafc' => false,
+            return $this->makeStatusPayload('fiscal', 'PENDIENTE_CONFIRMACION', [
                 'can_consult' => true,
-                'can_annul' => false,
-                'notification_state' => null,
                 'tipoEmision' => $venta->tipo_emision_sufe,
                 'cuf' => $venta->cuf,
-            ];
+            ]);
         }
 
         $estado = $notification->estado;
@@ -285,62 +260,42 @@ class VentaController extends Controller
         $cuf = data_get($detalle, 'cuf');
 
         if ($estado === 'EXITO') {
-            return [
-                'key' => 'PROCESADO',
-                'label' => 'Facturada',
-                'can_emit' => false,
-                'can_massive' => false,
-                'can_cafc' => false,
+            return $this->makeStatusPayload('fiscal', 'PROCESADO', [
                 'can_consult' => true,
                 'can_annul' => !blank($cuf),
                 'notification_state' => $estado,
                 'tipoEmision' => $tipoEmision,
                 'cuf' => $cuf,
-            ];
+            ]);
         }
 
         if ($estado === 'OBSERVADO') {
-            return [
-                'key' => 'OBSERVADO',
-                'label' => 'Observada',
+            return $this->makeStatusPayload('fiscal', 'OBSERVADO', [
                 'can_emit' => true,
                 'can_massive' => true,
                 'can_cafc' => true,
                 'can_consult' => true,
-                'can_annul' => false,
                 'notification_state' => $estado,
                 'tipoEmision' => $tipoEmision,
                 'cuf' => $cuf,
-            ];
+            ]);
         }
 
         if ($estado === 'CREADO') {
-            return [
-                'key' => 'CONTINGENCIA_CREADA',
-                'label' => 'Pendiente por contingencia',
-                'can_emit' => false,
-                'can_massive' => false,
-                'can_cafc' => false,
+            return $this->makeStatusPayload('fiscal', 'CONTINGENCIA_CREADA', [
                 'can_consult' => true,
-                'can_annul' => false,
                 'notification_state' => $estado,
                 'tipoEmision' => $tipoEmision,
                 'cuf' => $cuf,
-            ];
+            ]);
         }
 
-        return [
-            'key' => 'DESCONOCIDO',
-            'label' => 'Estado desconocido',
-            'can_emit' => false,
-            'can_massive' => false,
-            'can_cafc' => false,
+        return $this->makeStatusPayload('fiscal', 'DESCONOCIDO', [
             'can_consult' => true,
-            'can_annul' => false,
             'notification_state' => $estado,
             'tipoEmision' => $tipoEmision,
             'cuf' => $cuf,
-        ];
+        ]);
     }
 
     private function protocolStatusForVenta(Venta $venta): array
@@ -588,7 +543,7 @@ class VentaController extends Controller
 
         if ($ventas->count() !== count(array_unique($ventaIds))) {
             throw ValidationException::withMessages([
-                'venta_ids' => ['Una o mÃƒÂ¡s ventas no existen o no estÃƒÂ¡n disponibles.'],
+                'venta_ids' => ['Una o mÃƒÆ’Ã‚Â¡s ventas no existen o no estÃƒÆ’Ã‚Â¡n disponibles.'],
             ]);
         }
 
@@ -716,6 +671,38 @@ class VentaController extends Controller
             $scope->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')")
                 ->orWhereNotNull('cuf');
         });
+    }
+
+    private function applyNonContractVentaFilters($query)
+    {
+        if (Schema::hasColumn('ventas', 'canal_operativo')) {
+            $query->whereRaw("lower(coalesce(canal_operativo, 'normal')) <> 'contrato'");
+        }
+
+        if (Schema::hasColumn('ventas', 'es_cuenta_por_cobrar')) {
+            $query->where(function ($scope) {
+                $scope->whereNull('es_cuenta_por_cobrar')
+                    ->orWhere('es_cuenta_por_cobrar', false);
+            });
+        }
+
+        return $query;
+    }
+
+    private function applyNonContractFacturacionCartFilters($query)
+    {
+        if (Schema::hasColumn('facturacion_carts', 'canal_operativo')) {
+            $query->whereRaw("lower(coalesce(canal_operativo, 'normal')) <> 'contrato'");
+        }
+
+        if (Schema::hasColumn('facturacion_carts', 'es_cuenta_por_cobrar')) {
+            $query->where(function ($scope) {
+                $scope->whereNull('es_cuenta_por_cobrar')
+                    ->orWhere('es_cuenta_por_cobrar', false);
+            });
+        }
+
+        return $query;
     }
 
     private function applyVentaFilters($query, array $filters)
@@ -1816,7 +1803,7 @@ class VentaController extends Controller
     public function reporteVentas(Request $request)
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
-        $baseQuery = $this->buildVentaReportQuery($filters);
+        $baseQuery = $this->applyNonContractVentaFilters($this->buildVentaReportQuery($filters));
         $limite = (int) ($filters['limite'] ?? 100);
 
         $resumen = (clone $baseQuery)
@@ -1965,7 +1952,7 @@ class VentaController extends Controller
             'codigoSucursal_is_zero' => isset($filters['codigoSucursal']) && (int) $filters['codigoSucursal'] === 0,
             'puntoVenta_is_zero' => isset($filters['puntoVenta']) && (int) $filters['puntoVenta'] === 0,
         ]));
-        $baseQuery = $this->buildVentaReportQuery($filters);
+        $baseQuery = $this->applyNonContractVentaFilters($this->buildVentaReportQuery($filters));
         $settledBaseQuery = $this->applySettledVentaFilters(clone $baseQuery);
         $limite = (int) ($filters['limite'] ?? 200);
         $reviewedDiscardedLinkedVentaExpr = Schema::hasTable('facturacion_carts')
@@ -2133,7 +2120,7 @@ class VentaController extends Controller
                 or upper(coalesce(codigo_orden, '')) like 'VQC-%'
             )";
 
-            $qrSucursalMetrics = $this->buildFacturacionCartReportQuery($filters)
+            $qrSucursalMetrics = $this->applyNonContractFacturacionCartFilters($this->buildFacturacionCartReportQuery($filters))
                 ->selectRaw("
                     {$cartSucursalIdExpr} as sucursal_id,
                     sum(case
@@ -2339,7 +2326,9 @@ class VentaController extends Controller
             'puntoVenta_is_zero' => $filters['puntoVenta'] === 0,
         ]));
 
-        $usuarios = $this->applySettledVentaFilters(clone $this->buildVentaReportQuery($filters))
+        $usuarios = $this->applySettledVentaFilters(
+            $this->applyNonContractVentaFilters(clone $this->buildVentaReportQuery($filters))
+        )
             ->selectRaw(
                 '
                     coalesce(nullif(origen_usuario_id, \'\'), \'SIN-USUARIO\') as usuario_id,
@@ -2416,7 +2405,7 @@ class VentaController extends Controller
             'puntoVenta_is_zero' => $filters['puntoVenta'] === 0,
         ]));
 
-        $ventaIncidencias = $this->buildVentaReportQuery($filters)
+        $ventaIncidencias = $this->applyNonContractVentaFilters($this->buildVentaReportQuery($filters))
             ->when(Schema::hasTable('facturacion_carts'), function ($query) {
                 $query->whereNotExists(function ($reviewedDiscarded) {
                     $reviewedDiscarded->select(DB::raw('1'))
@@ -2474,10 +2463,10 @@ class VentaController extends Controller
                     'createdAt' => $venta->created_at,
                     'user' => trim((string) ($venta->origen_usuario_nombre ?? $venta->origen_usuario_alias ?? $venta->origen_usuario_email ?? '')) ?: 'Sin usuario',
                     'message' => match ($type) {
-                        'observada' => 'La factura fue observada y requiere revisiÃƒÂ³n.',
-                        'pendiente' => 'La factura sigue pendiente de procesamiento o confirmaciÃƒÂ³n.',
-                        'factura_anulada' => 'La factura fue anulada y no debe contarse como venta vÃƒÂ¡lida.',
-                        default => 'La factura tiene un estado fiscal distinto al esperado y requiere revisiÃƒÂ³n.',
+                        'observada' => 'La factura fue observada y requiere revisiÃƒÆ’Ã‚Â³n.',
+                        'pendiente' => 'La factura sigue pendiente de procesamiento o confirmaciÃƒÆ’Ã‚Â³n.',
+                        'factura_anulada' => 'La factura fue anulada y no debe contarse como venta vÃƒÆ’Ã‚Â¡lida.',
+                        default => 'La factura tiene un estado fiscal distinto al esperado y requiere revisiÃƒÆ’Ã‚Â³n.',
                     },
                 ];
             });
@@ -2485,7 +2474,7 @@ class VentaController extends Controller
         $qrIncidencias = collect();
         $cartRejectedIncidencias = collect();
         if (Schema::hasTable('facturacion_carts')) {
-            $qrIncidencias = $this->buildFacturacionCartReportQuery($filters)
+            $qrIncidencias = $this->applyNonContractFacturacionCartFilters($this->buildFacturacionCartReportQuery($filters))
                 ->where(function ($scope) {
                     $scope->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                         ->orWhereRaw("lower(coalesce(canal_emision, '')) = 'qr'")
@@ -2549,14 +2538,14 @@ class VentaController extends Controller
                         'reviewedBy' => $cart->incidencia_revisada_por,
                         'reviewNote' => $cart->incidencia_revision_nota,
                         'message' => match ($type) {
-                            'qr_pagado_sin_factura' => 'El cobro QR fue confirmado, pero la factura aÃƒÂºn no fue emitida.',
-                            'qr_anulado' => 'El intento de cobro QR fue cancelado o fallÃƒÂ³.',
+                            'qr_pagado_sin_factura' => 'El cobro QR fue confirmado, pero la factura aÃƒÆ’Ã‚Âºn no fue emitida.',
+                            'qr_anulado' => 'El intento de cobro QR fue cancelado o fallÃƒÆ’Ã‚Â³.',
                             default => 'El cobro QR sigue pendiente de pago.',
                         },
                     ];
                 });
 
-            $cartRejectedIncidencias = $this->buildFacturacionCartReportQuery($filters)
+            $cartRejectedIncidencias = $this->applyNonContractFacturacionCartFilters($this->buildFacturacionCartReportQuery($filters))
                 ->whereRaw("lower(coalesce(estado, '')) = 'descartado'")
                 ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) = 'RECHAZADA'")
                 ->whereNull('incidencia_revisada_at')
@@ -2743,28 +2732,50 @@ class VentaController extends Controller
             ?: ''
         ));
         $canAnnul = $canal !== 'qr' && $estadoEmision === 'FACTURADA' && $cuf !== '';
+        $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
+        $hasLinkedFiscalBilling = $estadoEmision === 'FACTURADA'
+            || $linkedVentaStatus === 'PROCESADA'
+            || !blank($linkedVenta->cuf ?? null);
 
         if ($estado === 'descartado') {
-            return ['key' => 'DESCARTADA', 'label' => 'Descartada', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => false, 'cuf' => $cuf !== '' ? $cuf : null];
+            return $this->makeStatusPayload('cart', 'DESCARTADA', [
+                'can_consult' => false,
+                'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
         }
 
         if ($canal === 'qr') {
+            if ($hasLinkedFiscalBilling && ($estadoPago === 'pagado' || $estado === 'emitido')) {
+                return $this->makeStatusPayload('cart', 'FACTURADA', [
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
             if ($estadoPago === 'pagado' || $estado === 'emitido') {
-                return ['key' => 'QR_PAGADO', 'label' => 'Pagado QR', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null];
+                return $this->makeStatusPayload('cart', 'QR_PAGADO', [
+                    'can_consult' => $canConsult,
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
             }
             if ($estadoPago === 'cancelado') {
-                return ['key' => 'QR_ANULADO', 'label' => 'QR anulado', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null];
+                return $this->makeStatusPayload('cart', 'QR_ANULADO', [
+                    'can_consult' => $canConsult,
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
             }
-            return ['key' => 'QR_PENDIENTE', 'label' => 'QR pendiente', 'can_annul' => false, 'can_cancel' => true, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null];
+            return $this->makeStatusPayload('cart', 'QR_PENDIENTE', [
+                'can_cancel' => true,
+                'can_consult' => $canConsult,
+                'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
         }
 
         return match ($estadoEmision) {
-            'FACTURADA' => ['key' => 'FACTURADA', 'label' => 'Facturada', 'can_annul' => $canAnnul, 'can_cancel' => false, 'can_consult' => false, 'cuf' => $cuf !== '' ? $cuf : null],
-            'PENDIENTE' => ['key' => 'PENDIENTE', 'label' => 'Pendiente', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
-            'RECHAZADA' => ['key' => 'RECHAZADA', 'label' => 'Rechazada', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
-            'ERROR' => ['key' => 'ERROR', 'label' => 'Error', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
-            'NO_APLICA' => ['key' => 'NO_APLICA', 'label' => 'No aplica', 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
-            default => ['key' => strtoupper($estado !== '' ? $estado : 'SIN_ESTADO'), 'label' => ucfirst($estado !== '' ? $estado : 'Sin estado'), 'can_annul' => false, 'can_cancel' => false, 'can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null],
+            'FACTURADA' => $this->makeStatusPayload('cart', 'FACTURADA', ['can_annul' => $canAnnul, 'cuf' => $cuf !== '' ? $cuf : null]),
+            'PENDIENTE' => $this->makeStatusPayload('cart', 'PENDIENTE', ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
+            'RECHAZADA' => $this->makeStatusPayload('cart', 'RECHAZADA', ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
+            'ERROR' => $this->makeStatusPayload('cart', 'ERROR', ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
+            'NO_APLICA' => $this->makeStatusPayload('cart', 'NO_APLICA', ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
+            default => $this->makeStatusPayload('cart', strtoupper($estado !== '' ? $estado : 'SIN_ESTADO'), ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
         };
     }
 
@@ -2969,6 +2980,10 @@ class VentaController extends Controller
                 'estadoPago' => $cart->estado_pago ?? null,
             ],
             'modalidad_facturacion' => (string) ($cart->modalidad_facturacion ?? ''),
+            'canal_operativo' => (string) ($cart->canal_operativo ?? 'normal'),
+            'es_cuenta_por_cobrar' => (bool) ($cart->es_cuenta_por_cobrar ?? false),
+            'empresa_nombre' => (string) ($cart->empresa_nombre ?? ''),
+            'empresa_sigla' => (string) ($cart->empresa_sigla ?? ''),
             'qr_transaction_id' => $cart->qr_transaction_id,
             'respuesta_emision' => $respuestaEmision,
             'cliente' => [
@@ -3073,6 +3088,10 @@ class VentaController extends Controller
                 'observacion_sufe',
                 'fecha_notificacion_sufe',
                 'departamento',
+                Schema::hasColumn('ventas', 'canal_operativo') ? 'canal_operativo' : null,
+                Schema::hasColumn('ventas', 'es_cuenta_por_cobrar') ? 'es_cuenta_por_cobrar' : null,
+                Schema::hasColumn('ventas', 'empresa_nombre') ? 'empresa_nombre' : null,
+                Schema::hasColumn('ventas', 'empresa_sigla') ? 'empresa_sigla' : null,
             ])));
         Log::info('ventas.index.ventas.ready', $this->reportLogContext($request, [
             'elapsed_ms' => $this->reportElapsedMs($startedAt),
@@ -3132,6 +3151,10 @@ class VentaController extends Controller
                 'cantidad' => max(1, $itemsCount ?: count($detalle)),
                 'total' => (float) $venta->total,
                 'estadoSufe' => $venta->estado_sufe,
+                'canal_operativo' => Schema::hasColumn('ventas', 'canal_operativo') ? (string) ($venta->canal_operativo ?? 'normal') : 'normal',
+                'es_cuenta_por_cobrar' => Schema::hasColumn('ventas', 'es_cuenta_por_cobrar') ? (bool) ($venta->es_cuenta_por_cobrar ?? false) : false,
+                'empresa_nombre' => Schema::hasColumn('ventas', 'empresa_nombre') ? (string) ($venta->empresa_nombre ?? '') : '',
+                'empresa_sigla' => Schema::hasColumn('ventas', 'empresa_sigla') ? (string) ($venta->empresa_sigla ?? '') : '',
                 'cuf' => $venta->cuf,
                 'status' => $status,
                 'seguimiento' => [
@@ -3416,7 +3439,7 @@ class VentaController extends Controller
                     try {
                         $this->sufeValidator->validateRejectedResponse($body);
                     } catch (ValidationException $validationException) {
-                        Log::warning('La respuesta de rechazo de emisiÃƒÂ³n individual no cumple el protocolo', [
+                        Log::warning('La respuesta de rechazo de emisiÃƒÆ’Ã‚Â³n individual no cumple el protocolo', [
                             'errores' => $validationException->errors(),
                             'body' => $body,
                         ]);
@@ -3435,7 +3458,7 @@ class VentaController extends Controller
             return response()->json($payload, $result['status'] ?? 202);
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => 'La solicitud de emisiÃƒÂ³n individual no cumple la validaciÃƒÂ³n del protocolo SEFE.',
+                'message' => 'La solicitud de emisiÃƒÆ’Ã‚Â³n individual no cumple la validaciÃƒÆ’Ã‚Â³n del protocolo SEFE.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (\Throwable $e) {
@@ -3479,7 +3502,7 @@ class VentaController extends Controller
             return response()->json($payload, $response->status());
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => 'La solicitud de documento de ajuste no cumple la validaciÃƒÂ³n del protocolo SEFE.',
+                'message' => 'La solicitud de documento de ajuste no cumple la validaciÃƒÆ’Ã‚Â³n del protocolo SEFE.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (RequestException $e) {
@@ -3521,7 +3544,7 @@ class VentaController extends Controller
             return response()->json($payload, $response->status());
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => 'La solicitud de emisiÃƒÂ³n masiva no cumple la validaciÃƒÂ³n del protocolo SEFE.',
+                'message' => 'La solicitud de emisiÃƒÆ’Ã‚Â³n masiva no cumple la validaciÃƒÆ’Ã‚Â³n del protocolo SEFE.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (RequestException $e) {
@@ -3531,7 +3554,7 @@ class VentaController extends Controller
             ], $e->response?->status() ?? 502);
         } catch (ConnectionException $e) {
             return response()->json([
-                'message' => 'No se pudo conectar con el servicio SEFE para emisiÃƒÂ³n masiva.',
+                'message' => 'No se pudo conectar con el servicio SEFE para emisiÃƒÆ’Ã‚Â³n masiva.',
                 'details' => $e->getMessage(),
             ], 504);
         } catch (\Throwable $e) {
@@ -3557,7 +3580,7 @@ class VentaController extends Controller
         foreach ($ventas as $venta) {
             if (!$this->canOperateVenta($venta)) {
                 throw ValidationException::withMessages([
-                    'venta_ids' => ["La venta {$venta->id} no estÃƒÂ¡ disponible para reenvÃƒÂ­o automÃƒÂ¡tico."],
+                    'venta_ids' => ["La venta {$venta->id} no estÃƒÆ’Ã‚Â¡ disponible para reenvÃƒÆ’Ã‚Â­o automÃƒÆ’Ã‚Â¡tico."],
                 ]);
             }
         }
@@ -3633,7 +3656,7 @@ class VentaController extends Controller
         }
 
         return response()->json([
-            'message' => 'Ventas enviadas en emisiÃƒÂ³n masiva correctamente.',
+            'message' => 'Ventas enviadas en emisiÃƒÆ’Ã‚Â³n masiva correctamente.',
             'modo' => 'masiva',
             'response' => $body,
         ]);
@@ -3659,7 +3682,7 @@ class VentaController extends Controller
             return response()->json($payload, $response->status());
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => 'La solicitud de contingencia CAFC no cumple la validaciÃƒÂ³n del protocolo SEFE.',
+                'message' => 'La solicitud de contingencia CAFC no cumple la validaciÃƒÆ’Ã‚Â³n del protocolo SEFE.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (RequestException $e) {
@@ -3698,12 +3721,12 @@ class VentaController extends Controller
         foreach ($ventas as $venta) {
             if (!$this->canOperateVenta($venta)) {
                 throw ValidationException::withMessages([
-                    'venta_ids' => ["La venta {$venta->id} no estÃƒÂ¡ disponible para contingencia CAFC."],
+                    'venta_ids' => ["La venta {$venta->id} no estÃƒÆ’Ã‚Â¡ disponible para contingencia CAFC."],
                 ]);
             }
             if (!isset($validated['nro_facturas'][$venta->id]) || (int) $validated['nro_facturas'][$venta->id] <= 0) {
                 throw ValidationException::withMessages([
-                    'nro_facturas' => ["Debe proporcionar un nroFactura manual vÃƒÂ¡lido para la venta {$venta->id}."],
+                    'nro_facturas' => ["Debe proporcionar un nroFactura manual vÃƒÆ’Ã‚Â¡lido para la venta {$venta->id}."],
                 ]);
             }
         }
@@ -3789,7 +3812,7 @@ class VentaController extends Controller
     }
 
     // =========================
-    //  Consultar emisiÃƒÆ’Ã‚Â³n
+    //  Consultar emisiÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n
     // =========================
     public function consultarVenta(Request $request, $codigoSeguimiento)
     {
@@ -3811,7 +3834,7 @@ class VentaController extends Controller
         if (in_array($tipo, ['CO', 'CUF'], true)) {
             $url .= '?tipo=' . $tipo;
         }
-        Log::info("CÃƒÆ’Ã‚Â³digo de Seguimiento: {$codigoSeguimiento}");
+        Log::info("CÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³digo de Seguimiento: {$codigoSeguimiento}");
         Log::info("URL de Consulta: {$url}");
 
         try {
@@ -3832,7 +3855,7 @@ class VentaController extends Controller
                 ], $response->status());
             }
         } catch (\Throwable $e) {
-            Log::error("ExcepciÃƒÆ’Ã‚Â³n al consultar venta: " . $e->getMessage());
+            Log::error("ExcepciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n al consultar venta: " . $e->getMessage());
             return response()->json([
                 'error'     => 'Error al consultar la venta',
                 'exception' => $e->getMessage(),
@@ -3859,7 +3882,7 @@ class VentaController extends Controller
         } catch (\Throwable $e) {
             Log::error('AGETIC homologarProductos error', ['msg' => $e->getMessage()]);
             return response()->json([
-                'message' => 'Error al consultar homologaciÃƒÂ³n de productos.',
+                'message' => 'Error al consultar homologaciÃƒÆ’Ã‚Â³n de productos.',
                 'details' => $e->getMessage(),
             ], 500);
         }
@@ -3881,7 +3904,7 @@ class VentaController extends Controller
 
         if (!in_array($tipoParametro, $allowed, true)) {
             throw ValidationException::withMessages([
-                'tipoParametro' => ['El tipoParametro solicitado no estÃƒÂ¡ soportado por el protocolo SEFE.'],
+                'tipoParametro' => ['El tipoParametro solicitado no estÃƒÆ’Ã‚Â¡ soportado por el protocolo SEFE.'],
             ]);
         }
 
@@ -3905,7 +3928,7 @@ class VentaController extends Controller
                 'msg' => $e->getMessage(),
             ]);
             return response()->json([
-                'message' => 'Error al consultar las paramÃƒÂ©tricas.',
+                'message' => 'Error al consultar las paramÃƒÆ’Ã‚Â©tricas.',
                 'details' => $e->getMessage(),
             ], 500);
         }
@@ -3914,7 +3937,7 @@ class VentaController extends Controller
     public function consultarPaquete($codigoSeguimientoPaquete)
     {
         $url = $this->ageticBaseUrl() . "/consulta/paquete/{$codigoSeguimientoPaquete}";
-        Log::info("CÃƒÂ³digo de Seguimiento Paquete: {$codigoSeguimientoPaquete}");
+        Log::info("CÃƒÆ’Ã‚Â³digo de Seguimiento Paquete: {$codigoSeguimientoPaquete}");
         Log::info("URL de Consulta Paquete: {$url}");
 
         try {
@@ -3934,7 +3957,7 @@ class VentaController extends Controller
                 'details' => $response->body(),
             ], $response->status());
         } catch (\Throwable $e) {
-            Log::error("ExcepciÃƒÂ³n al consultar paquete: " . $e->getMessage());
+            Log::error("ExcepciÃƒÆ’Ã‚Â³n al consultar paquete: " . $e->getMessage());
             return response()->json([
                 'error'     => 'Error al consultar el paquete',
                 'exception' => $e->getMessage(),
@@ -4041,7 +4064,7 @@ class VentaController extends Controller
                 'supervisor_found' => (bool) $supervisor,
             ]);
             return response()->json([
-                'message' => 'Credenciales de supervisor invÃƒÂ¡lidas.',
+                'message' => 'Credenciales de supervisor invÃƒÆ’Ã‚Â¡lidas.',
                 'code' => 'ANULACION_SUPERVISOR_INVALIDO',
             ], 422);
         }

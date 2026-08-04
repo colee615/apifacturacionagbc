@@ -654,8 +654,30 @@ class FacturacionCartIntegrationController extends Controller
         ]);
         $cart->codigo_orden = $codigoOrdenIntento;
 
+        $emitStartedAt = microtime(true);
         if ($canalEmision === 'qr') {
             $qrPayload = $this->qrCheckoutPayloadFromCart($cart, $items);
+            Log::debug('FacturacionCart emitir QR payload preparado', [
+                'user_id' => $userId,
+                'cart_id' => $cart->id ?? null,
+                'codigo_orden_intento' => $codigoOrdenIntento,
+                'qr_payload_keys' => array_keys($qrPayload),
+                'qr_payload' => [
+                    'internal_code' => $qrPayload['internal_code'] ?? null,
+                    'customer_email' => $qrPayload['customer_email'] ?? null,
+                    'callback_url' => $qrPayload['callback_url'] ?? null,
+                    'payment_method' => $qrPayload['payment_method'] ?? null,
+                    'payment_type' => $qrPayload['payment_type'] ?? null,
+                    'image_method' => $qrPayload['image_method'] ?? null,
+                    'detail' => $qrPayload['detail'] ?? null,
+                    'items_count' => count((array) ($qrPayload['items'] ?? [])),
+                    'items_preview' => collect($qrPayload['items'] ?? [])->map(fn ($item) => [
+                        'name' => $item['name'] ?? null,
+                        'quantity' => $item['quantity'] ?? null,
+                        'price' => $item['price'] ?? null,
+                    ])->values()->all(),
+                ],
+            ]);
             $emitReq = Request::create('/api/factura-venta/qr/checkout', 'POST', $qrPayload);
             $emitReq->headers->set('Accept', 'application/json');
             $emitRes = app(QhantuyQrController::class)->checkout($emitReq);
@@ -668,6 +690,27 @@ class FacturacionCartIntegrationController extends Controller
         $body = json_decode($emitRes->getContent(), true);
         if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
         $emitStatusCode = $emitRes->getStatusCode();
+        $emitElapsedMs = (int) round((microtime(true) - $emitStartedAt) * 1000);
+
+        Log::debug('FacturacionCart emitir respuesta recibida', [
+            'user_id' => $userId,
+            'cart_id' => $cart->id ?? null,
+            'canal_emision' => $canalEmision,
+            'codigo_orden_intento' => $codigoOrdenIntento,
+            'elapsed_ms' => $emitElapsedMs,
+            'http_status' => $emitStatusCode,
+            'body_keys' => array_keys($body),
+            'body_summary' => [
+                'ok' => $body['ok'] ?? null,
+                'message' => $body['message'] ?? null,
+                'estado' => $body['estado'] ?? null,
+                'internal_code' => $body['internal_code'] ?? null,
+                'transaction_id' => $body['transaction_id'] ?? null,
+                'payment_status' => $body['payment_status'] ?? null,
+                'has_qr_url' => !empty($body['qr_url']),
+                'has_image_data' => !empty($body['image_data']),
+            ],
+        ]);
 
         $ok = (bool) ($body['ok'] ?? false);
         $codigoOrdenEmitido = trim((string) ($body['codigoOrden'] ?? ''));
@@ -734,6 +777,36 @@ class FacturacionCartIntegrationController extends Controller
             'emitido_en' => $ok && ($canalEmision !== 'qr' || $qrPaymentState === 'pagado') ? now() : null,
             'cerrado_en' => $ok && ($canalEmision !== 'qr' || $qrPaymentState === 'pagado') ? now() : null,
             'updated_at' => now(),
+        ]);
+
+        $cartSnapshot = DB::table('facturacion_carts')
+            ->where('id', $cart->id)
+            ->first([
+                'id',
+                'codigo_orden',
+                'qr_transaction_id',
+                'estado',
+                'estado_pago',
+                'estado_emision',
+                'codigo_seguimiento',
+                'codigo_seguimiento_fiscal',
+                'emitido_en',
+                'cerrado_en',
+                'updated_at',
+            ]);
+
+        Log::info('FacturacionCart emitir estado final persistido', [
+            'user_id' => $userId,
+            'cart_id' => $cart->id ?? null,
+            'canal_emision' => $canalEmision,
+            'elapsed_ms' => $emitElapsedMs,
+            'ok' => $ok,
+            'http_status' => $emitStatusCode,
+            'codigo_orden_intento' => $codigoOrdenIntento,
+            'codigo_orden_emitido' => $codigoOrdenEmitido,
+            'qr_transaction_id' => $qrTransactionId,
+            'qr_payment_state' => $qrPaymentState,
+            'snapshot' => $cartSnapshot,
         ]);
 
         return response()->json(['ok' => $ok, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $emitStatusCode]);

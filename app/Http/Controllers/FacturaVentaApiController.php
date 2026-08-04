@@ -105,7 +105,9 @@ class FacturaVentaApiController extends Controller
         $origenVentaTipo = strtoupper(trim((string) data_get($payload, 'origenVenta.tipo', '')));
         $isOfficial = $origenVentaTipo === 'OFICIAL';
         $isQr = $metodoPago === 5;
-        if ($isOfficial || $isQr) {
+        $canalOperativo = strtolower(trim((string) data_get($payload, 'canalOperativo', 'normal')));
+        $esCuentaPorCobrar = (bool) data_get($payload, 'esCuentaPorCobrar', false);
+        if ($isOfficial || $isQr || $canalOperativo === 'contrato' || $esCuentaPorCobrar) {
             return;
         }
 
@@ -153,7 +155,9 @@ class FacturaVentaApiController extends Controller
         $origenVentaTipo = strtoupper(trim((string) ($venta->origen_venta_tipo ?? '')));
         $isOfficial = $origenVentaTipo === 'OFICIAL' || strtoupper(trim((string) ($venta->estado_sufe ?? ''))) === 'REGISTRADA_OFICIAL';
         $isQr = $metodoPago === 5;
-        if ($usuarioId === '' || $isOfficial || $isQr) {
+        $canalOperativo = strtolower(trim((string) ($venta->canal_operativo ?? 'normal')));
+        $esCuentaPorCobrar = (bool) ($venta->es_cuenta_por_cobrar ?? false);
+        if ($usuarioId === '' || $isOfficial || $isQr || $canalOperativo === 'contrato' || $esCuentaPorCobrar) {
             return;
         }
 

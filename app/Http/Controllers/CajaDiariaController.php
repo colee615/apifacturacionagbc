@@ -1034,6 +1034,17 @@ class CajaDiariaController extends Controller
                     ->orWhere('metodoPago', '<>', 5);
             });
 
+        if (Schema::hasColumn('ventas', 'canal_operativo')) {
+            $query->whereRaw("lower(coalesce(canal_operativo, 'normal')) <> 'contrato'");
+        }
+
+        if (Schema::hasColumn('ventas', 'es_cuenta_por_cobrar')) {
+            $query->where(function ($sub) {
+                $sub->whereNull('es_cuenta_por_cobrar')
+                    ->orWhere('es_cuenta_por_cobrar', false);
+            });
+        }
+
         $row = $query
             ->selectRaw('count(*) as cantidad, coalesce(sum(total), 0) as total')
             ->first();
@@ -1046,7 +1057,7 @@ class CajaDiariaController extends Controller
 
     private function ventasDelDiaRows(string $usuarioId, string $fecha, int $codigoSucursal, int $puntoVenta)
     {
-        return DB::table('ventas')
+        $query = DB::table('ventas')
             ->where('estado', 1)
             ->whereDate('created_at', $fecha)
             ->where(function ($sub) use ($usuarioId) {
@@ -1061,8 +1072,20 @@ class CajaDiariaController extends Controller
                 $sub->whereNull('metodoPago')
                     ->orWhere('metodoPago', '<>', 5);
             })
-            ->orderBy('id')
-            ->get();
+            ->orderBy('id');
+
+        if (Schema::hasColumn('ventas', 'canal_operativo')) {
+            $query->whereRaw("lower(coalesce(canal_operativo, 'normal')) <> 'contrato'");
+        }
+
+        if (Schema::hasColumn('ventas', 'es_cuenta_por_cobrar')) {
+            $query->where(function ($sub) {
+                $sub->whereNull('es_cuenta_por_cobrar')
+                    ->orWhere('es_cuenta_por_cobrar', false);
+            });
+        }
+
+        return $query->get();
     }
 
     private function findOrCreateConciliacionRow(string $fecha, int $codigoSucursal, int $puntoVenta, array $snapshot): object

@@ -390,6 +390,7 @@ class QhantuyQrController extends Controller
 
     public function checkout(Request $request)
     {
+        $requestStartedAt = microtime(true);
         $validated = $request->validate([
             'customer_email' => ['required', 'email', 'max:120'],
             'customer_first_name' => ['required', 'string', 'max:120'],
@@ -449,19 +450,29 @@ class QhantuyQrController extends Controller
         Log::debug('Qhantuy checkout payload prepared', [
             'internal_code' => $payload['internal_code'],
             'url' => $this->checkoutUrl(),
+            'request_meta' => [
+                'method' => $request->method(),
+                'path' => $request->path(),
+                'ip' => $request->ip(),
+                'user_agent' => substr((string) $request->userAgent(), 0, 240),
+            ],
             'payload' => $this->maskQhantuyPayloadForLogs($payload),
         ]);
 
         try {
             $response = $this->qhantuyClient()->post($this->checkoutUrl(), $payload);
             $body = $response->json();
+            $elapsedMs = (int) round((microtime(true) - $requestStartedAt) * 1000);
 
             Log::debug('Qhantuy checkout response received', [
                 'internal_code' => $payload['internal_code'],
                 'status' => $response->status(),
                 'successful' => $response->successful(),
+                'elapsed_ms' => $elapsedMs,
                 'headers' => [
                     'content_type' => $response->header('Content-Type'),
+                    'server' => $response->header('Server'),
+                    'content_length' => $response->header('Content-Length'),
                 ],
                 'body_summary' => $this->summarizeQhantuyResponseBody($body),
             ]);
@@ -522,6 +533,7 @@ class QhantuyQrController extends Controller
                 'checkout_amount' => $amount,
                 'checkout_currency' => $currency,
                 'has_image_data' => $imageData !== '',
+                'elapsed_ms' => $elapsedMs,
             ]);
 
             return response()->json([
@@ -547,9 +559,11 @@ class QhantuyQrController extends Controller
                 'connect_timeout' => (int) config('services.qhantuy_checkout.connect_timeout', 15),
                 'timeout' => (int) config('services.qhantuy_checkout.timeout', 45),
                 'ssl_verify' => filter_var(config('services.qhantuy_checkout.ssl_verify', true), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? true,
+                'elapsed_ms' => (int) round((microtime(true) - $requestStartedAt) * 1000),
                 'msg' => $e->getMessage(),
                 'internal_code' => $payload['internal_code'],
-                'payload' => $payload,
+                'exception_class' => get_class($e),
+                'payload' => $this->maskQhantuyPayloadForLogs($payload),
                 'config' => $this->maskedCheckoutConfig(),
             ]);
 
@@ -561,8 +575,10 @@ class QhantuyQrController extends Controller
         } catch (RequestException $e) {
             Log::error('Qhantuy checkout request exception', [
                 'internal_code' => $payload['internal_code'],
+                'elapsed_ms' => (int) round((microtime(true) - $requestStartedAt) * 1000),
                 'msg' => $e->getMessage(),
-                'payload' => $payload,
+                'exception_class' => get_class($e),
+                'payload' => $this->maskQhantuyPayloadForLogs($payload),
                 'config' => $this->maskedCheckoutConfig(),
                 'response_status' => $e->response?->status(),
                 'response_body' => $e->response?->body(),
@@ -576,8 +592,10 @@ class QhantuyQrController extends Controller
         } catch (\Throwable $e) {
             Log::error('Qhantuy checkout unexpected error', [
                 'internal_code' => $payload['internal_code'] ?? '',
+                'elapsed_ms' => (int) round((microtime(true) - $requestStartedAt) * 1000),
                 'msg' => $e->getMessage(),
-                'payload' => $payload ?? null,
+                'exception_class' => get_class($e),
+                'payload' => isset($payload) && is_array($payload) ? $this->maskQhantuyPayloadForLogs($payload) : null,
                 'config' => $this->maskedCheckoutConfig(),
                 'trace_head' => substr($e->getTraceAsString(), 0, 2000),
             ]);
