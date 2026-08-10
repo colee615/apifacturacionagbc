@@ -21,6 +21,7 @@ class FacturacionCartIntegrationController extends Controller
     private const DEFAULT_BILLING_EMAIL = 'safe@correos.gob.bo';
     private const PAYMENT_METHODS = ['efectivo', 'qr'];
     private const PAYMENT_STATES = ['pendiente', 'pagado', 'fallido', 'cancelado'];
+    private static array $packageReferenceColumnCache = [];
 
     public function context(Request $request): JsonResponse
     {
@@ -1806,7 +1807,22 @@ class FacturacionCartIntegrationController extends Controller
         $c = DB::table('facturacion_carts')->where('id', $id)->first();
         if (!$c) return null;
         $items = DB::table('facturacion_cart_items')->where('cart_id', $id)->orderBy('id')->get()->map(function ($i) {
-            return ['id' => (int) $i->id, 'cart_id' => (int) $i->cart_id, 'origen_tipo' => (string) $i->origen_tipo, 'origen_id' => (int) $i->origen_id, 'codigo' => $i->codigo, 'titulo' => $i->titulo, 'nombre_servicio' => $i->nombre_servicio, 'nombre_destinatario' => $i->nombre_destinatario, 'servicios_extra' => $this->decode((string) ($i->servicios_extra ?? '')), 'resumen_origen' => $this->decode((string) ($i->resumen_origen ?? '')), 'cantidad' => (int) $i->cantidad, 'monto_base' => (float) $i->monto_base, 'monto_extras' => (float) $i->monto_extras, 'total_linea' => (float) $i->total_linea];
+            return $this->enrichCartItemPayload([
+                'id' => (int) $i->id,
+                'cart_id' => (int) $i->cart_id,
+                'origen_tipo' => (string) $i->origen_tipo,
+                'origen_id' => (int) $i->origen_id,
+                'codigo' => $i->codigo,
+                'titulo' => $i->titulo,
+                'nombre_servicio' => $i->nombre_servicio,
+                'nombre_destinatario' => $i->nombre_destinatario,
+                'servicios_extra' => $this->decode((string) ($i->servicios_extra ?? '')),
+                'resumen_origen' => $this->decode((string) ($i->resumen_origen ?? '')),
+                'cantidad' => (int) $i->cantidad,
+                'monto_base' => (float) $i->monto_base,
+                'monto_extras' => (float) $i->monto_extras,
+                'total_linea' => (float) $i->total_linea,
+            ], (string) $i->origen_tipo, (int) $i->origen_id);
         })->values()->all();
         $canal = strtolower(trim((string) ($c->canal_emision ?? 'factura_electronica')));
         if (!in_array($canal, ['factura_electronica', 'qr'], true)) {
@@ -1862,6 +1878,130 @@ class FacturacionCartIntegrationController extends Controller
     {
         $d = json_decode($json, true);
         return is_array($d) ? $d : [];
+    }
+
+    private function enrichCartItemPayload(array $payload, string $origenTipo = '', int $origenId = 0): array
+    {
+        $payload['resumen_origen'] = is_array($payload['resumen_origen'] ?? null) ? $payload['resumen_origen'] : [];
+
+        $reference = $this->resolvePackageReferenceFromPayload($payload, $origenTipo, $origenId);
+        if ($reference === '') {
+            return $payload;
+        }
+
+        if (trim((string) ($payload['codigo_paquete'] ?? '')) === '') {
+            $payload['codigo_paquete'] = $reference;
+        }
+        if (trim((string) ($payload['codigo_item'] ?? '')) === '') {
+            $payload['codigo_item'] = $reference;
+        }
+        if (trim((string) ($payload['codigo_detalle_enviado'] ?? '')) === '') {
+            $payload['codigo_detalle_enviado'] = $reference;
+        }
+        if (trim((string) data_get($payload, 'resumen_origen.codigo_paquete', '')) === '') {
+            $payload['resumen_origen']['codigo_paquete'] = $reference;
+        }
+        if (trim((string) data_get($payload, 'resumen_origen.codigo_item', '')) === '') {
+            $payload['resumen_origen']['codigo_item'] = $reference;
+        }
+        if (trim((string) data_get($payload, 'resumen_origen.codigo_detalle_enviado', '')) === '') {
+            $payload['resumen_origen']['codigo_detalle_enviado'] = $reference;
+        }
+
+        return $payload;
+    }
+
+    private function resolvePackageReferenceFromPayload(array $payload, string $origenTipo = '', int $origenId = 0): string
+    {
+        $candidates = [
+            trim((string) ($payload['codigo_referencia'] ?? '')),
+            trim((string) ($payload['codigo_paquete'] ?? '')),
+            trim((string) ($payload['codigo_item'] ?? '')),
+            trim((string) ($payload['codigo_detalle_enviado'] ?? '')),
+            trim((string) data_get($payload, 'resumen_origen.codigo_paquete', '')),
+            trim((string) data_get($payload, 'resumen_origen.codigo_item', '')),
+            trim((string) data_get($payload, 'resumen_origen.codigo_detalle_enviado', '')),
+            trim((string) data_get($payload, 'resumen_origen.codigo', '')),
+            trim((string) ($payload['codigo'] ?? '')),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if ($candidate !== '' && ! $this->isServiceReferenceCode($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $this->resolvePackageReferenceFromOrigin($origenTipo, $origenId);
+    }
+
+    private function resolvePackageReferenceFromOrigin(string $origenTipo, int $origenId): string
+    {
+        if ($origenId <= 0 || $origenTipo === '') {
+            return '';
+        }
+
+        $origins = [
+            ['match' => 'PaqueteEms', 'table' => 'paquetes_ems', 'columns' => ['cod_especial', 'codigo']],
+            ['match' => 'PaqueteInt', 'table' => 'paquetes_int', 'columns' => ['cod_especial', 'codigo']],
+            ['match' => 'PaqueteOrdi', 'table' => 'paquetes_ordi', 'columns' => ['cod_especial', 'codigo']],
+            ['match' => 'PaqueteCerti', 'table' => 'paquetes_certi', 'columns' => ['cod_especial', 'codigo']],
+            ['match' => 'SolicitudCliente', 'table' => 'solicitud_clientes', 'columns' => ['cod_especial', 'codigo_solicitud']],
+            ['match' => 'Recojo', 'table' => 'paquetes_contrato', 'columns' => ['cod_especial', 'codigo_madre']],
+        ];
+
+        foreach ($origins as $origin) {
+            if (!Str::endsWith($origenTipo, $origin['match'])) {
+                continue;
+            }
+
+            return $this->findPackageReferenceInTable($origin['table'], $origenId, $origin['columns']);
+        }
+
+        return '';
+    }
+
+    private function findPackageReferenceInTable(string $table, int $id, array $columns): string
+    {
+        if (!Schema::hasTable($table)) {
+            return '';
+        }
+
+        $cacheKey = $table . '|' . implode(',', $columns);
+        if (!array_key_exists($cacheKey, self::$packageReferenceColumnCache)) {
+            self::$packageReferenceColumnCache[$cacheKey] = array_values(array_filter(
+                $columns,
+                fn ($column) => Schema::hasColumn($table, $column)
+            ));
+        }
+
+        $availableColumns = self::$packageReferenceColumnCache[$cacheKey];
+        if ($availableColumns === []) {
+            return '';
+        }
+
+        $row = DB::table($table)->where('id', $id)->first($availableColumns);
+        if (!$row) {
+            return '';
+        }
+
+        foreach ($availableColumns as $column) {
+            $value = trim((string) ($row->{$column} ?? ''));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    private function isServiceReferenceCode(string $reference): bool
+    {
+        $reference = strtoupper(trim($reference));
+
+        return $reference !== ''
+            && (Str::startsWith($reference, 'SRVE-')
+                || Str::startsWith($reference, 'SERV-')
+                || Str::startsWith($reference, 'SERVICIO-'));
     }
 
     private function latestNotificationDetailBySeguimiento(?string $codigoSeguimiento): array
