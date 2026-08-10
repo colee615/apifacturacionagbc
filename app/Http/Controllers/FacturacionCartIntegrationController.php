@@ -844,6 +844,24 @@ class FacturacionCartIntegrationController extends Controller
         $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? $cart->codigo_seguimiento ?? ''));
         $hasQrTransaction = trim((string) ($cart->qr_transaction_id ?? '')) !== '';
         $isQrOrigin = $this->isQrOriginCart($cart);
+        $shouldAutoEmitStoredPaidQr = $autoEmitInvoice
+            && $metodoPago === 'qr'
+            && $hasQrTransaction
+            && $estadoPagoActual === 'pagado'
+            && in_array($estadoEmisionActual, ['', 'NO_APLICA', 'PENDIENTE', 'ERROR', 'RECHAZADA'], true);
+
+        if ($shouldAutoEmitStoredPaidQr) {
+            $emitRequest = Request::create('/api/factura-venta/cart/emitir', 'POST', [
+                'origen_usuario_id' => (string) $v['origen_usuario_id'],
+                'cart_id' => (int) $cart->id,
+                'canal_emision' => 'factura_electronica',
+                'codigo_orden_mode' => 'same',
+            ]);
+            $emitRequest->headers->set('Accept', 'application/json');
+
+            return $this->emitir($emitRequest);
+        }
+
         $shouldConsultQr = $canalEmision === 'qr'
             || (
                 $metodoPago === 'qr'
