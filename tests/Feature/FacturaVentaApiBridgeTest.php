@@ -621,6 +621,70 @@ class FacturaVentaApiBridgeTest extends TestCase
         );
     }
 
+    public function test_qr_pagado_cart_sales_expose_same_data_invoice_action(): void
+    {
+        $cartId = (int) DB::table('facturacion_carts')->insertGetId([
+            'origen_usuario_id' => 'operador-test',
+            'origen_usuario_nombre' => 'Operador Bolipost',
+            'origen_usuario_email' => 'operador@test.com',
+            'origen_sucursal_id' => '0',
+            'origen_sucursal_codigo' => '0',
+            'origen_sucursal_nombre' => 'Sucursal Central',
+            'estado' => 'emitido',
+            'modalidad_facturacion' => 'con_datos',
+            'canal_emision' => 'qr',
+            'metodo_pago' => 'qr',
+            'estado_pago' => 'pagado',
+            'tipo_documento' => 'CI',
+            'numero_documento' => '1234567',
+            'razon_social' => 'NANDA FLORES YUJRA',
+            'correo_facturacion' => 'cliente@test.com',
+            'codigo_orden' => 'VQC-0000002260',
+            'estado_emision' => 'NO_APLICA',
+            'mensaje_emision' => 'Pendiente de facturacion',
+            'cantidad_items' => 1,
+            'subtotal' => 25,
+            'total_extras' => 0,
+            'total' => 25,
+            'qr_transaction_id' => '99887766',
+            'abierto_en' => now(),
+            'emitido_en' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('facturacion_cart_items')->insert([
+            'cart_id' => $cartId,
+            'origen_tipo' => 'ServicioManual',
+            'origen_id' => 1001,
+            'codigo' => 'SERV-001',
+            'titulo' => 'Servicio postal',
+            'nombre_servicio' => 'Servicio postal',
+            'nombre_destinatario' => 'ROCHA',
+            'cantidad' => 1,
+            'monto_base' => 25,
+            'monto_extras' => 0,
+            'total_linea' => 25,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer test-bridge-token',
+            'Accept' => 'application/json',
+        ])->getJson('/api/factura-venta/cart/ventas?origen_usuario_id=operador-test&per_page=10&page=1');
+
+        $response->assertOk()
+            ->assertJsonPath('data.carts.0.id', $cartId)
+            ->assertJsonPath('data.carts.0.status.key', 'QR_PAGADO')
+            ->assertJsonPath('data.carts.0.status.can_emit', true)
+            ->assertJsonPath('data.carts.0.status.can_emit_same_data', true)
+            ->assertJsonPath('data.carts.0.status.emit_payload.canal_emision', 'factura_electronica')
+            ->assertJsonPath('data.carts.0.status.emit_payload.codigo_orden_mode', 'same')
+            ->assertJsonPath('data.carts.0.status.emit_payload.reuse_cart_billing_data', true)
+            ->assertJsonPath('data.carts.0.status.emit_payload.preserve_paid_qr_payment', true);
+    }
+
     private function insertProcessedVenta(string $codigoOrden, string $codigoSeguimiento, string $cuf): int
     {
         return (int) DB::table('ventas')->insertGetId([

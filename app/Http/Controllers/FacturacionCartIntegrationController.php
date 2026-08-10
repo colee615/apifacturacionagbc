@@ -1829,8 +1829,127 @@ class FacturacionCartIntegrationController extends Controller
             $canal = strtolower(trim((string) ($c->metodo_pago ?? ''))) === 'qr' ? 'qr' : 'factura_electronica';
         }
         $linkedVentaId = $this->resolveLinkedVentaIdForCart((int) $c->id, $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal));
+        $linkedVenta = $linkedVentaId > 0
+            ? DB::table('ventas')
+                ->where('id', $linkedVentaId)
+                ->first(['id', 'estado_sufe', 'cuf', 'numero_factura', 'codigoSeguimiento'])
+            : null;
+        $status = $this->facturacionCartStatusPayload($c, $linkedVenta);
 
-        return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $c->tipo_documento, 'numero_documento' => $c->numero_documento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $c->razon_social, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $this->decode((string) ($c->respuesta_emision ?? '')), 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'items' => $items];
+        return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $c->tipo_documento, 'numero_documento' => $c->numero_documento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $c->razon_social, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $this->decode((string) ($c->respuesta_emision ?? '')), 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'items' => $items];
+    }
+
+    private function facturacionCartStatusPayload(object $cart, ?object $linkedVenta = null): array
+    {
+        $canal = strtolower(trim((string) ($cart->canal_emision ?? '')));
+        $estado = strtolower(trim((string) ($cart->estado ?? '')));
+        $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
+        $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+        $canConsult = $this->canConsultFacturacionCart($cart);
+        $respuestaEmision = $this->decode((string) ($cart->respuesta_emision ?? ''));
+
+        $cuf = trim((string) (
+            data_get($respuestaEmision, 'cuf')
+            ?: data_get($respuestaEmision, 'factura.cuf')
+            ?: data_get($respuestaEmision, 'datos.cuf')
+            ?: data_get($respuestaEmision, 'detalle.cuf')
+            ?: ($linkedVenta->cuf ?? '')
+            ?: ''
+        ));
+        $canAnnul = $canal !== 'qr' && $estadoEmision === 'FACTURADA' && $cuf !== '';
+        $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
+        $hasLinkedFiscalBilling = $estadoEmision === 'FACTURADA'
+            || $linkedVentaStatus === 'PROCESADA'
+            || !blank($linkedVenta->cuf ?? null);
+
+        if ($estado === 'descartado') {
+            return $this->makeFacturacionCartStatusPayload('DESCARTADA', [
+                'can_consult' => false,
+                'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
+        }
+
+        if ($canal === 'qr') {
+            if ($hasLinkedFiscalBilling && ($estadoPago === 'pagado' || $estado === 'emitido')) {
+                return $this->makeFacturacionCartStatusPayload('FACTURADA', [
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
+            if ($estadoPago === 'pagado' || $estado === 'emitido') {
+                return $this->makeFacturacionCartStatusPayload('QR_PAGADO', [
+                    'can_emit' => true,
+                    'can_emit_same_data' => true,
+                    'can_consult' => $canConsult,
+                    'emit_payload' => [
+                        'canal_emision' => 'factura_electronica',
+                        'codigo_orden_mode' => 'same',
+                        'reuse_cart_billing_data' => true,
+                        'preserve_paid_qr_payment' => true,
+                    ],
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
+            if ($estadoPago === 'cancelado') {
+                return $this->makeFacturacionCartStatusPayload('QR_ANULADO', [
+                    'can_consult' => $canConsult,
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
+
+            return $this->makeFacturacionCartStatusPayload('QR_PENDIENTE', [
+                'can_cancel' => true,
+                'can_consult' => $canConsult,
+                'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
+        }
+
+        return match ($estadoEmision) {
+            'FACTURADA' => $this->makeFacturacionCartStatusPayload('FACTURADA', ['can_annul' => $canAnnul, 'cuf' => $cuf !== '' ? $cuf : null]),
+            'PENDIENTE' => $this->makeFacturacionCartStatusPayload('PENDIENTE', ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
+            'RECHAZADA' => $this->makeFacturacionCartStatusPayload('RECHAZADA', ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
+            'ERROR' => $this->makeFacturacionCartStatusPayload('ERROR', ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
+            'NO_APLICA' => $this->makeFacturacionCartStatusPayload('NO_APLICA', ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
+            default => $this->makeFacturacionCartStatusPayload(strtoupper($estado !== '' ? $estado : 'SIN_ESTADO'), ['can_consult' => $canConsult, 'cuf' => $cuf !== '' ? $cuf : null]),
+        };
+    }
+
+    private function canConsultFacturacionCart(object $cart): bool
+    {
+        $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+        $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
+        $codigoSeguimiento = trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')));
+        $transactionId = trim((string) ($cart->qr_transaction_id ?? ''));
+
+        if ($codigoSeguimiento !== '' && in_array($estadoEmision, ['PENDIENTE', 'ERROR', 'RECHAZADA'], true)) {
+            return true;
+        }
+
+        return $transactionId !== ''
+            && in_array($estadoPago, ['pendiente', 'pagado', 'cancelado'], true)
+            && in_array($estadoEmision, ['', 'NO_APLICA', 'PENDIENTE', 'ERROR', 'RECHAZADA'], true);
+    }
+
+    private function makeFacturacionCartStatusPayload(string $key, array $overrides = []): array
+    {
+        return array_merge([
+            'key' => $key,
+            'label' => $key,
+            'normalized' => 'UNKNOWN',
+            'group' => 'unknown',
+            'ui_class' => 'desconocido',
+            'help' => 'No hay informacion adicional del estado.',
+            'can_emit' => false,
+            'can_emit_same_data' => false,
+            'can_massive' => false,
+            'can_cafc' => false,
+            'can_consult' => false,
+            'can_annul' => false,
+            'can_cancel' => false,
+            'emit_payload' => null,
+            'notification_state' => null,
+            'tipoEmision' => null,
+            'cuf' => null,
+        ], (array) config("venta_statuses.cart.{$key}", []), $overrides);
     }
 
     private function resolveLinkedVentaIdForCart(int $cartId, string $codigoOrden = ''): int

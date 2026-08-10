@@ -293,11 +293,13 @@ class VentaController extends Controller
             'ui_class' => 'desconocido',
             'help' => 'No hay informacion adicional del estado.',
             'can_emit' => false,
+            'can_emit_same_data' => false,
             'can_massive' => false,
             'can_cafc' => false,
             'can_consult' => false,
             'can_annul' => false,
             'can_cancel' => false,
+            'emit_payload' => null,
             'notification_state' => null,
             'tipoEmision' => null,
             'cuf' => null,
@@ -2886,7 +2888,15 @@ class VentaController extends Controller
             }
             if ($estadoPago === 'pagado' || $estado === 'emitido') {
                 return $this->makeStatusPayload('cart', 'QR_PAGADO', [
+                    'can_emit' => true,
+                    'can_emit_same_data' => true,
                     'can_consult' => $canConsult,
+                    'emit_payload' => [
+                        'canal_emision' => 'factura_electronica',
+                        'codigo_orden_mode' => 'same',
+                        'reuse_cart_billing_data' => true,
+                        'preserve_paid_qr_payment' => true,
+                    ],
                     'cuf' => $cuf !== '' ? $cuf : null,
                 ]);
             }
