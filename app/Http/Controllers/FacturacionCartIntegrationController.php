@@ -623,10 +623,9 @@ class FacturacionCartIntegrationController extends Controller
             }
         }
 
-        $reusePaidQrInvoiceCode = $isPaidQrInvoiceConversion && $codigoOrdenMode !== 'new';
+        $reusePaidQrInvoiceCode = $isPaidQrInvoiceConversion;
 
-        // El comportamiento actual conserva el mismo codigo para una venta QR ya pagada.
-        // Si el usuario solicita "otro codigo", forzamos un nuevo correlativo para el reintento.
+        // Una venta QR ya pagada debe conservar siempre el mismo codigo de orden.
         $codigoOrdenIntento = $reusePaidQrInvoiceCode
             ? trim((string) ($cart->codigo_orden ?? ''))
             : ($isPaidQrInvoiceConversion
