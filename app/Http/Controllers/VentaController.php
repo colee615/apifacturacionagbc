@@ -35,6 +35,7 @@ class VentaController extends Controller
     private static ?bool $hasCartOrigenSucursalCodigoColumn = null;
     private static ?bool $hasCartOrigenSucursalIdColumn = null;
     private static ?bool $hasFacturacionCartItemsTable = null;
+    private static array $packageReferenceColumnCache = [];
 
     public function __construct(
         private readonly SufeSectorUnoValidator $sufeValidator
@@ -59,6 +60,131 @@ class VentaController extends Controller
     private function reportElapsedMs(float $startedAt): int
     {
         return (int) round((microtime(true) - $startedAt) * 1000);
+    }
+
+    private function enrichCartItemPayload(array $payload, string $origenTipo = '', int $origenId = 0): array
+    {
+        $payload['resumen_origen'] = is_array($payload['resumen_origen'] ?? null) ? $payload['resumen_origen'] : [];
+
+        $reference = $this->resolvePackageReferenceFromPayload($payload, $origenTipo, $origenId);
+        if ($reference === '') {
+            return $payload;
+        }
+
+        if (trim((string) ($payload['codigo_paquete'] ?? '')) === '') {
+            $payload['codigo_paquete'] = $reference;
+        }
+        if (trim((string) ($payload['codigo_item'] ?? '')) === '') {
+            $payload['codigo_item'] = $reference;
+        }
+        if (trim((string) ($payload['codigo_detalle_enviado'] ?? '')) === '') {
+            $payload['codigo_detalle_enviado'] = $reference;
+        }
+
+        if (trim((string) data_get($payload, 'resumen_origen.codigo_paquete', '')) === '') {
+            $payload['resumen_origen']['codigo_paquete'] = $reference;
+        }
+        if (trim((string) data_get($payload, 'resumen_origen.codigo_item', '')) === '') {
+            $payload['resumen_origen']['codigo_item'] = $reference;
+        }
+        if (trim((string) data_get($payload, 'resumen_origen.codigo_detalle_enviado', '')) === '') {
+            $payload['resumen_origen']['codigo_detalle_enviado'] = $reference;
+        }
+
+        return $payload;
+    }
+
+    private function resolvePackageReferenceFromPayload(array $payload, string $origenTipo = '', int $origenId = 0): string
+    {
+        $candidates = [
+            trim((string) ($payload['codigo_referencia'] ?? '')),
+            trim((string) ($payload['codigo_paquete'] ?? '')),
+            trim((string) ($payload['codigo_item'] ?? '')),
+            trim((string) ($payload['codigo_detalle_enviado'] ?? '')),
+            trim((string) data_get($payload, 'resumen_origen.codigo_paquete', '')),
+            trim((string) data_get($payload, 'resumen_origen.codigo_item', '')),
+            trim((string) data_get($payload, 'resumen_origen.codigo_detalle_enviado', '')),
+            trim((string) data_get($payload, 'resumen_origen.codigo', '')),
+            trim((string) ($payload['codigo'] ?? '')),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if ($candidate !== '' && ! $this->isServiceReferenceCode($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $this->resolvePackageReferenceFromOrigin($origenTipo, $origenId);
+    }
+
+    private function resolvePackageReferenceFromOrigin(string $origenTipo, int $origenId): string
+    {
+        if ($origenId <= 0 || $origenTipo === '') {
+            return '';
+        }
+
+        $origins = [
+            ['match' => 'PaqueteEms', 'table' => 'paquetes_ems', 'columns' => ['cod_especial', 'codigo']],
+            ['match' => 'PaqueteInt', 'table' => 'paquetes_int', 'columns' => ['cod_especial', 'codigo']],
+            ['match' => 'PaqueteOrdi', 'table' => 'paquetes_ordi', 'columns' => ['cod_especial', 'codigo']],
+            ['match' => 'PaqueteCerti', 'table' => 'paquetes_certi', 'columns' => ['cod_especial', 'codigo']],
+            ['match' => 'SolicitudCliente', 'table' => 'solicitud_clientes', 'columns' => ['cod_especial', 'codigo_solicitud']],
+            ['match' => 'Recojo', 'table' => 'paquetes_contrato', 'columns' => ['cod_especial', 'codigo_madre']],
+        ];
+
+        foreach ($origins as $origin) {
+            if (!Str::endsWith($origenTipo, $origin['match'])) {
+                continue;
+            }
+
+            return $this->findPackageReferenceInTable($origin['table'], $origenId, $origin['columns']);
+        }
+
+        return '';
+    }
+
+    private function findPackageReferenceInTable(string $table, int $id, array $columns): string
+    {
+        if (!Schema::hasTable($table)) {
+            return '';
+        }
+
+        $cacheKey = $table . '|' . implode(',', $columns);
+        if (!array_key_exists($cacheKey, self::$packageReferenceColumnCache)) {
+            self::$packageReferenceColumnCache[$cacheKey] = array_values(array_filter(
+                $columns,
+                fn ($column) => Schema::hasColumn($table, $column)
+            ));
+        }
+
+        $availableColumns = self::$packageReferenceColumnCache[$cacheKey];
+        if ($availableColumns === []) {
+            return '';
+        }
+
+        $row = DB::table($table)->where('id', $id)->first($availableColumns);
+        if (!$row) {
+            return '';
+        }
+
+        foreach ($availableColumns as $column) {
+            $value = trim((string) ($row->{$column} ?? ''));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    private function isServiceReferenceCode(string $reference): bool
+    {
+        $reference = strtoupper(trim($reference));
+
+        return $reference !== ''
+            && (Str::startsWith($reference, 'SRVE-')
+                || Str::startsWith($reference, 'SERV-')
+                || Str::startsWith($reference, 'SERVICIO-'));
     }
 
   
@@ -1137,6 +1263,8 @@ class VentaController extends Controller
                 ->get([
                     'cart_id',
                     'id',
+                    'origen_tipo',
+                    'origen_id',
                     'codigo',
                     'titulo',
                     'nombre_servicio',
@@ -1163,7 +1291,7 @@ class VentaController extends Controller
                         $titulo = trim((string) ($item->titulo ?? ''));
                         $servicio = trim((string) ($item->nombre_servicio ?? ''));
 
-                        return [
+                        return $this->enrichCartItemPayload([
                             'id' => (int) ($item->id ?? 0),
                             'codigo' => (string) (($item->codigo ?? '') !== '' ? $item->codigo : ('ITEM-' . (int) $item->id)),
                             'descripcion' => (string) ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle')),
@@ -1177,7 +1305,7 @@ class VentaController extends Controller
                             'monto_base' => $base,
                             'monto_extras' => $extras,
                             'total_linea' => $totalLinea,
-                        ];
+                        ], (string) ($item->origen_tipo ?? ''), (int) ($item->origen_id ?? 0));
                     })->values()->all();
                 })
                 ->toArray();
@@ -1596,6 +1724,8 @@ class VentaController extends Controller
                 ->get([
                     'cart_id',
                     'id',
+                    'origen_tipo',
+                    'origen_id',
                     'codigo',
                     'titulo',
                     'nombre_servicio',
@@ -1617,7 +1747,11 @@ class VentaController extends Controller
                     $item = is_array($item) ? (object) $item : $item;
                     $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
                     $item->resumen_origen = is_array($resumen) ? $resumen : [];
-                    return $item;
+                    return (object) $this->enrichCartItemPayload(
+                        (array) $item,
+                        (string) ($item->origen_tipo ?? ''),
+                        (int) ($item->origen_id ?? 0)
+                    );
                 })
                 ->values();
 
@@ -3282,7 +3416,7 @@ class VentaController extends Controller
                         if (!is_array($resumen)) {
                             $resumen = [];
                         }
-                        return [
+                        return $this->enrichCartItemPayload([
                             'codigo' => (string) ($item->codigo ?: ('ITEM-' . $item->id)),
                             // Priorizamos "titulo" para que UI muestre "Admision EMS"
                             // y dejamos el servicio como linea secundaria.
@@ -3297,7 +3431,7 @@ class VentaController extends Controller
                             'subtitulo' => $destinatario,
                             'origen_tipo' => (string) ($item->origen_tipo ?? ''),
                             'resumen_origen' => $resumen,
-                        ];
+                        ], (string) ($item->origen_tipo ?? ''), (int) ($item->origen_id ?? 0));
                     })
                     ->values()
                     ->all();
