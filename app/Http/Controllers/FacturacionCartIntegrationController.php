@@ -997,6 +997,24 @@ class FacturacionCartIntegrationController extends Controller
         DB::table('facturacion_carts')->where('id', $cart->id)->update($updates);
         $this->syncLinkedVentaFiscalData($cart, $mergedResponse);
 
+        $shouldAutoEmitInvoice = $shouldConsultQr
+            && $autoEmitInvoice
+            && $consultSucceeded
+            && strtolower((string) ($updates['estado_pago'] ?? '')) === 'pagado'
+            && strtoupper((string) ($updates['estado_emision'] ?? '')) !== 'FACTURADA';
+
+        if ($shouldAutoEmitInvoice) {
+            $emitRequest = Request::create('/api/factura-venta/cart/emitir', 'POST', [
+                'origen_usuario_id' => (string) $v['origen_usuario_id'],
+                'cart_id' => (int) $cart->id,
+                'canal_emision' => 'factura_electronica',
+                'codigo_orden_mode' => 'same',
+            ]);
+            $emitRequest->headers->set('Accept', 'application/json');
+
+            return $this->emitir($emitRequest);
+        }
+
         return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $statusCode]);
     }
 
