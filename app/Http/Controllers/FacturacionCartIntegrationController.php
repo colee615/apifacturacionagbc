@@ -1915,6 +1915,12 @@ class FacturacionCartIntegrationController extends Controller
                     'cuf' => $cuf !== '' ? $cuf : null,
                 ]);
             }
+            if (($estadoPago === 'pagado' || $estado === 'emitido') && $canal !== 'qr' && in_array($estadoEmision, ['PENDIENTE', 'RECHAZADA', 'ERROR'], true)) {
+                return $this->makeFacturacionCartStatusPayload($estadoEmision, [
+                    'can_consult' => $canConsult,
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
             if ($estadoPago === 'pagado' || $estado === 'emitido') {
                 return $this->makeFacturacionCartStatusPayload('QR_PAGADO', [
                     'can_emit' => true,
