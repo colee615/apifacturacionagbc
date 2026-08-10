@@ -2880,7 +2880,11 @@ class VentaController extends Controller
             ]);
         }
 
-        if ($canal === 'qr') {
+        $isQrTrackedSale = $canal === 'qr'
+            || strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
+            || trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+
+        if ($isQrTrackedSale) {
             if ($hasLinkedFiscalBilling && ($estadoPago === 'pagado' || $estado === 'emitido')) {
                 return $this->makeStatusPayload('cart', 'FACTURADA', [
                     'cuf' => $cuf !== '' ? $cuf : null,
