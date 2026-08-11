@@ -1032,7 +1032,16 @@ class FacturacionCartIntegrationController extends Controller
             return $this->emitir($emitRequest);
         }
 
-        return response()->json(['ok' => true, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $statusCode]);
+        $updatedCart = $this->cartById((int) $cart->id);
+        $downloadPdf = $this->buildDownloadPdfPayloadFromCartResponse($updatedCart);
+
+        return response()->json([
+            'ok' => true,
+            'cart' => $updatedCart,
+            'respuesta' => $body,
+            'download_pdf' => $downloadPdf,
+            'status_code' => $statusCode,
+        ]);
     }
 
     public function verQr(Request $request): JsonResponse
@@ -1411,11 +1420,15 @@ class FacturacionCartIntegrationController extends Controller
 
     private function payloadFromCart(object $cart, $items): array
     {
+        $linkedVenta = $this->resolveLinkedVentaForCartPayload($cart);
+        $resolvedTipoDocumento = $cart->tipo_documento ?? ($linkedVenta->tipoDocumentoIdentidad ?? null);
+        $resolvedNumeroDocumento = $cart->numero_documento ?? ($linkedVenta->documentoIdentidad ?? null);
+        $resolvedRazonSocial = $cart->razon_social ?? ($linkedVenta->razonSocial ?? null);
         $sinCliente = (string) ($cart->modalidad_facturacion ?? 'con_datos') === 'sin_cliente';
-        $tipo = $sinCliente ? 5 : (int) ($cart->tipo_documento ?: 1);
-        $doc = $sinCliente ? '99003' : (string) ($cart->numero_documento ?: '');
-        $razon = $sinCliente ? 'SIN NOMBRE' : (string) ($cart->razon_social ?: '');
-        if (!$sinCliente && ($doc === '' || $razon === '' || blank($cart->tipo_documento))) abort(422, 'Completa tipo de documento, numero de documento y razon social antes de emitir.');
+        $tipo = $sinCliente ? 5 : (int) ($resolvedTipoDocumento ?: 1);
+        $doc = $sinCliente ? '99003' : (string) ($resolvedNumeroDocumento ?: '');
+        $razon = $sinCliente ? 'SIN NOMBRE' : (string) ($resolvedRazonSocial ?: '');
+        if (!$sinCliente && ($doc === '' || $razon === '' || blank($resolvedTipoDocumento))) abort(422, 'Completa tipo de documento, numero de documento y razon social antes de emitir.');
 
         $rawCodigoSucursal = $cart->origen_sucursal_codigo;
         $rawPuntoVenta = $cart->origen_sucursal_id;
@@ -1591,6 +1604,23 @@ class FacturacionCartIntegrationController extends Controller
             'cancelled', 'canceled', 'rejected', 'failed', 'failure', 'expired', 'error' => 'cancelado',
             default => 'pendiente',
         };
+    }
+
+    private function resolveLinkedVentaForCartPayload(object $cart): ?object
+    {
+        $canal = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
+        if (!in_array($canal, ['factura_electronica', 'qr'], true)) {
+            $canal = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr' ? 'qr' : 'factura_electronica';
+        }
+
+        $linkedVentaId = $this->resolveLinkedVentaIdForCart((int) ($cart->id ?? 0), $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canal));
+        if ($linkedVentaId <= 0) {
+            return null;
+        }
+
+        return DB::table('ventas')
+            ->where('id', $linkedVentaId)
+            ->first(['id', 'razonSocial', 'documentoIdentidad', 'tipoDocumentoIdentidad', 'codigoCliente']);
     }
 
     private function extractQrSessionData(array $respuesta, string $defaultInternalCode = '', bool $forceQr = false): ?array
@@ -1867,11 +1897,35 @@ class FacturacionCartIntegrationController extends Controller
         $linkedVenta = $linkedVentaId > 0
             ? DB::table('ventas')
                 ->where('id', $linkedVentaId)
-                ->first(['id', 'estado_sufe', 'cuf', 'numero_factura', 'codigoSeguimiento'])
+                ->first(['id', 'estado_sufe', 'cuf', 'numero_factura', 'codigoSeguimiento', 'razonSocial', 'documentoIdentidad', 'tipoDocumentoIdentidad', 'codigoCliente', 'url_pdf', 'url_xml'])
             : null;
         $status = $this->facturacionCartStatusPayload($c, $linkedVenta);
+        $respuestaEmision = $this->decode((string) ($c->respuesta_emision ?? ''));
+        $resolvedTipoDocumento = $c->tipo_documento ?? ($linkedVenta->tipoDocumentoIdentidad ?? null);
+        $resolvedNumeroDocumento = $c->numero_documento ?? ($linkedVenta->documentoIdentidad ?? null);
+        $resolvedRazonSocial = $c->razon_social ?? ($linkedVenta->razonSocial ?? null);
+        $resolvedNumeroFactura = trim((string) (
+            data_get($respuestaEmision, 'factura.nroFactura')
+            ?: data_get($respuestaEmision, 'nroFactura')
+            ?: ($linkedVenta->numero_factura ?? '')
+        ));
+        $resolvedCuf = trim((string) (
+            data_get($respuestaEmision, 'factura.cuf')
+            ?: data_get($respuestaEmision, 'cuf')
+            ?: ($linkedVenta->cuf ?? '')
+        ));
+        $resolvedPdfUrl = trim((string) (
+            data_get($respuestaEmision, 'factura.pdfUrl')
+            ?: data_get($respuestaEmision, 'pdfUrl')
+            ?: ($linkedVenta->url_pdf ?? '')
+        ));
+        $resolvedXmlUrl = trim((string) (
+            data_get($respuestaEmision, 'factura.xmlUrl')
+            ?: data_get($respuestaEmision, 'xmlUrl')
+            ?: ($linkedVenta->url_xml ?? '')
+        ));
 
-        return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $c->tipo_documento, 'numero_documento' => $c->numero_documento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $c->razon_social, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $this->decode((string) ($c->respuesta_emision ?? '')), 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'items' => $items];
+        return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $resolvedTipoDocumento, 'numero_documento' => $resolvedNumeroDocumento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $resolvedRazonSocial, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $respuestaEmision, 'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : null, 'cuf' => $resolvedCuf !== '' ? $resolvedCuf : null, 'pdf_url' => $resolvedPdfUrl !== '' ? $resolvedPdfUrl : null, 'xml_url' => $resolvedXmlUrl !== '' ? $resolvedXmlUrl : null, 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'items' => $items];
     }
 
     private function facturacionCartStatusPayload(object $cart, ?object $linkedVenta = null): array
@@ -1965,7 +2019,7 @@ class FacturacionCartIntegrationController extends Controller
         $codigoSeguimiento = trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')));
         $transactionId = trim((string) ($cart->qr_transaction_id ?? ''));
 
-        if ($codigoSeguimiento !== '' && in_array($estadoEmision, ['PENDIENTE', 'ERROR', 'RECHAZADA'], true)) {
+        if ($codigoSeguimiento !== '' && in_array($estadoEmision, ['FACTURADA', 'PENDIENTE', 'ERROR', 'RECHAZADA'], true)) {
             return true;
         }
 
@@ -2270,6 +2324,33 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         return $response;
+    }
+
+    private function buildDownloadPdfPayloadFromCartResponse(?array $cart): ?array
+    {
+        if (!is_array($cart)) {
+            return null;
+        }
+
+        $pdfUrl = trim((string) (
+            data_get($cart, 'pdf_url')
+            ?: data_get($cart, 'respuesta_emision.factura.pdfUrl')
+            ?: data_get($cart, 'respuesta_emision.pdfUrl')
+            ?: ''
+        ));
+
+        if ($pdfUrl === '') {
+            return null;
+        }
+
+        return [
+            'url' => $pdfUrl,
+            'key' => (string) (
+                data_get($cart, 'codigo_orden')
+                ?: data_get($cart, 'numero_factura')
+                ?: now()->timestamp
+            ),
+        ];
     }
 
     private function syncLinkedVentaFiscalData(object $cart, array $response): void

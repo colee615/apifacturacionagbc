@@ -3031,6 +3031,9 @@ class VentaController extends Controller
         $items = collect($preloadedItems);
 
         $status = $this->facturacionCartStatusPayload($cart, $linkedVenta);
+        $resolvedTipoDocumento = $cart->tipo_documento ?? ($linkedVenta->tipoDocumentoIdentidad ?? null);
+        $resolvedNumeroDocumento = $cart->numero_documento ?? ($linkedVenta->documentoIdentidad ?? null);
+        $resolvedRazonSocial = $cart->razon_social ?? ($linkedVenta->razonSocial ?? null);
         $fecha = $cart->emitido_en ?: $cart->created_at;
         $numeroFactura = $this->facturacionCartNumeroFactura((string) ($cart->respuesta_emision ?? ''))
             ?: ($detalleNotificacion['nroFactura'] ?? null)
@@ -3140,10 +3143,13 @@ class VentaController extends Controller
             'empresa_sigla' => (string) ($cart->empresa_sigla ?? ''),
             'qr_transaction_id' => $cart->qr_transaction_id,
             'respuesta_emision' => $respuestaEmision,
+            'tipo_documento' => $resolvedTipoDocumento,
+            'numero_documento' => $resolvedNumeroDocumento,
+            'razon_social' => $resolvedRazonSocial,
             'cliente' => [
-                'razonSocial' => $cart->razon_social,
-                'documentoIdentidad' => $cart->numero_documento,
-                'codigoCliente' => null,
+                'razonSocial' => $resolvedRazonSocial,
+                'documentoIdentidad' => $resolvedNumeroDocumento,
+                'codigoCliente' => $linkedVenta->codigoCliente ?? null,
             ],
             'usuario' => [
                 'id' => $cart->origen_usuario_id,
