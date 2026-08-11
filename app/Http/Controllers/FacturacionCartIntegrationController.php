@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 
 namespace App\Http\Controllers;
 
@@ -683,6 +683,13 @@ class FacturacionCartIntegrationController extends Controller
             $emitRes = app(QhantuyQrController::class)->checkout($emitReq);
         } else {
             $facturaPayload = $this->payloadFromCart($cart, $items);
+            Log::debug('FacturacionCart emitir factura payload preparado', [
+                'user_id' => $userId,
+                'cart_id' => $cart->id ?? null,
+                'canal_emision' => $canalEmision,
+                'codigo_orden_intento' => $codigoOrdenIntento,
+                'factura_payload' => $facturaPayload,
+            ]);
             $emitReq = Request::create('/api/factura-venta/emitir', 'POST', $facturaPayload);
             $emitReq->headers->set('Accept', 'application/json');
             $emitRes = app(FacturaVentaApiController::class)->emitir($emitReq);
@@ -756,6 +763,7 @@ class FacturacionCartIntegrationController extends Controller
                 'codigo_seguimiento_emitido' => $codigoSeguimientoEmitido,
                 'estado_respuesta' => $body['estado'] ?? null,
                 'mensaje_respuesta' => $body['mensaje'] ?? ($body['message'] ?? null),
+                'body_completo' => $body,
             ]);
         }
 
@@ -2595,5 +2603,7 @@ class FacturacionCartIntegrationController extends Controller
             ->values();
     }
 }
+
+
 
 

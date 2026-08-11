@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 
 namespace App\Http\Controllers;
 
@@ -211,7 +211,7 @@ class FacturaVentaApiController extends Controller
             ? $codigoOrdenRecibido
             : $nextCodigoOrden;
 
-        // Normaliza formatos tipo "venta-1", "VENTA-0001", etc. al formato canónico.
+        // Normaliza formatos tipo "venta-1", "VENTA-0001", etc. al formato canÃ³nico.
         if (preg_match('/^venta-(\d+)$/i', $codigoOrden, $matches)) {
             $codigoOrden = Venta::formatCodigoOrdenFromNumber((int) $matches[1]);
         }
@@ -665,8 +665,8 @@ class FacturaVentaApiController extends Controller
         return match ($status) {
             'PROCESADA' => 'Procesada correctamente',
             'ANULADA' => 'Anulada',
-            'ANULACION_SOLICITADA' => 'Anulación solicitada',
-            'ANULACION_OBSERVADA' => 'Anulación observada',
+            'ANULACION_SOLICITADA' => 'AnulaciÃ³n solicitada',
+            'ANULACION_OBSERVADA' => 'AnulaciÃ³n observada',
             'OBSERVADA' => 'Observada',
             'CONTINGENCIA_CREADA' => 'En contingencia',
             'RECEPCIONADA' => 'Recepcionada por SEFE',
@@ -679,12 +679,12 @@ class FacturaVentaApiController extends Controller
         return match ($status) {
             'PROCESADA' => 'La venta fue validada y procesada correctamente por SEFE.',
             'ANULADA' => 'La factura fue anulada correctamente por SEFE.',
-            'ANULACION_SOLICITADA' => 'SEFE recepcionó la solicitud de anulación y se espera la notificación final.',
-            'ANULACION_OBSERVADA' => 'SEFE observó la solicitud de anulación y la factura conserva su estado previo.',
-            'OBSERVADA' => 'SEFE devolvió observaciones y la venta requiere revisión.',
-            'CONTINGENCIA_CREADA' => 'SEFE recepcionó la venta, pero SIAT no estaba disponible y la dejó en contingencia.',
-            'RECEPCIONADA' => 'SEFE recepcionó la venta y se espera la notificación final del proceso.',
-            default => 'No existe suficiente información para determinar el estado final.',
+            'ANULACION_SOLICITADA' => 'SEFE recepcionÃ³ la solicitud de anulaciÃ³n y se espera la notificaciÃ³n final.',
+            'ANULACION_OBSERVADA' => 'SEFE observÃ³ la solicitud de anulaciÃ³n y la factura conserva su estado previo.',
+            'OBSERVADA' => 'SEFE devolviÃ³ observaciones y la venta requiere revisiÃ³n.',
+            'CONTINGENCIA_CREADA' => 'SEFE recepcionÃ³ la venta, pero SIAT no estaba disponible y la dejÃ³ en contingencia.',
+            'RECEPCIONADA' => 'SEFE recepcionÃ³ la venta y se espera la notificaciÃ³n final del proceso.',
+            default => 'No existe suficiente informaciÃ³n para determinar el estado final.',
         };
     }
 
@@ -693,12 +693,12 @@ class FacturaVentaApiController extends Controller
         return match ($status) {
             'PROCESADA' => 'La venta fue procesada correctamente por SEFE.',
             'ANULADA' => 'La factura fue anulada correctamente por SEFE.',
-            'ANULACION_SOLICITADA' => 'La solicitud de anulación fue recepcionada por SEFE.',
-            'ANULACION_OBSERVADA' => 'La solicitud de anulación fue observada por SEFE.',
-            'OBSERVADA' => 'La venta fue recepcionada, pero SEFE la dejó observada.',
-            'CONTINGENCIA_CREADA' => 'La venta fue recepcionada por SEFE y quedó en contingencia.',
-            'RECEPCIONADA' => 'La venta fue recepcionada por SEFE y está pendiente de notificación final.',
-            default => $default ?: 'La operación fue procesada por el puente.',
+            'ANULACION_SOLICITADA' => 'La solicitud de anulaciÃ³n fue recepcionada por SEFE.',
+            'ANULACION_OBSERVADA' => 'La solicitud de anulaciÃ³n fue observada por SEFE.',
+            'OBSERVADA' => 'La venta fue recepcionada, pero SEFE la dejÃ³ observada.',
+            'CONTINGENCIA_CREADA' => 'La venta fue recepcionada por SEFE y quedÃ³ en contingencia.',
+            'RECEPCIONADA' => 'La venta fue recepcionada por SEFE y estÃ¡ pendiente de notificaciÃ³n final.',
+            default => $default ?: 'La operaciÃ³n fue procesada por el puente.',
         };
     }
 
@@ -724,12 +724,12 @@ class FacturaVentaApiController extends Controller
         return match ($status) {
             'PROCESADA' => null,
             'ANULADA' => null,
-            'ANULACION_SOLICITADA' => 'La solicitud fue aceptada y se espera la notificación final de anulación.',
-            'ANULACION_OBSERVADA' => $observacion ?: 'La anulación no pudo completarse porque SEFE devolvió observaciones.',
-            'RECEPCIONADA' => 'La venta fue recibida y está esperando la confirmación final de facturación.',
-            'CONTINGENCIA_CREADA' => 'La venta fue recibida, pero la facturación quedó en contingencia.',
-            'OBSERVADA' => $observacion ?: 'La factura no pudo completarse porque SEFE devolvió observaciones.',
-            'RECHAZADA' => $observacion ?: $fallbackMessage ?: 'La factura fue rechazada durante la validación.',
+            'ANULACION_SOLICITADA' => 'La solicitud fue aceptada y se espera la notificaciÃ³n final de anulaciÃ³n.',
+            'ANULACION_OBSERVADA' => $observacion ?: 'La anulaciÃ³n no pudo completarse porque SEFE devolviÃ³ observaciones.',
+            'RECEPCIONADA' => 'La venta fue recibida y estÃ¡ esperando la confirmaciÃ³n final de facturaciÃ³n.',
+            'CONTINGENCIA_CREADA' => 'La venta fue recibida, pero la facturaciÃ³n quedÃ³ en contingencia.',
+            'OBSERVADA' => $observacion ?: 'La factura no pudo completarse porque SEFE devolviÃ³ observaciones.',
+            'RECHAZADA' => $observacion ?: $fallbackMessage ?: 'La factura fue rechazada durante la validaciÃ³n.',
             default => $observacion ?: $fallbackMessage,
         };
     }
@@ -739,12 +739,12 @@ class FacturaVentaApiController extends Controller
         return match ($status) {
             'PROCESADA' => 'Factura emitida correctamente.',
             'ANULADA' => 'Factura anulada correctamente.',
-            'ANULACION_SOLICITADA' => 'Anulación solicitada correctamente.',
-            'RECEPCIONADA' => 'La venta fue recibida y está pendiente de confirmación.',
-            'CONTINGENCIA_CREADA' => 'La venta quedó pendiente por contingencia.',
+            'ANULACION_SOLICITADA' => 'AnulaciÃ³n solicitada correctamente.',
+            'RECEPCIONADA' => 'La venta fue recibida y estÃ¡ pendiente de confirmaciÃ³n.',
+            'CONTINGENCIA_CREADA' => 'La venta quedÃ³ pendiente por contingencia.',
             'OBSERVADA', 'RECHAZADA' => 'No se pudo emitir la factura.',
             'ANULACION_OBSERVADA' => 'No se pudo anular la factura.',
-            default => 'La venta está en proceso de validación.',
+            default => 'La venta estÃ¡ en proceso de validaciÃ³n.',
         };
     }
 
@@ -1315,12 +1315,12 @@ class FacturaVentaApiController extends Controller
             return false;
         }
 
-        $needle = mb_strtolower('El documentoIdentidad ' . $documento . ' no es un nit válido');
+        $needle = mb_strtolower('El documentoIdentidad ' . $documento . ' no es un nit vÃ¡lido');
 
         return $errors->contains(function (string $error) use ($needle, $documento) {
             return str_contains($error, $needle)
                 || str_contains($error, 'no es un nit valido')
-                || str_contains($error, 'no es un nit válido')
+                || str_contains($error, 'no es un nit vÃ¡lido')
                 || (str_contains($error, mb_strtolower($documento)) && str_contains($error, 'nit'));
         });
     }
@@ -1472,6 +1472,14 @@ class FacturaVentaApiController extends Controller
 
             if ($this->shouldLogVerbose($request)) {
                 Log::debug('FacturaVentaApi emitir request', $requestPayload);
+                Log::debug('FacturaVentaApi emitir request metadata', [
+                    'codigoOrden' => $codigoOrden,
+                    'sefe_url' => $this->ageticBaseUrl() . '/facturacion/emision/individual',
+                    'codigoSucursal' => $requestPayload['codigoSucursal'] ?? null,
+                    'puntoVenta' => $requestPayload['puntoVenta'] ?? null,
+                    'documentoSector' => $requestPayload['documentoSector'] ?? null,
+                    'metodoPago' => $requestPayload['metodoPago'] ?? null,
+                ]);
             }
 
             $response = $this->ageticClient()->post(
@@ -1567,7 +1575,7 @@ class FacturaVentaApiController extends Controller
                 'facturada' => false,
                 'estado' => 'RECHAZADA',
                 'mensaje' => 'No se pudo emitir la factura.',
-                'razon' => 'La venta no cumple la validación del protocolo.',
+                'razon' => 'La venta no cumple la validaciÃ³n del protocolo.',
                 'factura' => [
                     'cuf' => null,
                     'nroFactura' => null,
@@ -1628,6 +1636,8 @@ class FacturaVentaApiController extends Controller
                     'codigoOrden' => $codigoOrden,
                     'status' => $e->response?->status(),
                     'body' => $rejectedPayload,
+                    'raw_response_body' => $e->response?->json(),
+                    'request_payload' => $requestPayload ?? null,
                 ]);
 
                 $payload = $this->rejectBridgePayload($rejectedPayload);
@@ -1643,6 +1653,7 @@ class FacturaVentaApiController extends Controller
                 'status' => $e->response?->status(),
                 'body' => $e->response?->json(),
                 'msg' => $e->getMessage(),
+                'request_payload' => $requestPayload ?? null,
             ]);
 
             return response()->json([
@@ -1850,8 +1861,8 @@ class FacturaVentaApiController extends Controller
                 $base = [
                     'ok' => true,
                     'estado' => 'PENDIENTE_ANULACION',
-                    'mensaje' => 'Anulación solicitada correctamente.',
-                    'razon' => 'La solicitud fue aceptada y se espera la notificación final de anulación.',
+                    'mensaje' => 'AnulaciÃ³n solicitada correctamente.',
+                    'razon' => 'La solicitud fue aceptada y se espera la notificaciÃ³n final de anulaciÃ³n.',
                     'factura' => [
                         'cuf' => data_get($payload, 'datos.cuf', $cuf),
                         'nroFactura' => $venta->numero_factura ?? null,
@@ -1895,7 +1906,7 @@ class FacturaVentaApiController extends Controller
                 try {
                     $this->sufeValidator->validateRejectedResponse($rejectedPayload);
                 } catch (ValidationException $validationException) {
-                    Log::warning('La respuesta de rechazo de anulación no cumple el protocolo', [
+                    Log::warning('La respuesta de rechazo de anulaciÃ³n no cumple el protocolo', [
                         'errores' => $validationException->errors(),
                         'body' => $rejectedPayload,
                     ]);
@@ -1916,14 +1927,14 @@ class FacturaVentaApiController extends Controller
                 'stage' => 'SEFE_REJECTED',
                 'estado' => 'RECHAZADA',
                 'estado_puente' => 'RECHAZADA',
-                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE rechazó la solicitud de anulación.')),
+                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE rechazÃ³ la solicitud de anulaciÃ³n.')),
             ]);
 
             return response()->json([
                 'ok' => false,
                 'estado' => 'RECHAZADA',
                 'mensaje' => 'No se pudo anular la factura.',
-                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE rechazó la solicitud de anulación.')),
+                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE rechazÃ³ la solicitud de anulaciÃ³n.')),
                 'factura' => [
                     'cuf' => $cuf,
                     'nroFactura' => $venta->numero_factura ?? null,
@@ -1944,14 +1955,14 @@ class FacturaVentaApiController extends Controller
                 'stage' => 'PAYLOAD_VALIDATION_FAILED',
                 'estado' => 'RECHAZADA',
                 'estado_puente' => 'VALIDACION',
-                'razon' => 'La solicitud de anulación no cumple la validación del protocolo.',
+                'razon' => 'La solicitud de anulaciÃ³n no cumple la validaciÃ³n del protocolo.',
                 'errors' => $e->errors(),
             ]);
             return response()->json([
                 'ok' => false,
                 'estado' => 'RECHAZADA',
                 'mensaje' => 'No se pudo anular la factura.',
-                'razon' => 'La solicitud de anulación no cumple la validación del protocolo.',
+                'razon' => 'La solicitud de anulaciÃ³n no cumple la validaciÃ³n del protocolo.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (RequestException $e) {
@@ -1971,14 +1982,14 @@ class FacturaVentaApiController extends Controller
                 'stage' => 'REQUEST_EXCEPTION',
                 'estado' => 'RECHAZADA',
                 'estado_puente' => 'ERROR',
-                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE devolvió un error al procesar la anulación.')),
+                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE devolviÃ³ un error al procesar la anulaciÃ³n.')),
             ]);
 
             return response()->json([
                 'ok' => false,
                 'estado' => 'RECHAZADA',
                 'mensaje' => 'No se pudo anular la factura.',
-                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE devolvió un error al procesar la anulación.')),
+                'razon' => data_get($rejectedPayload, 'datos.errores.0', data_get($rejectedPayload, 'mensaje', 'SEFE devolviÃ³ un error al procesar la anulaciÃ³n.')),
                 'estadoPuente' => 'ERROR',
                 'sefe' => $e->response?->json(),
             ], $e->response?->status() ?? 502);
@@ -2019,7 +2030,7 @@ class FacturaVentaApiController extends Controller
                 'stage' => 'UNEXPECTED_EXCEPTION',
                 'estado' => 'ERROR',
                 'estado_puente' => 'ERROR',
-                'razon' => 'Ocurrió un error inesperado al procesar la anulación.',
+                'razon' => 'OcurriÃ³ un error inesperado al procesar la anulaciÃ³n.',
                 'details' => $e->getMessage(),
             ]);
 
@@ -2027,7 +2038,7 @@ class FacturaVentaApiController extends Controller
                 'ok' => false,
                 'estado' => 'ERROR',
                 'mensaje' => 'No se pudo anular la factura.',
-                'razon' => 'Ocurrió un error inesperado al procesar la anulación.',
+                'razon' => 'OcurriÃ³ un error inesperado al procesar la anulaciÃ³n.',
                 'details' => $e->getMessage(),
             ], 500);
         }
@@ -2131,7 +2142,7 @@ class FacturaVentaApiController extends Controller
                     'facturada' => false,
                     'estado' => 'PENDIENTE',
                     'mensaje' => 'La venta fue recibida, pero no existe respaldo local suficiente para mostrar su estado final.',
-                    'razon' => 'SEFE devolvió información, pero el puente no encontró la venta local asociada.',
+                    'razon' => 'SEFE devolviÃ³ informaciÃ³n, pero el puente no encontrÃ³ la venta local asociada.',
                     'factura' => [
                         'cuf' => data_get($validatedConsulta, 'cuf'),
                         'nroFactura' => data_get($validatedConsulta, 'nroFactura'),
@@ -2140,7 +2151,7 @@ class FacturaVentaApiController extends Controller
                     ],
                     'estadoPuente' => 'NO_REGISTRADA_LOCALMENTE',
                     'codigoSeguimiento' => $codigoSeguimiento,
-                    'mensajeTecnico' => 'SEFE devolvió información, pero no existe una venta local asociada en el puente.',
+                    'mensajeTecnico' => 'SEFE devolviÃ³ informaciÃ³n, pero no existe una venta local asociada en el puente.',
                     'consultaSefe' => $validatedConsulta,
                 ], 200);
             }
@@ -2237,7 +2248,7 @@ class FacturaVentaApiController extends Controller
                     'ok' => false,
                     'estado' => 'RECHAZADA',
                     'mensaje' => 'No se pudo regularizar la contingencia.',
-                    'razon' => data_get($payload, 'datos.errores.0', data_get($payload, 'mensaje', 'SEFE rechazó la regularización de contingencia.')),
+                    'razon' => data_get($payload, 'datos.errores.0', data_get($payload, 'mensaje', 'SEFE rechazÃ³ la regularizaciÃ³n de contingencia.')),
                     'paquete' => [
                         'codigoSeguimientoPaquete' => data_get($payload, 'datos.codigoSeguimientoPaquete'),
                         'aceptadas' => count(data_get($payload, 'datos.detalle', [])),
@@ -2256,7 +2267,7 @@ class FacturaVentaApiController extends Controller
                 'ok' => false,
                 'estado' => 'RECHAZADA',
                 'mensaje' => 'No se pudo regularizar la contingencia.',
-                'razon' => 'La solicitud CAFC no cumple la validación del protocolo.',
+                'razon' => 'La solicitud CAFC no cumple la validaciÃ³n del protocolo.',
                 'errors' => $e->errors(),
             ], 422);
         } catch (RequestException $e) {
@@ -2264,7 +2275,7 @@ class FacturaVentaApiController extends Controller
                 'ok' => false,
                 'estado' => 'ERROR',
                 'mensaje' => 'No se pudo regularizar la contingencia.',
-                'razon' => 'SEFE devolvió un error al procesar la regularización CAFC.',
+                'razon' => 'SEFE devolviÃ³ un error al procesar la regularizaciÃ³n CAFC.',
                 'sefe' => $e->response?->json(),
             ], $e->response?->status() ?? 502);
         } catch (ConnectionException $e) {
@@ -2286,7 +2297,7 @@ class FacturaVentaApiController extends Controller
                 'ok' => false,
                 'estado' => 'ERROR',
                 'mensaje' => 'No se pudo regularizar la contingencia.',
-                'razon' => 'Ocurrió un error inesperado al procesar la regularización CAFC.',
+                'razon' => 'OcurriÃ³ un error inesperado al procesar la regularizaciÃ³n CAFC.',
                 'details' => $e->getMessage(),
             ], 500);
         }
@@ -2355,3 +2366,5 @@ class FacturaVentaApiController extends Controller
         }
     }
 }
+
+
