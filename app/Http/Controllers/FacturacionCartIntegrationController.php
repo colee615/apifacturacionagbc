@@ -767,6 +767,32 @@ class FacturacionCartIntegrationController extends Controller
             ]);
         }
 
+        $isFailedPaidQrInvoiceConversion = $preservePaidQrPayment
+            && $canalEmision !== 'qr'
+            && (!$ok || $emitStatusCode >= 400);
+
+        $resolvedEstadoEmision = (string) ($body['estado'] ?? (
+            $ok
+                ? ($canalEmision === 'qr' ? 'NO_APLICA' : 'PENDIENTE')
+                : ($isFailedPaidQrInvoiceConversion ? 'ERROR' : 'RECHAZADA')
+        ));
+        $shouldKeepPaidQrSaleVisible = $preservePaidQrPayment && $canalEmision !== 'qr';
+
+        $resolvedCartEstado = $ok
+            ? ($canalEmision === 'qr'
+                ? ($qrPaymentState === 'pagado' ? 'emitido' : 'pendiente_pago')
+                : 'emitido')
+            : ($shouldKeepPaidQrSaleVisible ? 'emitido' : 'borrador');
+        $resolvedEstadoPago = $shouldKeepPaidQrSaleVisible
+            ? 'pagado'
+            : ($preservePaidQrPayment ? 'pagado' : ($canalEmision === 'qr' ? $qrPaymentState : 'pagado'));
+        $resolvedEmitidoEn = $ok
+            ? ($canalEmision !== 'qr' || $qrPaymentState === 'pagado' ? now() : null)
+            : ($shouldKeepPaidQrSaleVisible ? ($cart->emitido_en ?? now()) : null);
+        $resolvedCerradoEn = $ok
+            ? ($canalEmision !== 'qr' || $qrPaymentState === 'pagado' ? now() : null)
+            : ($shouldKeepPaidQrSaleVisible ? ($cart->cerrado_en ?? now()) : null);
+
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenEmitido,
             'qr_transaction_id' => $canalEmision === 'qr'
@@ -774,16 +800,14 @@ class FacturacionCartIntegrationController extends Controller
                 : ($preservePaidQrPayment ? ($cart->qr_transaction_id ?? null) : null),
             'codigo_seguimiento' => $canalEmision === 'qr' ? null : $codigoSeguimientoEmitido,
             'codigo_seguimiento_fiscal' => $canalEmision === 'qr' ? null : $codigoSeguimientoEmitido,
-            'estado_emision' => (string) ($body['estado'] ?? ($ok ? ($canalEmision === 'qr' ? 'NO_APLICA' : 'PENDIENTE') : 'RECHAZADA')),
+            'estado_emision' => $resolvedEstadoEmision,
             'mensaje_emision' => (string) ($body['mensaje'] ?? $body['message'] ?? ''),
             'respuesta_emision' => json_encode($body, JSON_UNESCAPED_UNICODE),
-            'estado' => $ok ? ($canalEmision === 'qr'
-                ? ($qrPaymentState === 'pagado' ? 'emitido' : 'pendiente_pago')
-                : 'emitido') : 'borrador',
+            'estado' => $resolvedCartEstado,
             'metodo_pago' => $preservePaidQrPayment ? 'qr' : ($canalEmision === 'qr' ? 'qr' : 'efectivo'),
-            'estado_pago' => $preservePaidQrPayment ? 'pagado' : ($canalEmision === 'qr' ? $qrPaymentState : 'pagado'),
-            'emitido_en' => $ok && ($canalEmision !== 'qr' || $qrPaymentState === 'pagado') ? now() : null,
-            'cerrado_en' => $ok && ($canalEmision !== 'qr' || $qrPaymentState === 'pagado') ? now() : null,
+            'estado_pago' => $resolvedEstadoPago,
+            'emitido_en' => $resolvedEmitidoEn,
+            'cerrado_en' => $resolvedCerradoEn,
             'updated_at' => now(),
         ]);
 
@@ -1469,7 +1493,14 @@ class FacturacionCartIntegrationController extends Controller
             $ae = trim((string) ($r['actividad_economica'] ?? ''));
             $cs = trim((string) ($r['codigo_sin'] ?? ''));
             $cp = trim((string) ($r['codigo_producto'] ?? ''));
-            $codigoPaquete = trim((string) ($r['codigo'] ?? ($i->codigo ?? '')));
+            $codigoPaquete = trim((string) (
+                $r['codigo_detalle_enviado']
+                ?? $i->codigo
+                ?? $r['codigo_producto_fiscal']
+                ?? $r['codigo_producto']
+                ?? $r['codigo']
+                ?? ''
+            ));
             $de = trim((string) ($r['descripcion_servicio'] ?? ''));
             $um = is_numeric($r['unidad_medida'] ?? null) ? (int) $r['unidad_medida'] : 0;
             if ($ae === '' || $cs === '' || $cp === '' || $de === '' || $um <= 0 || mb_strlen($cp) < 3) abort(422, 'El borrador tiene items sin datos SIN completos.');

@@ -2750,7 +2750,16 @@ class VentaController extends Controller
     private function buildFacturacionCartReportQuery(array $filters)
     {
         $query = DB::table('facturacion_carts')
-            ->whereRaw("lower(coalesce(estado, '')) <> 'borrador'");
+            ->where(function ($builder) {
+                $builder->whereRaw("lower(coalesce(estado, '')) <> 'borrador'")
+                    ->orWhere(function ($qr) {
+                        $qr->whereRaw("lower(coalesce(estado, '')) = 'borrador'")
+                            ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
+                            ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
+                            ->whereNotNull('qr_transaction_id')
+                            ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('PENDIENTE','ERROR','RECHAZADA','NO_APLICA')");
+                    });
+            });
 
         if (!empty($filters['fechaInicio'])) {
             $query->whereDate('created_at', '>=', $filters['fechaInicio']);
