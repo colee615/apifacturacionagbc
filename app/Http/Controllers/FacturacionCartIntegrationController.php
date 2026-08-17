@@ -918,6 +918,9 @@ class FacturacionCartIntegrationController extends Controller
         $metodoPago = strtolower(trim((string) ($cart->metodo_pago ?? '')));
         $estadoPagoActual = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
         $estadoEmisionActual = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+        $latestLinkedVenta = $this->latestLinkedVentaForCart((int) ($cart->id ?? 0));
+        $latestLinkedVentaStatus = strtoupper(trim((string) ($latestLinkedVenta->estado_sufe ?? '')));
+        $shouldUseNewCodigoOrden = in_array($latestLinkedVentaStatus, ['ANULADA', 'ANULADO'], true);
         $codigoSeguimientoFiscal = trim((string) ($cart->codigo_seguimiento_fiscal ?? $cart->codigo_seguimiento ?? ''));
         $hasQrTransaction = trim((string) ($cart->qr_transaction_id ?? '')) !== '';
         $isQrOrigin = $this->isQrOriginCart($cart);
@@ -932,7 +935,7 @@ class FacturacionCartIntegrationController extends Controller
                 'origen_usuario_id' => (string) $v['origen_usuario_id'],
                 'cart_id' => (int) $cart->id,
                 'canal_emision' => 'factura_electronica',
-                'codigo_orden_mode' => in_array($estadoEmisionActual, ['ANULADA'], true) ? 'new' : 'same',
+                'codigo_orden_mode' => $shouldUseNewCodigoOrden ? 'new' : 'same',
             ]);
             $emitRequest->headers->set('Accept', 'application/json');
 
@@ -1103,7 +1106,7 @@ class FacturacionCartIntegrationController extends Controller
                 'origen_usuario_id' => (string) $v['origen_usuario_id'],
                 'cart_id' => (int) $cart->id,
                 'canal_emision' => 'factura_electronica',
-                'codigo_orden_mode' => in_array(strtoupper((string) ($updates['estado_emision'] ?? '')), ['ANULADA'], true) ? 'new' : 'same',
+                'codigo_orden_mode' => $shouldUseNewCodigoOrden ? 'new' : 'same',
             ]);
             $emitRequest->headers->set('Accept', 'application/json');
 
