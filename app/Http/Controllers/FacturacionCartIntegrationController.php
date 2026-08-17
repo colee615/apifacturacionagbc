@@ -563,14 +563,23 @@ class FacturacionCartIntegrationController extends Controller
             $contabilizaEnCaja = false;
         }
         $isPaidQrInvoiceConversion = $preservePaidQrPayment && $overrideCanal === 'factura_electronica';
+        $latestLinkedVenta = $this->latestLinkedVentaForCart((int) ($cart->id ?? 0));
+        $latestLinkedVentaStatus = strtoupper(trim((string) ($latestLinkedVenta->estado_sufe ?? '')));
+        $shouldForceNewCodigoOrden = $isPaidQrInvoiceConversion
+            && in_array($latestLinkedVentaStatus, ['ANULADA', 'ANULADO'], true);
+        $effectiveCodigoOrdenMode = $shouldForceNewCodigoOrden ? 'new' : $codigoOrdenMode;
         Log::info('FacturacionCartIntegrationController emitir: configuracion de reintento.', [
             'user_id' => $userId,
             'cart_id' => $cart->id ?? null,
             'codigo_orden_actual' => $cart->codigo_orden ?? null,
             'codigo_orden_mode' => $codigoOrdenMode,
+            'effective_codigo_orden_mode' => $effectiveCodigoOrdenMode,
             'override_canal' => $overrideCanal,
             'preserve_paid_qr_payment' => $preservePaidQrPayment,
             'is_paid_qr_invoice_conversion' => $isPaidQrInvoiceConversion,
+            'should_force_new_codigo_orden' => $shouldForceNewCodigoOrden,
+            'linked_venta_id' => $latestLinkedVenta->id ?? null,
+            'linked_venta_status' => $latestLinkedVentaStatus !== '' ? $latestLinkedVentaStatus : null,
             'estado_pago' => $cart->estado_pago ?? null,
             'estado_emision' => $cart->estado_emision ?? null,
             'qr_transaction_id' => $cart->qr_transaction_id ?? null,
@@ -623,16 +632,16 @@ class FacturacionCartIntegrationController extends Controller
             }
         }
 
-        $reusePaidQrInvoiceCode = $isPaidQrInvoiceConversion;
+        $reusePaidQrInvoiceCode = $isPaidQrInvoiceConversion && $effectiveCodigoOrdenMode !== 'new';
 
-        // Una venta QR ya pagada debe conservar siempre el mismo codigo de orden.
+        // Si la factura QR previa fue anulada, la reemision debe ir con un nuevo codigo de orden.
         $codigoOrdenIntento = $reusePaidQrInvoiceCode
             ? trim((string) ($cart->codigo_orden ?? ''))
-            : ($isPaidQrInvoiceConversion
+            : (($isPaidQrInvoiceConversion || $effectiveCodigoOrdenMode === 'new')
                 ? $this->nextBridgeCodigoOrden($canalEmision)
                 : $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision));
         if ($codigoOrdenIntento === '') {
-            $codigoOrdenIntento = $isPaidQrInvoiceConversion
+            $codigoOrdenIntento = ($isPaidQrInvoiceConversion || $effectiveCodigoOrdenMode === 'new')
                 ? $this->nextBridgeCodigoOrden($canalEmision)
                 : $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
         }
@@ -640,10 +649,12 @@ class FacturacionCartIntegrationController extends Controller
             'user_id' => $userId,
             'cart_id' => $cart->id ?? null,
             'codigo_orden_mode' => $codigoOrdenMode,
+            'effective_codigo_orden_mode' => $effectiveCodigoOrdenMode,
             'reuse_paid_qr_invoice_code' => $reusePaidQrInvoiceCode,
             'codigo_orden_anterior' => $cart->codigo_orden ?? null,
             'codigo_orden_intento' => $codigoOrdenIntento,
         ]);
+        $codigoOrdenAnterior = trim((string) ($cart->codigo_orden ?? ''));
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
             'qr_transaction_id' => $preservePaidQrPayment ? ($cart->qr_transaction_id ?? null) : null,
@@ -752,6 +763,20 @@ class FacturacionCartIntegrationController extends Controller
             ? trim((string) $codigoOrdenEmitido)
             : $this->normalizeBridgeCodigoOrden($codigoOrdenEmitido, $canalEmision);
 
+        if ($shouldForceNewCodigoOrden && $ok && $canalEmision !== 'qr') {
+            $body['qr_reemision'] = [
+                'preserved_paid_qr_payment' => true,
+                'reemitida_desde_codigo_orden' => $codigoOrdenAnterior !== '' ? $codigoOrdenAnterior : null,
+                'reemitida_hacia_codigo_orden' => $codigoOrdenEmitido !== '' ? $codigoOrdenEmitido : null,
+                'venta_anulada_id' => $latestLinkedVenta->id ?? null,
+                'factura_anulada_numero' => $latestLinkedVenta->numero_factura ?? null,
+                'factura_anulada_cuf' => $latestLinkedVenta->cuf ?? null,
+                'factura_anulada_estado' => $latestLinkedVentaStatus !== '' ? $latestLinkedVentaStatus : null,
+                'reemitida_at' => now()->toIso8601String(),
+                'motivo' => 'Pago QR conservado. Factura reemitida con nuevo codigo de orden por anulacion previa.',
+            ];
+        }
+
         if (!$ok || $emitStatusCode >= 400) {
             Log::warning('FacturacionCart emitir con respuesta no exitosa', [
                 'user_id' => $userId,
@@ -847,6 +872,27 @@ class FacturacionCartIntegrationController extends Controller
         }
     }
 
+    private function latestLinkedVentaForCart(int $cartId): ?object
+    {
+        if ($cartId <= 0) {
+            return null;
+        }
+
+        return DB::table('ventas')
+            ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [$cartId])
+            ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+            ->orderByDesc('id')
+            ->first([
+                'id',
+                'codigoOrden',
+                'estado_sufe',
+                'numero_factura',
+                'cuf',
+                'codigoSeguimiento',
+                'created_at',
+            ]);
+    }
+
     public function consultar(Request $request): JsonResponse
     {
         $v = $request->validate([
@@ -886,7 +932,7 @@ class FacturacionCartIntegrationController extends Controller
                 'origen_usuario_id' => (string) $v['origen_usuario_id'],
                 'cart_id' => (int) $cart->id,
                 'canal_emision' => 'factura_electronica',
-                'codigo_orden_mode' => 'same',
+                'codigo_orden_mode' => in_array($estadoEmisionActual, ['ANULADA'], true) ? 'new' : 'same',
             ]);
             $emitRequest->headers->set('Accept', 'application/json');
 
@@ -1057,7 +1103,7 @@ class FacturacionCartIntegrationController extends Controller
                 'origen_usuario_id' => (string) $v['origen_usuario_id'],
                 'cart_id' => (int) $cart->id,
                 'canal_emision' => 'factura_electronica',
-                'codigo_orden_mode' => 'same',
+                'codigo_orden_mode' => in_array(strtoupper((string) ($updates['estado_emision'] ?? '')), ['ANULADA'], true) ? 'new' : 'same',
             ]);
             $emitRequest->headers->set('Accept', 'application/json');
 
@@ -2041,7 +2087,7 @@ class FacturacionCartIntegrationController extends Controller
                     'can_emit_same_data' => true,
                     'emit_payload' => [
                         'canal_emision' => 'factura_electronica',
-                        'codigo_orden_mode' => 'same',
+                        'codigo_orden_mode' => 'new',
                         'reuse_cart_billing_data' => true,
                         'preserve_paid_qr_payment' => true,
                     ],

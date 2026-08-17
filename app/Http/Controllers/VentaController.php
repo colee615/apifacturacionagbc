@@ -2934,7 +2934,7 @@ class VentaController extends Controller
                     'can_emit_same_data' => true,
                     'emit_payload' => [
                         'canal_emision' => 'factura_electronica',
-                        'codigo_orden_mode' => 'same',
+                        'codigo_orden_mode' => 'new',
                         'reuse_cart_billing_data' => true,
                         'preserve_paid_qr_payment' => true,
                     ],
