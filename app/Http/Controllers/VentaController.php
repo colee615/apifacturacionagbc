@@ -2865,7 +2865,7 @@ class VentaController extends Controller
             ->whereIn(DB::raw('cast(origen_venta_id as varchar)'), $cartIds)
             ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
             ->orderByDesc('id')
-            ->get(['id', 'origen_venta_id', 'codigoSeguimiento', 'numero_factura', 'cuf', 'url_pdf', 'url_xml'])
+            ->get(['id', 'origen_venta_id', 'estado_sufe', 'codigoSeguimiento', 'numero_factura', 'cuf', 'url_pdf', 'url_xml'])
             ->groupBy(fn ($venta) => trim((string) ($venta->origen_venta_id ?? '')))
             ->map(fn ($rows) => $rows->first())
             ->toArray();
