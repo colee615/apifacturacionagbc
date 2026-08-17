@@ -3017,6 +3017,41 @@ class VentaController extends Controller
         return $this->extractNumeroFacturaFromDetalle($respuestaEmision);
     }
 
+    private function sanitizeQrFiscalResponseForDisplay(array $response, ?object $linkedVenta, object $cart): array
+    {
+        $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
+        $isLinkedVentaAnnulled = in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
+        $isPaidQrWithoutFiscalInvoice = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
+            && strtolower(trim((string) ($cart->estado_pago ?? 'pendiente'))) === 'pagado'
+            && trim((string) ($cart->qr_transaction_id ?? '')) !== ''
+            && in_array(strtoupper(trim((string) ($cart->estado_emision ?? 'NO_APLICA'))), ['NO_APLICA', 'ANULADA'], true);
+
+        if (!$isLinkedVentaAnnulled && !$isPaidQrWithoutFiscalInvoice) {
+            return $response;
+        }
+
+        unset($response['cuf'], $response['pdfUrl'], $response['xmlUrl'], $response['codigoSeguimiento']);
+
+        if (isset($response['factura']) && is_array($response['factura'])) {
+            unset(
+                $response['factura']['cuf'],
+                $response['factura']['nroFactura'],
+                $response['factura']['numeroFactura'],
+                $response['factura']['pdfUrl'],
+                $response['factura']['xmlUrl']
+            );
+
+            if ($response['factura'] === []) {
+                unset($response['factura']);
+            }
+        }
+
+        $response['facturada'] = false;
+        $response['estado'] = 'NO_APLICA';
+
+        return $response;
+    }
+
     private function facturacionCartItemsMapFromRows($cartRows): array
     {
         $cartIds = collect($cartRows)
@@ -3094,21 +3129,24 @@ class VentaController extends Controller
         $items = collect($preloadedItems);
 
         $status = $this->facturacionCartStatusPayload($cart, $linkedVenta);
+        $respuestaEmision = $this->sanitizeQrFiscalResponseForDisplay($respuestaEmision, $linkedVenta, $cart);
         $resolvedTipoDocumento = $cart->tipo_documento ?? ($linkedVenta->tipoDocumentoIdentidad ?? null);
         $resolvedNumeroDocumento = $cart->numero_documento ?? ($linkedVenta->documentoIdentidad ?? null);
         $resolvedRazonSocial = $cart->razon_social ?? ($linkedVenta->razonSocial ?? null);
         $fecha = $cart->emitido_en ?: $cart->created_at;
+        $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
+        $allowLinkedFiscalFallback = !in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
         $numeroFactura = $this->facturacionCartNumeroFactura((string) ($cart->respuesta_emision ?? ''))
             ?: ($detalleNotificacion['nroFactura'] ?? null)
-            ?: ($linkedVenta->numero_factura ?? null);
+            ?: ($allowLinkedFiscalFallback ? ($linkedVenta->numero_factura ?? null) : null);
         $codigoSeguimiento = (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''));
-        if ($codigoSeguimiento === '') {
+        if ($codigoSeguimiento === '' && $allowLinkedFiscalFallback) {
             $codigoSeguimiento = (string) ($linkedVenta->codigoSeguimiento ?? '');
         }
-        if (!data_get($respuestaEmision, 'factura.cuf') && !data_get($respuestaEmision, 'cuf') && !blank($linkedVenta->cuf ?? null)) {
+        if ($allowLinkedFiscalFallback && !data_get($respuestaEmision, 'factura.cuf') && !data_get($respuestaEmision, 'cuf') && !blank($linkedVenta->cuf ?? null)) {
             data_set($respuestaEmision, 'factura.cuf', $linkedVenta->cuf);
         }
-        if (!data_get($respuestaEmision, 'factura.nroFactura') && !blank($linkedVenta->numero_factura ?? null)) {
+        if ($allowLinkedFiscalFallback && !data_get($respuestaEmision, 'factura.nroFactura') && !blank($linkedVenta->numero_factura ?? null)) {
             data_set($respuestaEmision, 'factura.nroFactura', $linkedVenta->numero_factura);
         }
         if (!data_get($respuestaEmision, 'factura.pdfUrl') && !empty($detalleNotificacion['urlPdf'])) {
@@ -3138,16 +3176,16 @@ class VentaController extends Controller
                 ?: ''
             ));
 
-            if ($backfillNumeroFactura !== '' && blank($linkedVenta->numero_factura ?? null)) {
+            if ($allowLinkedFiscalFallback && $backfillNumeroFactura !== '' && blank($linkedVenta->numero_factura ?? null)) {
                 $ventaUpdates['numero_factura'] = $backfillNumeroFactura;
             }
-            if ($backfillCuf !== '' && blank($linkedVenta->cuf ?? null)) {
+            if ($allowLinkedFiscalFallback && $backfillCuf !== '' && blank($linkedVenta->cuf ?? null)) {
                 $ventaUpdates['cuf'] = $backfillCuf;
             }
-            if ($backfillPdfUrl !== '' && blank($linkedVenta->url_pdf ?? null)) {
+            if ($allowLinkedFiscalFallback && $backfillPdfUrl !== '' && blank($linkedVenta->url_pdf ?? null)) {
                 $ventaUpdates['url_pdf'] = $backfillPdfUrl;
             }
-            if ($backfillXmlUrl !== '' && blank($linkedVenta->url_xml ?? null)) {
+            if ($allowLinkedFiscalFallback && $backfillXmlUrl !== '' && blank($linkedVenta->url_xml ?? null)) {
                 $ventaUpdates['url_xml'] = $backfillXmlUrl;
             }
 
@@ -3185,7 +3223,7 @@ class VentaController extends Controller
                 'autorizadaPorEmail' => $cart->anulacion_autorizada_por_email ?? null,
                 'numeroFactura' => $numeroFactura,
                 'codigoOrden' => $this->normalizeFacturacionCartCodigoOrden($cart),
-                'cuf' => data_get($respuestaEmision, 'factura.cuf') ?: data_get($respuestaEmision, 'cuf') ?: ($linkedVenta->cuf ?? null),
+                'cuf' => data_get($respuestaEmision, 'factura.cuf') ?: data_get($respuestaEmision, 'cuf') ?: ($allowLinkedFiscalFallback ? ($linkedVenta->cuf ?? null) : null),
             ],
             'qrCancelacion' => [
                 'canceladaAt' => $cart->qr_cancelado_at ?? null,

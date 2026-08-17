@@ -1940,28 +1940,47 @@ class FacturacionCartIntegrationController extends Controller
             : null;
         $status = $this->facturacionCartStatusPayload($c, $linkedVenta);
         $respuestaEmision = $this->decode((string) ($c->respuesta_emision ?? ''));
+        $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
+        $allowLinkedFiscalFallback = !in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
+        if (!$allowLinkedFiscalFallback) {
+            unset($respuestaEmision['cuf'], $respuestaEmision['pdfUrl'], $respuestaEmision['xmlUrl'], $respuestaEmision['codigoSeguimiento']);
+            if (isset($respuestaEmision['factura']) && is_array($respuestaEmision['factura'])) {
+                unset(
+                    $respuestaEmision['factura']['cuf'],
+                    $respuestaEmision['factura']['nroFactura'],
+                    $respuestaEmision['factura']['numeroFactura'],
+                    $respuestaEmision['factura']['pdfUrl'],
+                    $respuestaEmision['factura']['xmlUrl']
+                );
+                if ($respuestaEmision['factura'] === []) {
+                    unset($respuestaEmision['factura']);
+                }
+            }
+            $respuestaEmision['facturada'] = false;
+            $respuestaEmision['estado'] = 'NO_APLICA';
+        }
         $resolvedTipoDocumento = $c->tipo_documento ?? ($linkedVenta->tipoDocumentoIdentidad ?? null);
         $resolvedNumeroDocumento = $c->numero_documento ?? ($linkedVenta->documentoIdentidad ?? null);
         $resolvedRazonSocial = $c->razon_social ?? ($linkedVenta->razonSocial ?? null);
         $resolvedNumeroFactura = trim((string) (
             data_get($respuestaEmision, 'factura.nroFactura')
             ?: data_get($respuestaEmision, 'nroFactura')
-            ?: ($linkedVenta->numero_factura ?? '')
+            ?: ($allowLinkedFiscalFallback ? ($linkedVenta->numero_factura ?? '') : '')
         ));
         $resolvedCuf = trim((string) (
             data_get($respuestaEmision, 'factura.cuf')
             ?: data_get($respuestaEmision, 'cuf')
-            ?: ($linkedVenta->cuf ?? '')
+            ?: ($allowLinkedFiscalFallback ? ($linkedVenta->cuf ?? '') : '')
         ));
         $resolvedPdfUrl = trim((string) (
             data_get($respuestaEmision, 'factura.pdfUrl')
             ?: data_get($respuestaEmision, 'pdfUrl')
-            ?: ($linkedVenta->url_pdf ?? '')
+            ?: ($allowLinkedFiscalFallback ? ($linkedVenta->url_pdf ?? '') : '')
         ));
         $resolvedXmlUrl = trim((string) (
             data_get($respuestaEmision, 'factura.xmlUrl')
             ?: data_get($respuestaEmision, 'xmlUrl')
-            ?: ($linkedVenta->url_xml ?? '')
+            ?: ($allowLinkedFiscalFallback ? ($linkedVenta->url_xml ?? '') : '')
         ));
 
         return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $resolvedTipoDocumento, 'numero_documento' => $resolvedNumeroDocumento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $resolvedRazonSocial, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $respuestaEmision, 'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : null, 'cuf' => $resolvedCuf !== '' ? $resolvedCuf : null, 'pdf_url' => $resolvedPdfUrl !== '' ? $resolvedPdfUrl : null, 'xml_url' => $resolvedXmlUrl !== '' ? $resolvedXmlUrl : null, 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'items' => $items];
