@@ -1026,18 +1026,63 @@ class FacturaVentaApiController extends Controller
             $existingResponse = [];
         }
 
+        $resolvedBridgeStatus = strtoupper(trim((string) $bridgeStatus));
+        $isPaidQrCart = $cart
+            && strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
+            && strtolower(trim((string) ($cart->estado_pago ?? 'pendiente'))) === 'pagado'
+            && trim((string) ($cart->qr_transaction_id ?? '')) !== '';
         $response = $this->mergeCartFiscalResponseFromVenta($existingResponse, $venta, $bridgeStatus);
+
+        $updates = [
+            'estado_emision' => $this->cashierStatusFromBridgeStatus($bridgeStatus),
+            'mensaje_emision' => $this->cashierMessageFromBridgeStatus($bridgeStatus),
+            'respuesta_emision' => json_encode($response, JSON_UNESCAPED_UNICODE),
+            'updated_at' => now(),
+        ];
+
+        if ($isPaidQrCart && in_array($resolvedBridgeStatus, ['ANULADA', 'ANULADO'], true)) {
+            $response = $this->stripFiscalDataFromQrAnnulledResponse($response);
+            $updates['estado'] = 'emitido';
+            $updates['estado_emision'] = 'NO_APLICA';
+            $updates['mensaje_emision'] = 'Factura anulada. El pago QR permanece vigente para reemision.';
+            $updates['codigo_seguimiento'] = null;
+            $updates['codigo_seguimiento_fiscal'] = null;
+            $updates['respuesta_emision'] = json_encode($response, JSON_UNESCAPED_UNICODE);
+        }
 
         DB::table('facturacion_carts')
             ->where('id', $cartId)
-            ->update([
-                'estado_emision' => $this->cashierStatusFromBridgeStatus($bridgeStatus),
-                'mensaje_emision' => $this->cashierMessageFromBridgeStatus($bridgeStatus),
-                'respuesta_emision' => json_encode($response, JSON_UNESCAPED_UNICODE),
-                'updated_at' => now(),
-            ]);
+            ->update($updates);
 
         $this->reverseVentaFromCajaIfNeeded($venta, $bridgeStatus);
+    }
+
+    private function stripFiscalDataFromQrAnnulledResponse(array $response): array
+    {
+        $response['ok'] = true;
+        $response['facturada'] = false;
+        $response['estado'] = 'NO_APLICA';
+        $response['mensaje'] = 'Factura anulada. El pago QR permanece vigente para reemision.';
+        $response['razon'] = 'La factura asociada fue anulada, pero el cobro QR sigue pagado.';
+        $response['codigoSeguimiento'] = '';
+
+        unset($response['cuf']);
+
+        if (isset($response['factura']) && is_array($response['factura'])) {
+            unset(
+                $response['factura']['cuf'],
+                $response['factura']['nroFactura'],
+                $response['factura']['numeroFactura'],
+                $response['factura']['pdfUrl'],
+                $response['factura']['xmlUrl']
+            );
+
+            if ($response['factura'] === []) {
+                unset($response['factura']);
+            }
+        }
+
+        return $response;
     }
 
     private function mergeCartFiscalResponseFromVenta(array $response, \stdClass $venta, string $bridgeStatus): array

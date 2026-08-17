@@ -525,6 +525,19 @@ class VentaController extends Controller
             return;
         }
 
+        $cartRow = DB::table('facturacion_carts')
+            ->where('id', (int) $venta->origen_venta_id)
+            ->first([
+                'id',
+                'metodo_pago',
+                'estado_pago',
+                'qr_transaction_id',
+            ]);
+        $isPaidQrCart = $cartRow
+            && strtolower(trim((string) ($cartRow->metodo_pago ?? ''))) === 'qr'
+            && strtolower(trim((string) ($cartRow->estado_pago ?? 'pendiente'))) === 'pagado'
+            && trim((string) ($cartRow->qr_transaction_id ?? '')) !== '';
+
         $cartUpdates = array_filter([
             'updated_at' => now(),
         ] + $auditData, fn ($value, $key) => $value !== null || $key === 'updated_at', ARRAY_FILTER_USE_BOTH);
@@ -534,8 +547,15 @@ class VentaController extends Controller
         }
 
         if ($estadoSufe === 'ANULADA') {
-            $cartUpdates['estado'] = 'descartado';
-            $cartUpdates['estado_emision'] = 'ANULADA';
+            if ($isPaidQrCart) {
+                $cartUpdates['estado'] = 'emitido';
+                $cartUpdates['estado_emision'] = 'NO_APLICA';
+                $cartUpdates['codigo_seguimiento'] = null;
+                $cartUpdates['codigo_seguimiento_fiscal'] = null;
+            } else {
+                $cartUpdates['estado'] = 'descartado';
+                $cartUpdates['estado_emision'] = 'ANULADA';
+            }
         } elseif (in_array($estadoSufe, ['ANULACION_SOLICITADA', 'ANULACION_OBSERVADA'], true)) {
             $cartUpdates['estado_emision'] = $estadoSufe;
         }
@@ -2876,11 +2896,19 @@ class VentaController extends Controller
             ?: ($linkedVenta->cuf ?? '')
             ?: ''
         ));
-        $canAnnul = $canal !== 'qr' && $estadoEmision === 'FACTURADA' && $cuf !== '';
         $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
-        $hasLinkedFiscalBilling = $estadoEmision === 'FACTURADA'
-            || $linkedVentaStatus === 'PROCESADA'
-            || !blank($linkedVenta->cuf ?? null);
+        $isLinkedVentaAnnulled = in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
+        $isLinkedVentaAnnulmentPending = $linkedVentaStatus === 'ANULACION_SOLICITADA';
+        $isLinkedVentaAnnulmentObserved = $linkedVentaStatus === 'ANULACION_OBSERVADA';
+        $canAnnul = $estadoEmision === 'FACTURADA'
+            && $cuf !== ''
+            && !$isLinkedVentaAnnulled
+            && !$isLinkedVentaAnnulmentPending;
+        $hasLinkedFiscalBilling = !$isLinkedVentaAnnulled
+            && !$isLinkedVentaAnnulmentPending
+            && ($estadoEmision === 'FACTURADA'
+                || $linkedVentaStatus === 'PROCESADA'
+                || !blank($linkedVenta->cuf ?? null));
 
         if ($estado === 'descartado') {
             return $this->makeStatusPayload('cart', 'DESCARTADA', [
@@ -2894,8 +2922,34 @@ class VentaController extends Controller
             || trim((string) ($cart->qr_transaction_id ?? '')) !== '';
 
         if ($isQrTrackedSale) {
+            if ($isLinkedVentaAnnulmentPending || $estadoEmision === 'ANULACION_SOLICITADA') {
+                return $this->makeStatusPayload('cart', 'ANULACION_SOLICITADA', [
+                    'can_consult' => true,
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
+            if ($isLinkedVentaAnnulled || $estadoEmision === 'ANULADA') {
+                return $this->makeStatusPayload('cart', 'QR_PAGADO', [
+                    'can_emit' => true,
+                    'can_emit_same_data' => true,
+                    'emit_payload' => [
+                        'canal_emision' => 'factura_electronica',
+                        'codigo_orden_mode' => 'same',
+                        'reuse_cart_billing_data' => true,
+                        'preserve_paid_qr_payment' => true,
+                    ],
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
+            if ($isLinkedVentaAnnulmentObserved || $estadoEmision === 'ANULACION_OBSERVADA') {
+                return $this->makeStatusPayload('cart', 'ANULACION_OBSERVADA', [
+                    'can_consult' => true,
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
             if ($hasLinkedFiscalBilling && ($estadoPago === 'pagado' || $estado === 'emitido')) {
                 return $this->makeStatusPayload('cart', 'FACTURADA', [
+                    'can_annul' => $canAnnul,
                     'cuf' => $cuf !== '' ? $cuf : null,
                 ]);
             }
@@ -2949,13 +3003,13 @@ class VentaController extends Controller
         $codigoSeguimiento = trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')));
         $transactionId = trim((string) ($cart->qr_transaction_id ?? ''));
 
-        if ($codigoSeguimiento !== '' && in_array($estadoEmision, ['PENDIENTE', 'ERROR', 'RECHAZADA'], true)) {
+        if ($codigoSeguimiento !== '' && in_array($estadoEmision, ['PENDIENTE', 'ERROR', 'RECHAZADA', 'ANULACION_SOLICITADA', 'ANULACION_OBSERVADA'], true)) {
             return true;
         }
 
         return $transactionId !== ''
             && in_array($estadoPago, ['pendiente', 'pagado', 'cancelado'], true)
-            && in_array($estadoEmision, ['', 'NO_APLICA', 'PENDIENTE', 'ERROR', 'RECHAZADA'], true);
+            && in_array($estadoEmision, ['', 'NO_APLICA', 'PENDIENTE', 'ERROR', 'RECHAZADA', 'ANULACION_SOLICITADA', 'ANULACION_OBSERVADA'], true);
     }
 
     private function facturacionCartNumeroFactura(?string $respuestaEmision): ?string
