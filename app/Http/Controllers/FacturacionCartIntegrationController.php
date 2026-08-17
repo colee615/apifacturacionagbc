@@ -2052,6 +2052,7 @@ class FacturacionCartIntegrationController extends Controller
             ?: ($linkedVenta->cuf ?? '')
             ?: ''
         ));
+        $codigoSeguimientoFiscal = trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')));
         $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
         $isLinkedVentaAnnulled = in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
         $isLinkedVentaAnnulmentPending = $linkedVentaStatus === 'ANULACION_SOLICITADA';
@@ -2078,6 +2079,34 @@ class FacturacionCartIntegrationController extends Controller
             || trim((string) ($cart->qr_transaction_id ?? '')) !== '';
 
         if ($isQrTrackedSale) {
+            $hasActiveFiscalAttempt = $canal !== 'qr'
+                && in_array($estadoEmision, ['PENDIENTE', 'RECHAZADA', 'ERROR', 'FACTURADA'], true)
+                && ($codigoSeguimientoFiscal !== '' || $cuf !== '');
+
+            if ($hasActiveFiscalAttempt) {
+                return match ($estadoEmision) {
+                    'FACTURADA' => $this->makeFacturacionCartStatusPayload('FACTURADA', [
+                        'can_annul' => $canAnnul,
+                        'cuf' => $cuf !== '' ? $cuf : null,
+                    ]),
+                    'PENDIENTE' => $this->makeFacturacionCartStatusPayload('PENDIENTE', [
+                        'can_consult' => true,
+                        'cuf' => $cuf !== '' ? $cuf : null,
+                    ]),
+                    'RECHAZADA' => $this->makeFacturacionCartStatusPayload('RECHAZADA', [
+                        'can_consult' => true,
+                        'cuf' => $cuf !== '' ? $cuf : null,
+                    ]),
+                    'ERROR' => $this->makeFacturacionCartStatusPayload('ERROR', [
+                        'can_consult' => true,
+                        'cuf' => $cuf !== '' ? $cuf : null,
+                    ]),
+                    default => $this->makeFacturacionCartStatusPayload($estadoEmision, [
+                        'can_consult' => true,
+                        'cuf' => $cuf !== '' ? $cuf : null,
+                    ]),
+                };
+            }
             if ($isLinkedVentaAnnulmentPending || $estadoEmision === 'ANULACION_SOLICITADA') {
                 return $this->makeFacturacionCartStatusPayload('ANULACION_SOLICITADA', [
                     'can_consult' => true,

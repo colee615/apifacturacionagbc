@@ -432,6 +432,25 @@ class FacturaVentaApiController extends Controller
         ];
         $baseData = array_merge($baseData, $this->optionalContractVentaData($payload));
 
+        if (Schema::hasColumn('ventas', 'tipo_emision_sufe')) {
+            $baseData['tipo_emision_sufe'] = 'EMISION';
+        }
+        if (Schema::hasColumn('ventas', 'cuf')) {
+            $baseData['cuf'] = null;
+        }
+        if (Schema::hasColumn('ventas', 'url_pdf')) {
+            $baseData['url_pdf'] = null;
+        }
+        if (Schema::hasColumn('ventas', 'url_xml')) {
+            $baseData['url_xml'] = null;
+        }
+        if (Schema::hasColumn('ventas', 'observacion_sufe')) {
+            $baseData['observacion_sufe'] = null;
+        }
+        if (Schema::hasColumn('ventas', 'fecha_notificacion_sufe')) {
+            $baseData['fecha_notificacion_sufe'] = null;
+        }
+
         $ventaId = null;
         if (trim((string) $origenVentaId) !== '' && trim((string) $origenVentaTipo) !== '') {
             $ventaId = DB::table('ventas')

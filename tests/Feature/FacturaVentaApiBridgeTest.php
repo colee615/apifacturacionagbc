@@ -242,6 +242,108 @@ class FacturaVentaApiBridgeTest extends TestCase
             ]);
     }
 
+    public function test_emitir_reuses_same_sale_and_clears_previous_fiscal_fields_for_new_attempt(): void
+    {
+        $codigoSeguimientoAnterior = '8' . random_int(1000000000000, 9999999999999);
+        $codigoSeguimientoNuevo = '9' . random_int(1000000000000, 9999999999999);
+        $codigoOrdenAnterior = 'TEST-OLD-' . Str::upper(Str::random(6));
+        $codigoOrdenNuevo = 'TEST-NEW-' . Str::upper(Str::random(6));
+
+        $ventaId = (int) DB::table('ventas')->insertGetId([
+            'origen_sistema' => 'BOLIPOST',
+            'origen_venta_id' => 'cart-3821',
+            'origen_venta_tipo' => 'facturacion_cart_remote',
+            'origen_usuario_id' => 'operador-test',
+            'origen_usuario_nombre' => 'Operador Bolipost',
+            'origen_usuario_email' => 'operador@test.com',
+            'origen_sucursal_id' => '0',
+            'origen_sucursal_codigo' => '0',
+            'origen_sucursal_nombre' => 'Sucursal Test',
+            'codigoSucursal' => 0,
+            'puntoVenta' => 0,
+            'documentoSector' => 1,
+            'municipio' => 'LA PAZ',
+            'departamento' => 'LA PAZ',
+            'telefono' => '2457000',
+            'codigoCliente' => 'CLI-0001',
+            'razonSocial' => 'CLIENTE DE PRUEBA',
+            'documentoIdentidad' => '12345678',
+            'tipoDocumentoIdentidad' => 1,
+            'complemento' => '1A',
+            'correo' => 'cliente@test.com',
+            'metodoPago' => 5,
+            'formatoFactura' => 'pagina',
+            'monto_descuento_adicional' => 0,
+            'motivo' => 'Integracion bolipost',
+            'total' => 70,
+            'estado' => 1,
+            'codigoOrden' => $codigoOrdenAnterior,
+            'codigoSeguimiento' => $codigoSeguimientoAnterior,
+            'estado_sufe' => 'ANULADA',
+            'tipo_emision_sufe' => 'ANULACION',
+            'cuf' => 'CUF-OLD-ANNULLED',
+            'numero_factura' => '45',
+            'url_pdf' => 'https://example.test/old.pdf',
+            'url_xml' => 'https://example.test/old.xml',
+            'observacion_sufe' => 'Factura anterior anulada',
+            'fecha_notificacion_sufe' => '17/08/2026 3:20:25 PM',
+            'created_at' => now()->subMinute(),
+            'updated_at' => now()->subMinute(),
+        ]);
+
+        Http::fake([
+            '*/facturacion/emision/individual' => Http::response([
+                'finalizado' => true,
+                'mensaje' => 'Registro recepcionado con exito!',
+                'datos' => [
+                    'codigoSeguimiento' => $codigoSeguimientoNuevo,
+                ],
+            ], 202),
+            '*/consulta/*' => Http::response([
+                'estado' => 'PENDIENTE',
+            ], 200),
+        ]);
+
+        $payload = $this->validPayload($codigoOrdenNuevo);
+        $payload['origenVenta'] = [
+            'id' => 'cart-3821',
+            'tipo' => 'facturacion_cart_remote',
+        ];
+        $payload['origenSucursal'] = [
+            'id' => '0',
+            'codigo' => '0',
+            'nombre' => 'Sucursal Test',
+        ];
+        $payload['metodoPago'] = 5;
+
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer test-bridge-token',
+            'Accept' => 'application/json',
+        ])->postJson('/api/factura-venta/emitir', $payload);
+
+        $response->assertStatus(202)
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('estado', 'PENDIENTE');
+
+        $this->assertSame(1, DB::table('ventas')
+            ->where('origen_venta_id', 'cart-3821')
+            ->where('origen_venta_tipo', 'facturacion_cart_remote')
+            ->count());
+
+        $venta = DB::table('ventas')->where('id', $ventaId)->first();
+
+        $this->assertSame($codigoOrdenNuevo, $venta->codigoOrden);
+        $this->assertSame($codigoSeguimientoNuevo, $venta->codigoSeguimiento);
+        $this->assertSame('RECEPCIONADA', $venta->estado_sufe);
+        $this->assertSame('EMISION', $venta->tipo_emision_sufe);
+        $this->assertNull($venta->cuf);
+        $this->assertNull($venta->numero_factura);
+        $this->assertNull($venta->url_pdf);
+        $this->assertNull($venta->url_xml);
+        $this->assertNull($venta->observacion_sufe);
+        $this->assertNull($venta->fecha_notificacion_sufe);
+    }
+
     public function test_emitir_returns_facturada_when_consulta_confirms_processed_quickly(): void
     {
         $codigoSeguimiento = '7' . random_int(1000000000000, 9999999999999);
