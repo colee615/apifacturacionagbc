@@ -3165,6 +3165,7 @@ class VentaController extends Controller
         $fecha = $cart->emitido_en ?: $cart->created_at;
         $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
         $allowLinkedFiscalFallback = !in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
+        $isLinkedVentaAnnulled = !$allowLinkedFiscalFallback;
         $annulledFacturaNumero = trim((string) ($linkedVenta->numero_factura ?? ''));
         $annulledFacturaCuf = trim((string) ($linkedVenta->cuf ?? ''));
         $annulledFacturaCodigoSeguimiento = trim((string) ($linkedVenta->codigoSeguimiento ?? ''));
@@ -3227,6 +3228,37 @@ class VentaController extends Controller
             }
         }
 
+        $historialQr = [];
+        if ($isLinkedVentaAnnulled && $linkedVentaId > 0) {
+            $historialQr[] = [
+                'id' => $linkedVentaId,
+                'codigoOrden' => $linkedVenta->codigoOrden ?? null,
+                'codigoSeguimiento' => $annulledFacturaCodigoSeguimiento !== '' ? $annulledFacturaCodigoSeguimiento : null,
+                'numeroFactura' => $annulledFacturaNumero !== '' ? $annulledFacturaNumero : null,
+                'cuf' => $annulledFacturaCuf !== '' ? $annulledFacturaCuf : null,
+                'fecha' => !blank($linkedVenta->created_at ?? null) ? Carbon::parse($linkedVenta->created_at)->format('Y-m-d H:i:s') : null,
+                'total' => isset($linkedVenta->total) ? (float) $linkedVenta->total : (float) ($cart->total ?? 0),
+                'qr_transaction_id' => $cart->qr_transaction_id ?? null,
+                'estadoSufe' => $linkedVentaStatus !== '' ? $linkedVentaStatus : null,
+                'timelineRole' => 'original_anulada',
+                'anulacion' => [
+                    'anuladaAt' => $linkedVenta->anulada_at ?? null,
+                    'anuladaPorUserId' => $linkedVenta->anulada_por_user_id ?? null,
+                    'anuladaPorNombre' => $linkedVenta->anulada_por_nombre ?? null,
+                    'anuladaPorEmail' => $linkedVenta->anulada_por_email ?? null,
+                    'motivo' => $linkedVenta->anulacion_motivo ?? null,
+                    'tipo' => $linkedVenta->anulacion_tipo ?? null,
+                    'autorizadaPorUserId' => $linkedVenta->anulacion_autorizada_por_user_id ?? null,
+                    'autorizadaPorEmail' => $linkedVenta->anulacion_autorizada_por_email ?? null,
+                    'numeroFactura' => $annulledFacturaNumero !== '' ? $annulledFacturaNumero : null,
+                    'codigoOrden' => $linkedVenta->codigoOrden ?? null,
+                    'cuf' => $annulledFacturaCuf !== '' ? $annulledFacturaCuf : null,
+                    'codigoSeguimiento' => $annulledFacturaCodigoSeguimiento !== '' ? $annulledFacturaCodigoSeguimiento : null,
+                    'estadoSufe' => $linkedVentaStatus !== '' ? $linkedVentaStatus : null,
+                ],
+            ];
+        }
+
         return [
             'id' => 'cart-' . (int) $cart->id,
             'cartId' => (int) $cart->id,
@@ -3253,12 +3285,21 @@ class VentaController extends Controller
                 'tipo' => $cart->anulacion_tipo ?? null,
                 'autorizadaPorUserId' => $cart->anulacion_autorizada_por_user_id ?? null,
                 'autorizadaPorEmail' => $cart->anulacion_autorizada_por_email ?? null,
-                'numeroFactura' => $numeroFactura ?: ($annulledFacturaNumero !== '' ? $annulledFacturaNumero : null),
-                'codigoOrden' => $this->normalizeFacturacionCartCodigoOrden($cart),
-                'cuf' => data_get($respuestaEmision, 'factura.cuf') ?: data_get($respuestaEmision, 'cuf') ?: ($allowLinkedFiscalFallback ? ($linkedVenta->cuf ?? null) : ($annulledFacturaCuf !== '' ? $annulledFacturaCuf : null)),
-                'codigoSeguimiento' => $allowLinkedFiscalFallback ? ($linkedVenta->codigoSeguimiento ?? null) : ($annulledFacturaCodigoSeguimiento !== '' ? $annulledFacturaCodigoSeguimiento : null),
+                'numeroFactura' => $isLinkedVentaAnnulled
+                    ? ($annulledFacturaNumero !== '' ? $annulledFacturaNumero : null)
+                    : ($numeroFactura ?: null),
+                'codigoOrden' => $isLinkedVentaAnnulled
+                    ? ($linkedVenta->codigoOrden ?? null)
+                    : $this->normalizeFacturacionCartCodigoOrden($cart),
+                'cuf' => $isLinkedVentaAnnulled
+                    ? ($annulledFacturaCuf !== '' ? $annulledFacturaCuf : null)
+                    : (data_get($respuestaEmision, 'factura.cuf') ?: data_get($respuestaEmision, 'cuf') ?: ($linkedVenta->cuf ?? null)),
+                'codigoSeguimiento' => $isLinkedVentaAnnulled
+                    ? ($annulledFacturaCodigoSeguimiento !== '' ? $annulledFacturaCodigoSeguimiento : null)
+                    : ($linkedVenta->codigoSeguimiento ?? null),
                 'estadoSufe' => $linkedVentaStatus !== '' ? $linkedVentaStatus : null,
             ],
+            'historial_qr' => $historialQr,
             'qrCancelacion' => [
                 'canceladaAt' => $cart->qr_cancelado_at ?? null,
                 'canceladaPorUserId' => $cart->qr_cancelado_por_user_id ?? null,
