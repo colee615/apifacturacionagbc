@@ -2938,7 +2938,7 @@ class VentaController extends Controller
                         'reuse_cart_billing_data' => true,
                         'preserve_paid_qr_payment' => true,
                     ],
-                    'cuf' => $cuf !== '' ? $cuf : null,
+                    'cuf' => null,
                 ]);
             }
             if ($isLinkedVentaAnnulmentObserved || $estadoEmision === 'ANULACION_OBSERVADA') {
@@ -3136,6 +3136,9 @@ class VentaController extends Controller
         $fecha = $cart->emitido_en ?: $cart->created_at;
         $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
         $allowLinkedFiscalFallback = !in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
+        $annulledFacturaNumero = trim((string) ($linkedVenta->numero_factura ?? ''));
+        $annulledFacturaCuf = trim((string) ($linkedVenta->cuf ?? ''));
+        $annulledFacturaCodigoSeguimiento = trim((string) ($linkedVenta->codigoSeguimiento ?? ''));
         $numeroFactura = $this->facturacionCartNumeroFactura((string) ($cart->respuesta_emision ?? ''))
             ?: ($detalleNotificacion['nroFactura'] ?? null)
             ?: ($allowLinkedFiscalFallback ? ($linkedVenta->numero_factura ?? null) : null);
@@ -3221,9 +3224,11 @@ class VentaController extends Controller
                 'tipo' => $cart->anulacion_tipo ?? null,
                 'autorizadaPorUserId' => $cart->anulacion_autorizada_por_user_id ?? null,
                 'autorizadaPorEmail' => $cart->anulacion_autorizada_por_email ?? null,
-                'numeroFactura' => $numeroFactura,
+                'numeroFactura' => $numeroFactura ?: ($annulledFacturaNumero !== '' ? $annulledFacturaNumero : null),
                 'codigoOrden' => $this->normalizeFacturacionCartCodigoOrden($cart),
-                'cuf' => data_get($respuestaEmision, 'factura.cuf') ?: data_get($respuestaEmision, 'cuf') ?: ($allowLinkedFiscalFallback ? ($linkedVenta->cuf ?? null) : null),
+                'cuf' => data_get($respuestaEmision, 'factura.cuf') ?: data_get($respuestaEmision, 'cuf') ?: ($allowLinkedFiscalFallback ? ($linkedVenta->cuf ?? null) : ($annulledFacturaCuf !== '' ? $annulledFacturaCuf : null)),
+                'codigoSeguimiento' => $allowLinkedFiscalFallback ? ($linkedVenta->codigoSeguimiento ?? null) : ($annulledFacturaCodigoSeguimiento !== '' ? $annulledFacturaCodigoSeguimiento : null),
+                'estadoSufe' => $linkedVentaStatus !== '' ? $linkedVentaStatus : null,
             ],
             'qrCancelacion' => [
                 'canceladaAt' => $cart->qr_cancelado_at ?? null,
