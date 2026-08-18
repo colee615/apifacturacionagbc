@@ -1210,7 +1210,7 @@ class VentaController extends Controller
         }
 
         $cartCounts = [];
-        if ($cartIds !== [] && DB::table('facturacion_cart_items')->exists()) {
+        if ($cartIds !== [] && Schema::hasTable('facturacion_cart_items')) {
             $cartCounts = DB::table('facturacion_cart_items')
                 ->selectRaw('cart_id, count(*) as cantidad')
                 ->whereIn('cart_id', $cartIds)
@@ -3601,7 +3601,7 @@ class VentaController extends Controller
 
         if (in_array((string) ($venta->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true)) {
             $cartId = (int) ($venta->origen_venta_id ?? 0);
-            if ($cartId > 0 && DB::table('facturacion_cart_items')->exists()) {
+            if ($cartId > 0 && Schema::hasTable('facturacion_cart_items')) {
                 $detalleCart = DB::table('facturacion_cart_items')
                     ->where('cart_id', $cartId)
                     ->orderBy('id')
