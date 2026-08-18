@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Carbon\Carbon;
 use App\Models\Venta;
 use App\Models\DetalleVenta;
 use App\Models\Notificacione;
@@ -758,6 +759,8 @@ class VentaController extends Controller
         return $request->validate([
             'fechaInicio' => ['nullable', 'date_format:Y-m-d'],
             'fechaFin' => ['nullable', 'date_format:Y-m-d'],
+            'mes' => ['nullable', 'integer', 'min:1', 'max:12'],
+            'anio' => ['nullable', 'integer', 'min:2000', 'max:2100'],
             'origen_usuario_id' => ['nullable', 'string', 'max:100'],
             'origen_usuario_email' => ['nullable', 'string', 'max:120'],
             'origen_usuario_alias' => ['nullable', 'string', 'max:80'],
@@ -785,6 +788,7 @@ class VentaController extends Controller
 
     private function resolveIdentityFilters(Request $request, array $filters): array
     {
+        $filters = $this->normalizeVentaReportPeriodFilters($filters);
         $usuario = Auth::guard('api')->user() ?? $request->user();
         $canViewGlobalReports = $this->isAnulacionSupervisor($usuario);
 
@@ -802,6 +806,36 @@ class VentaController extends Controller
         $filters['origen_usuario_email'] = strtolower(trim((string) ($usuario->email ?? ''))) ?: null;
         $filters['origen_usuario_alias'] = strtolower(trim((string) ($usuario->alias ?? ''))) ?: null;
         $filters['origen_usuario_carnet'] = $this->normalizeCarnet((string) ($usuario->numero_carnet ?? ''));
+
+        return $filters;
+    }
+
+    private function normalizeVentaReportPeriodFilters(array $filters): array
+    {
+        $hasExplicitDates = !empty($filters['fechaInicio']) || !empty($filters['fechaFin']);
+        $month = isset($filters['mes']) ? (int) $filters['mes'] : 0;
+        $year = isset($filters['anio']) ? (int) $filters['anio'] : 0;
+
+        if ($hasExplicitDates) {
+            return $filters;
+        }
+
+        if ($month > 0) {
+            $resolvedYear = $year > 0 ? $year : (int) now()->format('Y');
+            $start = Carbon::create($resolvedYear, $month, 1)->startOfMonth();
+            $end = (clone $start)->endOfMonth();
+            $filters['anio'] = $resolvedYear;
+            $filters['fechaInicio'] = $start->format('Y-m-d');
+            $filters['fechaFin'] = $end->format('Y-m-d');
+            return $filters;
+        }
+
+        if ($year > 0) {
+            $start = Carbon::create($year, 1, 1)->startOfYear();
+            $end = (clone $start)->endOfYear();
+            $filters['fechaInicio'] = $start->format('Y-m-d');
+            $filters['fechaFin'] = $end->format('Y-m-d');
+        }
 
         return $filters;
     }

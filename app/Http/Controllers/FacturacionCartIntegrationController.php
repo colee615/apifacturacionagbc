@@ -272,7 +272,9 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         $r = $this->decode((string) ($row->resumen_origen ?? ''));
-        $r['codigo'] = trim((string) ($v['codigo'] ?? ($r['codigo'] ?? '')));
+        $resolvedCodigo = trim((string) ($v['codigo'] ?? ($r['codigo'] ?? '')));
+        $r['codigo'] = $resolvedCodigo;
+        $r['codigo_detalle_enviado'] = trim((string) ($v['codigo_detalle_enviado'] ?? ($resolvedCodigo !== '' ? $resolvedCodigo : ($r['codigo_detalle_enviado'] ?? ''))));
         $r['contenido'] = trim((string) ($v['contenido'] ?? ($r['contenido'] ?? '')));
         $r['peso'] = isset($v['peso']) ? round((float) $v['peso'], 3) : (float) ($r['peso'] ?? 0);
         $r['destinatario'] = trim((string) ($v['nombre_destinatario'] ?? ($r['destinatario'] ?? '')));
@@ -301,7 +303,7 @@ class FacturacionCartIntegrationController extends Controller
         $r['total_linea'] = $totalLinea;
 
         DB::table('facturacion_cart_items')->where('id', $itemId)->update([
-            'codigo' => trim((string) $v['codigo']),
+            'codigo' => $resolvedCodigo,
             'titulo' => trim((string) $v['titulo']),
             'nombre_servicio' => $this->nullBlank($v['nombre_servicio'] ?? null),
             'nombre_destinatario' => $this->nullBlank($v['nombre_destinatario'] ?? null),
