@@ -54,6 +54,8 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/caja/arqueos', [CajaDiariaController::class, 'arqueos']);
     Route::get('/caja/reporte-diario', [CajaDiariaController::class, 'reporteDiario']);
     Route::get('/ventas/reportes/kardex-usuarios', [VentaController::class, 'kardexUsuarios']);
+    Route::get('/ventas/reportes/servicios', [VentaController::class, 'reporteServicios']);
+    Route::get('/ventas/reportes/servicios/detalle', [VentaController::class, 'reporteServicioDetalle']);
     Route::get('/ventas/reportes/sucursales', [VentaController::class, 'reporteSucursales']);
     Route::get('/ventas/reportes/sucursales/usuarios', [VentaController::class, 'reporteSucursalesUsuarios']);
     Route::get('/ventas/reportes/sucursales/incidencias', [VentaController::class, 'reporteSucursalesIncidencias']);

@@ -1479,6 +1479,73 @@ class VentaController extends Controller
         ]);
     }
 
+    public function reporteServicios(Request $request)
+    {
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        $limite = max(1, min((int) ($filters['limite'] ?? 200), 1000));
+        $ventas = $this->mergedVentasForServiceReport($filters);
+        $report = $this->buildServiceReportFromVentas($ventas);
+        $servicios = collect($report['servicios'] ?? [])
+            ->map(function (array $item) {
+                unset($item['rows']);
+                return $item;
+            })
+            ->slice(0, $limite)
+            ->values();
+        $resumen = $report['resumen'] ?? [
+            'cantidadServicios' => 0,
+            'cantidadVentas' => 0,
+            'cantidadDetalles' => 0,
+            'totalCantidad' => 0,
+            'totalMonto' => 0,
+        ];
+
+        return response()->json([
+            'filters' => array_merge($filters, ['limite' => $limite]),
+            'resumen' => $resumen,
+            'servicios' => $servicios,
+            'meta' => [
+                'totalServiciosSinLimite' => (int) count($report['servicios'] ?? []),
+                'totalVentasSinLimite' => (int) ($report['resumen']['cantidadVentas'] ?? 0),
+                'cantidadDetallesSinLimite' => (int) ($report['resumen']['cantidadDetalles'] ?? 0),
+            ],
+        ]);
+    }
+
+    public function reporteServicioDetalle(Request $request)
+    {
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        $servicio = $this->normalizeServiceReportDescription((string) ($request->query('servicio', $request->input('servicio', ''))));
+        if ($servicio === '') {
+            return response()->json([
+                'message' => 'Debes enviar el nombre del servicio agrupado.',
+            ], 422);
+        }
+
+        $ventas = $this->mergedVentasForServiceReport($filters);
+        $report = $this->buildServiceReportFromVentas($ventas);
+        $serviceKey = mb_strtoupper($servicio);
+        $detalle = collect($report['servicios'] ?? [])
+            ->first(fn ($item) => mb_strtoupper((string) ($item['servicio'] ?? '')) === $serviceKey);
+
+        if (!$detalle) {
+            return response()->json([
+                'message' => 'No se encontro el servicio solicitado para los filtros enviados.',
+                'servicio' => $servicio,
+            ], 404);
+        }
+
+        $detalle['rows'] = collect($detalle['rows'] ?? [])
+            ->sortByDesc(fn ($row) => strtotime((string) ($row['fecha'] ?? '1970-01-01 00:00:00')) ?: 0)
+            ->values()
+            ->all();
+
+        return response()->json([
+            'filters' => $filters,
+            'servicio' => $detalle,
+        ]);
+    }
+
     public function reporteKardexPdf(Request $request): HttpResponse
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
@@ -1600,6 +1667,246 @@ class VentaController extends Controller
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'attachment; filename="' . $filename . '"',
         ]);
+    }
+
+    private function mergedVentasForServiceReport(array $filters): Collection
+    {
+        $cartRows = Schema::hasTable('facturacion_carts')
+            ? $this->buildFacturacionCartReportQuery($filters)
+                ->orderByDesc('emitido_en')
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
+                ->get()
+            : collect();
+
+        $cartIds = $cartRows
+            ->pluck('id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
+        if ($cartIds !== []) {
+            $ventasQuery->where(function ($query) use ($cartIds) {
+                $query->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                    ->orWhereNull('origen_venta_tipo')
+                    ->orWhereNotIn('origen_venta_id', $cartIds);
+            });
+        }
+
+        $ventas = $ventasQuery
+            ->latest('created_at')
+            ->get(array_values(array_filter([
+                'id',
+                'created_at',
+                'codigoOrden',
+                'codigoSeguimiento',
+                'origen_venta_id',
+                'origen_venta_tipo',
+                'origen_usuario_id',
+                'origen_usuario_nombre',
+                $this->hasOrigenUsuarioEmailColumn() ? 'origen_usuario_email' : null,
+                $this->hasOrigenUsuarioAliasColumn() ? 'origen_usuario_alias' : null,
+                $this->hasOrigenUsuarioCarnetColumn() ? 'origen_usuario_carnet' : null,
+                'origen_sucursal_id',
+                'origen_sucursal_nombre',
+                'codigoSucursal',
+                'puntoVenta',
+                'razonSocial',
+                'documentoIdentidad',
+                'codigoCliente',
+                'total',
+                'estado_sufe',
+                'tipo_emision_sufe',
+                'cuf',
+                'url_pdf',
+                'url_xml',
+                'observacion_sufe',
+                'fecha_notificacion_sufe',
+                'departamento',
+                Schema::hasColumn('ventas', 'canal_operativo') ? 'canal_operativo' : null,
+                Schema::hasColumn('ventas', 'es_cuenta_por_cobrar') ? 'es_cuenta_por_cobrar' : null,
+                Schema::hasColumn('ventas', 'empresa_nombre') ? 'empresa_nombre' : null,
+                Schema::hasColumn('ventas', 'empresa_sigla') ? 'empresa_sigla' : null,
+            ])));
+
+        $detalleMaps = $this->detalleMapsFromRows($ventas);
+        $itemsCountMaps = $this->itemsCountMapsFromRows($ventas);
+        $notificationsMap = $this->latestNotificationsMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
+
+        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap) {
+            $ventaId = (int) $venta->id;
+            $cartId = (int) ($venta->origen_venta_id ?? 0);
+            $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
+            $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
+            $status = $this->protocolStatusFromVentaNotification($venta, $notification);
+            $detalle = $detalleMaps['detalle'][$ventaId] ?? [];
+
+            if ($detalle === [] && $cartId > 0) {
+                $detalle = $detalleMaps['cart'][$cartId] ?? [];
+            }
+
+            $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
+            if ($itemsCount === 0 && $cartId > 0) {
+                $itemsCount = (int) ($itemsCountMaps['cart'][$cartId] ?? 0);
+            }
+
+            return [
+                'id' => $venta->id,
+                'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
+                'codigoOrden' => $venta->codigoOrden,
+                'codigoSeguimiento' => $venta->codigoSeguimiento,
+                'origenVentaId' => $venta->origen_venta_id,
+                'origenVentaTipo' => $venta->origen_venta_tipo,
+                'detalle' => $detalle,
+                'itemsCount' => $itemsCount,
+                'cantidad' => max(1, $itemsCount ?: count($detalle)),
+                'total' => (float) $venta->total,
+                'status' => $status,
+            ];
+        })->values();
+
+        $cartItemsMap = $this->facturacionCartItemsMapFromRows($cartRows);
+        $cartFiscalBackfillMap = $this->facturacionCartFiscalBackfillMap($cartRows);
+        $cartNotificationBackfillMap = $this->facturacionCartNotificationBackfillMap(
+            $cartRows->map(fn ($cart) => (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')))
+                ->filter()
+                ->values()
+                ->all()
+        );
+
+        $cartPayloads = $cartRows
+            ->map(fn ($cart) => $this->mapFacturacionCartToVentaPayload(
+                $cart,
+                $cartItemsMap[(int) $cart->id] ?? [],
+                $cartFiscalBackfillMap[(int) $cart->id] ?? null,
+                $cartNotificationBackfillMap[(string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''))] ?? null
+            ))
+            ->values();
+
+        return $list
+            ->concat($cartPayloads)
+            ->sortByDesc(function ($row) {
+                return strtotime((string) ($row['fecha'] ?? '1970-01-01 00:00:00')) ?: 0;
+            })
+            ->values();
+    }
+
+    private function buildServiceReportFromVentas(Collection $ventas): array
+    {
+        $grouped = [];
+        $ventaKeys = [];
+
+        foreach ($ventas as $venta) {
+            $venta = is_array($venta) ? $venta : (array) $venta;
+            $ventaKey = (string) ($venta['id'] ?? $venta['codigoSeguimiento'] ?? $venta['codigoOrden'] ?? uniqid('venta_', true));
+            $detalle = collect($venta['detalle'] ?? []);
+
+            foreach ($detalle as $item) {
+                $item = is_array($item) ? $item : (array) $item;
+                $descripcion = $this->normalizeServiceReportDescription(
+                    $item['descripcion'] ?? $item['nombre_servicio'] ?? $item['titulo'] ?? 'SIN DETALLE'
+                );
+                $servicio = $this->serviceGroupLabel($descripcion);
+                $groupKey = mb_strtoupper($servicio);
+                $cantidad = (float) ($item['cantidad'] ?? 0);
+                $precio = (float) ($item['precio'] ?? ($item['monto_base'] ?? 0));
+                $totalLinea = (float) ($item['total_linea'] ?? ($cantidad * $precio));
+
+                if (!isset($grouped[$groupKey])) {
+                    $grouped[$groupKey] = [
+                        'servicio' => $servicio,
+                        'cantidadDetalles' => 0,
+                        'totalCantidad' => 0.0,
+                        'totalMonto' => 0.0,
+                        'ultimaFecha' => '',
+                        'descripciones' => [],
+                        'rows' => [],
+                        'ventaIds' => [],
+                    ];
+                }
+
+                $grouped[$groupKey]['cantidadDetalles'] += 1;
+                $grouped[$groupKey]['totalCantidad'] += $cantidad;
+                $grouped[$groupKey]['totalMonto'] += $totalLinea;
+                $grouped[$groupKey]['ventaIds'][$ventaKey] = true;
+
+                if ($descripcion !== '' && !in_array($descripcion, $grouped[$groupKey]['descripciones'], true)) {
+                    $grouped[$groupKey]['descripciones'][] = $descripcion;
+                }
+
+                $fecha = (string) ($venta['fecha'] ?? '');
+                if ($fecha !== '' && ($grouped[$groupKey]['ultimaFecha'] === '' || $fecha > $grouped[$groupKey]['ultimaFecha'])) {
+                    $grouped[$groupKey]['ultimaFecha'] = $fecha;
+                }
+
+                $grouped[$groupKey]['rows'][] = [
+                    'ventaId' => $venta['id'] ?? null,
+                    'detalleId' => $item['id'] ?? ($item['detalle_id'] ?? null),
+                    'descripcion' => $descripcion,
+                    'codigoOrden' => $venta['codigoOrden'] ?? '',
+                    'codigoSeguimiento' => $venta['codigoSeguimiento'] ?? '',
+                    'fecha' => $venta['fecha'] ?? '',
+                    'totalLinea' => round($totalLinea, 2),
+                ];
+
+                $ventaKeys[$ventaKey] = true;
+            }
+        }
+
+        $servicios = collect(array_values($grouped))
+            ->map(function (array $group) {
+                return [
+                    'servicio' => $group['servicio'],
+                    'cantidadVentas' => count($group['ventaIds']),
+                    'cantidadDetalles' => (int) $group['cantidadDetalles'],
+                    'totalCantidad' => round((float) $group['totalCantidad'], 2),
+                    'totalMonto' => round((float) $group['totalMonto'], 2),
+                    'ultimaFecha' => $group['ultimaFecha'],
+                    'descripciones' => array_values($group['descripciones']),
+                    'descripcionMuestra' => implode(' | ', array_slice($group['descripciones'], 0, 3)),
+                    'rows' => array_values($group['rows']),
+                ];
+            })
+            ->sortByDesc('totalMonto')
+            ->values()
+            ->all();
+
+        return [
+            'resumen' => [
+                'cantidadServicios' => count($servicios),
+                'cantidadVentas' => count($ventaKeys),
+                'cantidadDetalles' => (int) collect($servicios)->sum('cantidadDetalles'),
+                'totalCantidad' => round((float) collect($servicios)->sum('totalCantidad'), 2),
+                'totalMonto' => round((float) collect($servicios)->sum('totalMonto'), 2),
+            ],
+            'servicios' => $servicios,
+        ];
+    }
+
+    private function normalizeServiceReportDescription(mixed $value): string
+    {
+        return trim((string) preg_replace('/\s+/', ' ', (string) ($value ?? '')));
+    }
+
+    private function serviceGroupLabel(string $value): string
+    {
+        $normalized = $this->normalizeServiceReportDescription($value);
+        if ($normalized === '') {
+            return 'SIN DETALLE';
+        }
+
+        $parts = explode('-', $normalized, 2);
+        $beforeDash = trim((string) ($parts[0] ?? ''));
+
+        return $beforeDash !== '' ? $beforeDash : $normalized;
+    }
+
+    private function normalizeServiceReportSearch(string $value): string
+    {
+        return trim((string) preg_replace('/\s+/', ' ', mb_strtolower($value)));
     }
 
     private function buildPdfRowsFromVentas(Collection $ventasRows, array $detalleVentasMap, array $numeroFacturaMap, array $numeroFacturaBridgeMap, array $bridgeCartMetaMap = []): Collection
