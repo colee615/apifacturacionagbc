@@ -2256,23 +2256,25 @@ class FacturacionCartIntegrationController extends Controller
             return 0;
         }
 
-        if ($codigoOrden !== '') {
-            $ventaId = (int) (DB::table('ventas')
-                ->where('codigoOrden', $codigoOrden)
-                ->orderByDesc('id')
-                ->value('id') ?? 0);
-
-            if ($ventaId > 0) {
-                return $ventaId;
-            }
-        }
-
-        return (int) (DB::table('ventas')
+        $ventaId = (int) (DB::table('ventas')
             ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
             ->whereRaw("origen_venta_id ~ '^[0-9]+$'")
             ->whereRaw('cast(origen_venta_id as bigint) = ?', [$cartId])
             ->orderByDesc('id')
             ->value('id') ?? 0);
+
+        if ($ventaId > 0) {
+            return $ventaId;
+        }
+
+        if ($codigoOrden !== '') {
+            return (int) (DB::table('ventas')
+                ->where('codigoOrden', $codigoOrden)
+                ->orderByDesc('id')
+                ->value('id') ?? 0);
+        }
+
+        return 0;
     }
 
     private function ensureDraft(string $userId, array $updates): int
