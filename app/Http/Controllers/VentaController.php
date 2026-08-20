@@ -1344,14 +1344,18 @@ class VentaController extends Controller
                         $base = (float) ($item->monto_base ?? 0);
                         $extras = (float) ($item->monto_extras ?? 0);
                         $totalLinea = (float) ($item->total_linea ?? round(($base + $extras) * max(1, $cantidad), 2));
+                        $descripcionServicio = trim((string) ($resumen['descripcion_servicio'] ?? ''));
                         $titulo = trim((string) ($item->titulo ?? ''));
                         $servicio = trim((string) ($item->nombre_servicio ?? ''));
+                        $descripcion = $descripcionServicio !== ''
+                            ? $descripcionServicio
+                            : ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle'));
 
                         return $this->enrichCartItemPayload([
                             'id' => (int) ($item->id ?? 0),
                             'codigo' => (string) (($item->codigo ?? '') !== '' ? $item->codigo : ('ITEM-' . (int) $item->id)),
-                            'descripcion' => (string) ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle')),
-                            'titulo' => (string) ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle')),
+                            'descripcion' => $descripcion,
+                            'titulo' => $descripcion,
                             'nombre_servicio' => (string) ($servicio !== '' ? $servicio : $titulo),
                             'nombre_destinatario' => (string) ($item->nombre_destinatario ?? ''),
                             'origen_tipo' => (string) ($item->origen_tipo ?? ''),
@@ -3466,7 +3470,7 @@ class VentaController extends Controller
                         'monto_base' => $base,
                         'monto_extras' => $extras,
                         'total_linea' => $totalLinea,
-                        'titulo' => $titulo !== '' ? $titulo : $descripcion,
+                        'titulo' => $descripcion,
                         'nombre_servicio' => $nombreServicio !== '' ? $nombreServicio : $descripcion,
                         'subtitulo' => $item->nombre_destinatario,
                         'origen_tipo' => (string) ($item->origen_tipo ?? ''),
@@ -3974,7 +3978,7 @@ class VentaController extends Controller
                             'monto_base' => $base,
                             'monto_extras' => $extras,
                             'total_linea' => $totalLinea,
-                            'titulo' => $titulo !== '' ? $titulo : $descripcion,
+                            'titulo' => $descripcion,
                             'nombre_servicio' => $servicio !== '' ? $servicio : $descripcion,
                             'subtitulo' => $destinatario,
                             'origen_tipo' => (string) ($item->origen_tipo ?? ''),
