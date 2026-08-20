@@ -3959,18 +3959,23 @@ class VentaController extends Controller
                         if (!is_array($resumen)) {
                             $resumen = [];
                         }
+                        $descripcionServicio = trim((string) ($resumen['descripcion_servicio'] ?? ''));
+                        $descripcion = $descripcionServicio !== ''
+                            ? $descripcionServicio
+                            : ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle'));
+
                         return $this->enrichCartItemPayload([
                             'codigo' => (string) ($item->codigo ?: ('ITEM-' . $item->id)),
-                            // Priorizamos "titulo" para que UI muestre "Admision EMS"
-                            // y dejamos el servicio como linea secundaria.
-                            'descripcion' => (string) ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle')),
+                            // El modal debe mostrar el mismo detalle fiscal que kardex/factura
+                            // cuando el carrito ya trae una descripcion de servicio consolidada.
+                            'descripcion' => $descripcion,
                             'cantidad' => $cantidad,
                             'precio' => $base,
                             'monto_base' => $base,
                             'monto_extras' => $extras,
                             'total_linea' => $totalLinea,
-                            'titulo' => $servicio,
-                            'nombre_servicio' => $servicio,
+                            'titulo' => $titulo !== '' ? $titulo : $descripcion,
+                            'nombre_servicio' => $servicio !== '' ? $servicio : $descripcion,
                             'subtitulo' => $destinatario,
                             'origen_tipo' => (string) ($item->origen_tipo ?? ''),
                             'resumen_origen' => $resumen,
