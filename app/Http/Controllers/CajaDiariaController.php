@@ -859,7 +859,23 @@ class CajaDiariaController extends Controller
         return response()->json([
             'ok' => true,
             'fecha' => $fecha,
-            'conciliaciones' => $rows->map(fn ($row) => $this->conciliacionPayload($row))->values(),
+            'conciliaciones' => $rows->map(function ($row) use ($fecha) {
+                $snapshot = $this->buildConciliacionSnapshot(
+                    $fecha,
+                    (int) $row->codigo_sucursal,
+                    (int) $row->punto_venta,
+                    (string) ($row->sucursal_nombre ?? '')
+                );
+
+                $freshRow = $this->findOrCreateConciliacionRow(
+                    $fecha,
+                    (int) $row->codigo_sucursal,
+                    (int) $row->punto_venta,
+                    $snapshot
+                );
+
+                return $this->conciliacionPayload($freshRow);
+            })->values(),
         ]);
     }
 
@@ -875,7 +891,12 @@ class CajaDiariaController extends Controller
         $codigoSucursal = (int) $validated['codigoSucursal'];
         $puntoVenta = (int) ($validated['puntoVenta'] ?? 0);
 
-        $row = $this->findOrCreateConciliacionRow($fecha, $codigoSucursal, $puntoVenta, []);
+        $row = $this->findOrCreateConciliacionRow(
+            $fecha,
+            $codigoSucursal,
+            $puntoVenta,
+            $this->buildConciliacionSnapshot($fecha, $codigoSucursal, $puntoVenta)
+        );
         $receipts = $this->conciliacionReceipts($row->id);
 
         return response()->json([
@@ -900,6 +921,14 @@ class CajaDiariaController extends Controller
             'totalGeneralSistema' => ['nullable', 'numeric', 'min:0'],
             'montoDepositado' => ['required', 'numeric', 'min:0.01'],
             'banco' => ['nullable', 'string', 'max:120'],
+            'nombreBanco' => ['nullable', 'string', 'max:160'],
+            'usuarioBanco' => ['nullable', 'string', 'max:120'],
+            'agenciaBanco' => ['nullable', 'string', 'max:180'],
+            'transaccionBanco' => ['nullable', 'string', 'max:180'],
+            'fechaComprobante' => ['nullable', 'string', 'max:40'],
+            'monedaComprobante' => ['nullable', 'string', 'max:20'],
+            'depositante' => ['nullable', 'string', 'max:180'],
+            'beneficiario' => ['nullable', 'string', 'max:180'],
             'referencia' => ['nullable', 'string', 'max:120'],
             'observacion' => ['nullable', 'string', 'max:500'],
             'archivo' => ['required', 'file', 'max:10240', 'mimes:jpg,jpeg,png,pdf,webp'],
@@ -927,10 +956,16 @@ class CajaDiariaController extends Controller
         }
 
         $extension = strtolower((string) ($file->getClientOriginalExtension() ?: $file->guessExtension() ?: 'bin'));
+        $originalName = $file->getClientOriginalName();
+        $originalMime = $file->getClientMimeType();
+        $originalSize = (int) ($file->getSize() ?: 0);
         $filename = 'comp-' . $fecha . '-s' . str_pad((string) $codigoSucursal, 3, '0', STR_PAD_LEFT) . '-pv' . $puntoVenta . '-' . now()->format('His') . '-' . Str::random(8) . '.' . $extension;
         $file->move($folder, $filename);
 
-        DB::table('cierre_diario_comprobantes')->insert([
+        $storedPath = $folder . DIRECTORY_SEPARATOR . $filename;
+        $storedSize = is_file($storedPath) ? (int) filesize($storedPath) : $originalSize;
+
+        $payload = [
             'cierre_diario_sucursal_id' => (int) $row->id,
             'fecha_deposito' => $fecha,
             'monto_depositado' => round((float) $validated['montoDepositado'], 2),
@@ -938,15 +973,34 @@ class CajaDiariaController extends Controller
             'referencia' => trim((string) ($validated['referencia'] ?? '')) ?: null,
             'observacion' => trim((string) ($validated['observacion'] ?? '')) ?: null,
             'archivo_path' => $folderRelative . '/' . $filename,
-            'archivo_nombre' => $file->getClientOriginalName(),
-            'archivo_mime' => $file->getClientMimeType(),
-            'archivo_size' => (int) $file->getSize(),
+            'archivo_nombre' => $originalName,
+            'archivo_mime' => $originalMime,
+            'archivo_size' => $storedSize,
             'subido_por_user_id' => is_numeric($actorId) ? (int) $actorId : null,
             'subido_por_nombre' => $actorNombre ?: null,
             'subido_por_email' => $actorEmail ?: null,
             'created_at' => now(),
             'updated_at' => now(),
-        ]);
+        ];
+
+        $optionalColumns = [
+            'nombre_banco' => trim((string) ($validated['nombreBanco'] ?? '')) ?: null,
+            'usuario_banco' => trim((string) ($validated['usuarioBanco'] ?? '')) ?: null,
+            'agencia_banco' => trim((string) ($validated['agenciaBanco'] ?? '')) ?: null,
+            'transaccion_banco' => trim((string) ($validated['transaccionBanco'] ?? '')) ?: null,
+            'fecha_comprobante' => trim((string) ($validated['fechaComprobante'] ?? '')) ?: null,
+            'moneda_comprobante' => trim((string) ($validated['monedaComprobante'] ?? '')) ?: null,
+            'depositante' => trim((string) ($validated['depositante'] ?? '')) ?: null,
+            'beneficiario' => trim((string) ($validated['beneficiario'] ?? '')) ?: null,
+        ];
+
+        foreach ($optionalColumns as $column => $value) {
+            if (Schema::hasColumn('cierre_diario_comprobantes', $column)) {
+                $payload[$column] = $value;
+            }
+        }
+
+        DB::table('cierre_diario_comprobantes')->insert($payload);
 
         $row = $this->refreshConciliacionRow((int) $row->id);
 
@@ -1052,6 +1106,49 @@ class CajaDiariaController extends Controller
         return [
             (float) ($row->total ?? 0),
             (int) ($row->cantidad ?? 0),
+        ];
+    }
+
+    private function buildConciliacionSnapshot(string $fecha, int $codigoSucursal, int $puntoVenta, ?string $sucursalNombre = null): array
+    {
+        $row = DB::table('ventas')
+            ->where('estado', 1)
+            ->whereDate('created_at', $fecha)
+            ->where('codigoSucursal', $codigoSucursal)
+            ->where('puntoVenta', $puntoVenta)
+            ->selectRaw("
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then total else 0
+                end), 0) as total_qr_facturado,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                        and not (
+                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
+                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
+                        )
+                    then total else 0
+                end), 0) as total_efectivo_facturado,
+                coalesce(sum(case
+                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+                    then total else 0
+                end), 0) as total_vendido
+            ")
+            ->first();
+
+        $totalQr = round((float) ($row->total_qr_facturado ?? 0), 2);
+        $totalEfectivo = round((float) ($row->total_efectivo_facturado ?? 0), 2);
+        $totalGeneral = round((float) ($row->total_vendido ?? ($totalEfectivo + $totalQr)), 2);
+
+        return [
+            'sucursal_nombre' => trim((string) ($sucursalNombre ?? '')) ?: null,
+            'total_efectivo_sistema' => $totalEfectivo,
+            'total_qr_sistema' => $totalQr,
+            'total_general_sistema' => $totalGeneral,
         ];
     }
 
@@ -1218,7 +1315,7 @@ class CajaDiariaController extends Controller
             ->orderByDesc('id')
             ->get()
             ->map(function ($receipt) {
-                return [
+                $payload = [
                     'id' => (int) $receipt->id,
                     'fechaDeposito' => (string) $receipt->fecha_deposito,
                     'montoDepositado' => round((float) ($receipt->monto_depositado ?? 0), 2),
@@ -1238,6 +1335,23 @@ class CajaDiariaController extends Controller
                     'validadoAt' => $this->formatDateTimeValue($receipt->validado_at ?? null),
                     'createdAt' => $this->formatDateTimeValue($receipt->created_at ?? null),
                 ];
+
+                $optionalResponseMap = [
+                    'nombreBanco' => 'nombre_banco',
+                    'usuarioBanco' => 'usuario_banco',
+                    'agenciaBanco' => 'agencia_banco',
+                    'transaccionBanco' => 'transaccion_banco',
+                    'fechaComprobante' => 'fecha_comprobante',
+                    'monedaComprobante' => 'moneda_comprobante',
+                    'depositante' => 'depositante',
+                    'beneficiario' => 'beneficiario',
+                ];
+
+                foreach ($optionalResponseMap as $key => $column) {
+                    $payload[$key] = property_exists($receipt, $column) ? $receipt->{$column} : null;
+                }
+
+                return $payload;
             })
             ->values()
             ->all();

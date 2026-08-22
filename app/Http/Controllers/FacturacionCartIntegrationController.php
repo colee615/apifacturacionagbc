@@ -256,6 +256,9 @@ class FacturacionCartIntegrationController extends Controller
             'actividad_economica' => 'nullable|string|max:20',
             'codigo_sin' => 'nullable|string|max:50',
             'codigo_producto' => 'nullable|string|max:50',
+            'codigo_detalle_enviado' => 'nullable|string|max:120',
+            'codigo_producto_fiscal' => 'nullable|string|max:120',
+            'codigo_paquete' => 'nullable|string|max:120',
             'descripcion_servicio' => 'nullable|string|max:255',
             'unidad_medida' => 'nullable|integer|min:1',
         ]);
@@ -283,6 +286,8 @@ class FacturacionCartIntegrationController extends Controller
         $r['actividad_economica'] = trim((string) ($v['actividad_economica'] ?? ($r['actividad_economica'] ?? '')));
         $r['codigo_sin'] = trim((string) ($v['codigo_sin'] ?? ($r['codigo_sin'] ?? '')));
         $r['codigo_producto'] = trim((string) ($v['codigo_producto'] ?? ($r['codigo_producto'] ?? '')));
+        $r['codigo_paquete'] = trim((string) ($v['codigo_paquete'] ?? ($r['codigo_paquete'] ?? $resolvedCodigo)));
+        $r['codigo_producto_fiscal'] = trim((string) ($v['codigo_producto_fiscal'] ?? ($r['codigo_producto_fiscal'] ?? $r['codigo_producto'] ?? $resolvedCodigo)));
         $r['descripcion_servicio'] = trim((string) ($v['descripcion_servicio'] ?? ($r['descripcion_servicio'] ?? '')));
         $r['unidad_medida'] = isset($v['unidad_medida']) ? (int) $v['unidad_medida'] : ($r['unidad_medida'] ?? null);
 
@@ -2289,6 +2294,7 @@ class FacturacionCartIntegrationController extends Controller
 
     private function recalc(int $cartId): void
     {
+        $this->normalizeCartVariantCodes($cartId);
         $it = DB::table('facturacion_cart_items')->where('cart_id', $cartId)->get();
         DB::table('facturacion_carts')->where('id', $cartId)->update([
             'cantidad_items' => (int) $it->sum(fn ($item) => max(1, (int) ($item->cantidad ?? 1))),
@@ -2297,6 +2303,123 @@ class FacturacionCartIntegrationController extends Controller
             'total' => round((float) $it->sum('total_linea'), 2),
             'updated_at' => now(),
         ]);
+    }
+
+    private function normalizeCartVariantCodes(int $cartId): void
+    {
+        $rows = DB::table('facturacion_cart_items')
+            ->where('cart_id', $cartId)
+            ->orderBy('id')
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return;
+        }
+
+        $groups = $rows
+            ->map(function ($row) {
+                $resumen = $this->decode((string) ($row->resumen_origen ?? ''));
+                $currentCode = trim((string) ($row->codigo ?? ''));
+                $fallbackCode = trim((string) (
+                    $resumen['codigo_producto_fiscal']
+                    ?? $resumen['codigo_detalle_enviado']
+                    ?? $resumen['codigo_producto']
+                    ?? $resumen['codigo']
+                    ?? ''
+                ));
+                $baseCode = $this->extractVariantBaseCode($currentCode !== '' ? $currentCode : $fallbackCode);
+                $conceptoId = (int) ($resumen['concepto_facturacion_id'] ?? 0);
+
+                return (object) [
+                    'id' => (int) $row->id,
+                    'origen_tipo' => (string) ($row->origen_tipo ?? ''),
+                    'concepto_id' => $conceptoId,
+                    'base_code' => $baseCode,
+                    'monto_base' => round((float) ($row->monto_base ?? 0), 2),
+                    'descripcion' => trim((string) ($resumen['descripcion_servicio'] ?? '')),
+                    'codigo' => $currentCode,
+                    'resumen' => $resumen,
+                ];
+            })
+            ->filter(function ($row) {
+                return $row->concepto_id > 0
+                    && $row->base_code !== ''
+                    && Str::endsWith($row->origen_tipo, 'ConceptoFacturacion');
+            })
+            ->groupBy(fn ($row) => $row->concepto_id . '|' . mb_strtolower($row->base_code));
+
+        foreach ($groups as $group) {
+            $variantGroups = collect($group)
+                ->groupBy(function ($row) {
+                    return number_format($row->monto_base, 2, '.', '') . '|' . mb_strtolower($row->descripcion);
+                })
+                ->sortBy(function ($variantRows) {
+                    $first = collect($variantRows)->sortBy('id')->first();
+                    return [
+                        number_format((float) ($first->monto_base ?? 0), 2, '.', ''),
+                        (string) ($first->descripcion ?? ''),
+                        (int) ($first->id ?? 0),
+                    ];
+                })
+                ->values();
+
+            foreach ($variantGroups as $variantIndex => $variantRows) {
+                $expectedCode = $variantIndex === 0
+                    ? collect($variantRows)->first()->base_code
+                    : $this->buildVariantCode(collect($variantRows)->first()->base_code, $variantIndex + 1);
+
+                foreach ($variantRows as $variantRow) {
+                    $resumen = (array) $variantRow->resumen;
+                    $needsUpdate = trim((string) $variantRow->codigo) !== $expectedCode
+                        || trim((string) ($resumen['codigo'] ?? '')) !== $expectedCode
+                        || trim((string) ($resumen['codigo_producto'] ?? '')) !== $expectedCode
+                        || trim((string) ($resumen['codigo_paquete'] ?? '')) !== $expectedCode
+                        || trim((string) ($resumen['codigo_detalle_enviado'] ?? '')) !== $expectedCode
+                        || trim((string) ($resumen['codigo_producto_fiscal'] ?? '')) !== $expectedCode;
+
+                    if (!$needsUpdate) {
+                        continue;
+                    }
+
+                    $resumen['codigo'] = $expectedCode;
+                    $resumen['codigo_producto'] = $expectedCode;
+                    $resumen['codigo_paquete'] = $expectedCode;
+                    $resumen['codigo_detalle_enviado'] = $expectedCode;
+                    $resumen['codigo_producto_fiscal'] = $expectedCode;
+
+                    DB::table('facturacion_cart_items')
+                        ->where('id', $variantRow->id)
+                        ->update([
+                            'codigo' => $expectedCode,
+                            'resumen_origen' => json_encode($resumen, JSON_UNESCAPED_UNICODE),
+                            'updated_at' => now(),
+                        ]);
+                }
+            }
+        }
+    }
+
+    private function extractVariantBaseCode(string $code): string
+    {
+        $code = trim($code);
+        if ($code === '') {
+            return '';
+        }
+
+        return preg_replace('/\.\d+$/', '', $code) ?: $code;
+    }
+
+    private function buildVariantCode(string $baseCode, int $position): string
+    {
+        $baseCode = trim($baseCode);
+        if ($baseCode === '') {
+            return '';
+        }
+
+        $suffix = '.' . max(1, $position - 1);
+        $maxBaseLength = max(1, 120 - strlen($suffix));
+
+        return substr($baseCode, 0, $maxBaseLength) . $suffix;
     }
 
     private function applyFilters($q, array $f): void
