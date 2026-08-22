@@ -1588,11 +1588,14 @@ class VentaController extends Controller
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
         $limite = max(1, min((int) ($filters['limite'] ?? 200), 1000));
+        $includeRows = filter_var($request->query('includeRows', $request->input('includeRows', false)), FILTER_VALIDATE_BOOL);
         $ventas = $this->mergedVentasForServiceReport($filters);
         $report = $this->buildContractCustomerReportFromVentas($ventas);
         $clientes = collect($report['clientes'] ?? [])
-            ->map(function (array $item) {
-                unset($item['rows']);
+            ->map(function (array $item) use ($includeRows) {
+                if (!$includeRows) {
+                    unset($item['rows']);
+                }
                 return $item;
             })
             ->slice(0, $limite)
@@ -1606,7 +1609,7 @@ class VentaController extends Controller
         ];
 
         return response()->json([
-            'filters' => array_merge($filters, ['limite' => $limite]),
+            'filters' => array_merge($filters, ['limite' => $limite, 'includeRows' => $includeRows]),
             'resumen' => $resumen,
             'clientes' => $clientes,
             'meta' => [
