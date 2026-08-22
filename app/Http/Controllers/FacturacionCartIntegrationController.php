@@ -213,11 +213,7 @@ class FacturacionCartIntegrationController extends Controller
             'origen_sucursal_nombre' => $this->nullBlank($v['origen_sucursal_nombre'] ?? null),
         ], $this->identityColumnsForCart($v)));
 
-        $existing = DB::table('facturacion_cart_items')
-            ->where('cart_id', $cartId)
-            ->where('origen_tipo', $v['origen_tipo'])
-            ->where('origen_id', (int) $v['origen_id'])
-            ->first();
+        $existing = $this->findExistingCartItemForUpsert($cartId, $v);
 
         $data = [
             'cart_id' => $cartId,
@@ -251,6 +247,56 @@ class FacturacionCartIntegrationController extends Controller
 
         $this->recalc($cartId);
         return response()->json(['ok' => true, 'cart' => $this->cartById($cartId)]);
+    }
+
+    private function findExistingCartItemForUpsert(int $cartId, array $payload): ?object
+    {
+        $query = DB::table('facturacion_cart_items')
+            ->where('cart_id', $cartId)
+            ->where('origen_tipo', (string) ($payload['origen_tipo'] ?? ''))
+            ->where('origen_id', (int) ($payload['origen_id'] ?? 0));
+
+        $existing = $query->orderBy('id')->first();
+        if (!$existing) {
+            return null;
+        }
+
+        if (!$this->isConceptoFacturacionOrigin((string) ($payload['origen_tipo'] ?? ''))) {
+            return $existing;
+        }
+
+        $incomingResumen = (array) ($payload['resumen_origen'] ?? []);
+        $existingResumen = $this->decode((string) ($existing->resumen_origen ?? ''));
+        $incomingUnitAmount = round((float) ($payload['monto_base'] ?? 0), 2);
+        $existingUnitAmount = round((float) ($existing->monto_base ?? 0), 2);
+        $incomingDescription = trim((string) ($incomingResumen['descripcion_servicio'] ?? ''));
+        $existingDescription = trim((string) ($existingResumen['descripcion_servicio'] ?? ''));
+        $incomingCode = $this->resolveConceptVariantCodeFromPayload($payload);
+        $existingCode = $this->resolveConceptVariantCodeFromRow($existing);
+
+        $sameVariant = $incomingCode !== ''
+            && $existingCode !== ''
+            && mb_strtolower($incomingCode) === mb_strtolower($existingCode)
+            && $incomingUnitAmount === $existingUnitAmount
+            && mb_strtolower($incomingDescription) === mb_strtolower($existingDescription);
+
+        if ($sameVariant) {
+            return $existing;
+        }
+
+        Log::info('facturacion_cart.upsert_item.force_insert_variant', [
+            'cart_id' => $cartId,
+            'origen_id' => (int) ($payload['origen_id'] ?? 0),
+            'existing_item_id' => (int) ($existing->id ?? 0),
+            'incoming_code' => $incomingCode,
+            'existing_code' => $existingCode,
+            'incoming_monto_base' => $incomingUnitAmount,
+            'existing_monto_base' => $existingUnitAmount,
+            'incoming_descripcion' => $incomingDescription,
+            'existing_descripcion' => $existingDescription,
+        ]);
+
+        return null;
     }
 
     public function updateItem(Request $request, int $itemId): JsonResponse
@@ -2525,6 +2571,49 @@ class FacturacionCartIntegrationController extends Controller
             })
             ->values()
             ->all();
+    }
+
+    private function isConceptoFacturacionOrigin(string $origenTipo): bool
+    {
+        return Str::endsWith(ltrim($origenTipo, '\\'), 'ConceptoFacturacion');
+    }
+
+    private function resolveConceptVariantCodeFromPayload(array $payload): string
+    {
+        $resumen = (array) ($payload['resumen_origen'] ?? []);
+
+        foreach ([
+            trim((string) ($payload['codigo'] ?? '')),
+            trim((string) ($resumen['codigo_producto_fiscal'] ?? '')),
+            trim((string) ($resumen['codigo_detalle_enviado'] ?? '')),
+            trim((string) ($resumen['codigo_producto'] ?? '')),
+            trim((string) ($resumen['codigo'] ?? '')),
+        ] as $candidate) {
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return '';
+    }
+
+    private function resolveConceptVariantCodeFromRow(object $row): string
+    {
+        $resumen = $this->decode((string) ($row->resumen_origen ?? ''));
+
+        foreach ([
+            trim((string) ($row->codigo ?? '')),
+            trim((string) ($resumen['codigo_producto_fiscal'] ?? '')),
+            trim((string) ($resumen['codigo_detalle_enviado'] ?? '')),
+            trim((string) ($resumen['codigo_producto'] ?? '')),
+            trim((string) ($resumen['codigo'] ?? '')),
+        ] as $candidate) {
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return '';
     }
 
     private function summarizeResumenForLog(array $resumen): array
