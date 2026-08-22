@@ -194,6 +194,17 @@ class FacturacionCartIntegrationController extends Controller
             'total_linea' => 'nullable|numeric|min:0',
         ]);
 
+        Log::info('facturacion_cart.upsert_item.request', [
+            'origen_usuario_id' => (string) ($v['origen_usuario_id'] ?? ''),
+            'origen_tipo' => (string) ($v['origen_tipo'] ?? ''),
+            'origen_id' => (int) ($v['origen_id'] ?? 0),
+            'codigo' => (string) ($v['codigo'] ?? ''),
+            'cantidad' => (int) ($v['cantidad'] ?? 1),
+            'monto_base' => round((float) ($v['monto_base'] ?? 0), 2),
+            'total_linea' => round((float) ($v['total_linea'] ?? 0), 2),
+            'resumen' => $this->summarizeResumenForLog((array) ($v['resumen_origen'] ?? [])),
+        ]);
+
         $cartId = $this->ensureDraft((string) $v['origen_usuario_id'], array_merge([
             'origen_usuario_nombre' => $this->nullBlank($v['origen_usuario_nombre'] ?? null),
             'origen_usuario_email' => $this->nullBlank($v['origen_usuario_email'] ?? null),
@@ -232,6 +243,12 @@ class FacturacionCartIntegrationController extends Controller
             DB::table('facturacion_cart_items')->insert($data);
         }
 
+        Log::info('facturacion_cart.upsert_item.persisted', [
+            'cart_id' => $cartId,
+            'existing_item_id' => $existing->id ?? null,
+            'saved' => $this->summarizeCartRowsForLog($cartId),
+        ]);
+
         $this->recalc($cartId);
         return response()->json(['ok' => true, 'cart' => $this->cartById($cartId)]);
     }
@@ -261,6 +278,21 @@ class FacturacionCartIntegrationController extends Controller
             'codigo_paquete' => 'nullable|string|max:120',
             'descripcion_servicio' => 'nullable|string|max:255',
             'unidad_medida' => 'nullable|integer|min:1',
+        ]);
+
+        Log::info('facturacion_cart.update_item.request', [
+            'item_id' => $itemId,
+            'origen_usuario_id' => (string) ($v['origen_usuario_id'] ?? ''),
+            'codigo' => (string) ($v['codigo'] ?? ''),
+            'cantidad' => array_key_exists('cantidad', $v) ? (int) $v['cantidad'] : null,
+            'precio' => array_key_exists('precio', $v) ? round((float) $v['precio'], 2) : null,
+            'monto_base' => array_key_exists('monto_base', $v) ? round((float) $v['monto_base'], 2) : null,
+            'total_linea' => array_key_exists('total_linea', $v) ? round((float) $v['total_linea'], 2) : null,
+            'descripcion_servicio' => (string) ($v['descripcion_servicio'] ?? ''),
+            'codigo_producto' => (string) ($v['codigo_producto'] ?? ''),
+            'codigo_detalle_enviado' => (string) ($v['codigo_detalle_enviado'] ?? ''),
+            'codigo_producto_fiscal' => (string) ($v['codigo_producto_fiscal'] ?? ''),
+            'codigo_paquete' => (string) ($v['codigo_paquete'] ?? ''),
         ]);
 
         $row = DB::table('facturacion_cart_items as i')
@@ -318,6 +350,20 @@ class FacturacionCartIntegrationController extends Controller
             'monto_extras' => $montoExtras,
             'total_linea' => $totalLinea,
             'updated_at' => now(),
+        ]);
+
+        Log::info('facturacion_cart.update_item.persisted', [
+            'item_id' => $itemId,
+            'cart_id' => (int) $row->cart_id_ref,
+            'saved_row' => [
+                'codigo' => $resolvedCodigo,
+                'cantidad' => $cantidad,
+                'monto_base' => $montoBase,
+                'monto_extras' => $montoExtras,
+                'total_linea' => $totalLinea,
+                'resumen' => $this->summarizeResumenForLog($r),
+            ],
+            'cart_rows_before_recalc' => $this->summarizeCartRowsForLog((int) $row->cart_id_ref),
         ]);
 
         $this->recalc((int) $row->cart_id_ref);
@@ -2066,6 +2112,22 @@ class FacturacionCartIntegrationController extends Controller
             ];
         }
 
+        Log::info('facturacion_cart.cart_by_id.payload', [
+            'cart_id' => $id,
+            'db_cantidad_items' => (int) ($c->cantidad_items ?? 0),
+            'db_total' => (float) ($c->total ?? 0),
+            'items' => collect($items)->map(function ($item) {
+                return [
+                    'id' => (int) ($item['id'] ?? 0),
+                    'codigo' => (string) ($item['codigo'] ?? ''),
+                    'cantidad' => (int) ($item['cantidad'] ?? 0),
+                    'monto_base' => round((float) ($item['monto_base'] ?? 0), 2),
+                    'total_linea' => round((float) ($item['total_linea'] ?? 0), 2),
+                    'resumen' => $this->summarizeResumenForLog((array) ($item['resumen_origen'] ?? [])),
+                ];
+            })->values()->all(),
+        ]);
+
         return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $resolvedTipoDocumento, 'numero_documento' => $resolvedNumeroDocumento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $resolvedRazonSocial, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $respuestaEmision, 'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : null, 'cuf' => $resolvedCuf !== '' ? $resolvedCuf : null, 'pdf_url' => $resolvedPdfUrl !== '' ? $resolvedPdfUrl : null, 'xml_url' => $resolvedXmlUrl !== '' ? $resolvedXmlUrl : null, 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'historial_qr' => $historialQr, 'items' => $items];
     }
 
@@ -2294,6 +2356,10 @@ class FacturacionCartIntegrationController extends Controller
 
     private function recalc(int $cartId): void
     {
+        Log::info('facturacion_cart.recalc.before', [
+            'cart_id' => $cartId,
+            'rows' => $this->summarizeCartRowsForLog($cartId),
+        ]);
         $this->normalizeCartVariantCodes($cartId);
         $it = DB::table('facturacion_cart_items')->where('cart_id', $cartId)->get();
         DB::table('facturacion_carts')->where('id', $cartId)->update([
@@ -2302,6 +2368,13 @@ class FacturacionCartIntegrationController extends Controller
             'total_extras' => round((float) $it->sum(fn ($item) => round((float) ($item->monto_extras ?? 0), 2) * max(1, (int) ($item->cantidad ?? 1))), 2),
             'total' => round((float) $it->sum('total_linea'), 2),
             'updated_at' => now(),
+        ]);
+        Log::info('facturacion_cart.recalc.after', [
+            'cart_id' => $cartId,
+            'rows' => $this->summarizeCartRowsForLog($cartId),
+            'totals' => DB::table('facturacion_carts')
+                ->where('id', $cartId)
+                ->first(['cantidad_items', 'subtotal', 'total_extras', 'total']),
         ]);
     }
 
@@ -2363,6 +2436,30 @@ class FacturacionCartIntegrationController extends Controller
                 })
                 ->values();
 
+            Log::info('facturacion_cart.normalize_variant_codes.group', [
+                'cart_id' => $cartId,
+                'group_items' => collect($group)->map(fn ($row) => [
+                    'id' => $row->id,
+                    'codigo' => $row->codigo,
+                    'base_code' => $row->base_code,
+                    'monto_base' => $row->monto_base,
+                    'descripcion' => $row->descripcion,
+                ])->values()->all(),
+                'variant_groups' => $variantGroups->map(function ($variantRows, $index) {
+                    $first = collect($variantRows)->first();
+                    return [
+                        'index' => $index,
+                        'expected_base' => $first->base_code ?? null,
+                        'rows' => collect($variantRows)->map(fn ($row) => [
+                            'id' => $row->id,
+                            'codigo' => $row->codigo,
+                            'monto_base' => $row->monto_base,
+                            'descripcion' => $row->descripcion,
+                        ])->values()->all(),
+                    ];
+                })->values()->all(),
+            ]);
+
             foreach ($variantGroups as $variantIndex => $variantRows) {
                 $expectedCode = $variantIndex === 0
                     ? collect($variantRows)->first()->base_code
@@ -2394,9 +2491,56 @@ class FacturacionCartIntegrationController extends Controller
                             'resumen_origen' => json_encode($resumen, JSON_UNESCAPED_UNICODE),
                             'updated_at' => now(),
                         ]);
+
+                    Log::info('facturacion_cart.normalize_variant_codes.updated', [
+                        'cart_id' => $cartId,
+                        'item_id' => $variantRow->id,
+                        'expected_code' => $expectedCode,
+                        'resumen' => $this->summarizeResumenForLog($resumen),
+                    ]);
                 }
             }
         }
+    }
+
+    private function summarizeCartRowsForLog(int $cartId): array
+    {
+        return DB::table('facturacion_cart_items')
+            ->where('cart_id', $cartId)
+            ->orderBy('id')
+            ->get()
+            ->map(function ($item) {
+                $resumen = $this->decode((string) ($item->resumen_origen ?? ''));
+
+                return [
+                    'id' => (int) ($item->id ?? 0),
+                    'origen_id' => (int) ($item->origen_id ?? 0),
+                    'codigo' => (string) ($item->codigo ?? ''),
+                    'cantidad' => (int) ($item->cantidad ?? 0),
+                    'monto_base' => round((float) ($item->monto_base ?? 0), 2),
+                    'monto_extras' => round((float) ($item->monto_extras ?? 0), 2),
+                    'total_linea' => round((float) ($item->total_linea ?? 0), 2),
+                    'resumen' => $this->summarizeResumenForLog($resumen),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    private function summarizeResumenForLog(array $resumen): array
+    {
+        return [
+            'codigo' => (string) ($resumen['codigo'] ?? ''),
+            'codigo_producto' => (string) ($resumen['codigo_producto'] ?? ''),
+            'codigo_paquete' => (string) ($resumen['codigo_paquete'] ?? ''),
+            'codigo_detalle_enviado' => (string) ($resumen['codigo_detalle_enviado'] ?? ''),
+            'codigo_producto_fiscal' => (string) ($resumen['codigo_producto_fiscal'] ?? ''),
+            'descripcion_servicio' => (string) ($resumen['descripcion_servicio'] ?? ''),
+            'concepto_facturacion_id' => (int) ($resumen['concepto_facturacion_id'] ?? 0),
+            'precio' => isset($resumen['precio']) ? round((float) $resumen['precio'], 2) : null,
+            'monto_base' => isset($resumen['monto_base']) ? round((float) $resumen['monto_base'], 2) : null,
+            'total_linea' => isset($resumen['total_linea']) ? round((float) $resumen['total_linea'], 2) : null,
+        ];
     }
 
     private function extractVariantBaseCode(string $code): string
