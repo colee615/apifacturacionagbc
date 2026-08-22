@@ -1584,6 +1584,91 @@ class VentaController extends Controller
         ]);
     }
 
+    public function reporteServiciosContrato(Request $request)
+    {
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        $limite = max(1, min((int) ($filters['limite'] ?? 200), 1000));
+        $ventas = $this->mergedVentasForServiceReport($filters);
+        $report = $this->buildContractCustomerReportFromVentas($ventas);
+        $clientes = collect($report['clientes'] ?? [])
+            ->map(function (array $item) {
+                unset($item['rows']);
+                return $item;
+            })
+            ->slice(0, $limite)
+            ->values();
+        $resumen = $report['resumen'] ?? [
+            'cantidadClientes' => 0,
+            'cantidadVentas' => 0,
+            'cantidadDetalles' => 0,
+            'totalCantidad' => 0,
+            'totalMonto' => 0,
+        ];
+
+        return response()->json([
+            'filters' => array_merge($filters, ['limite' => $limite]),
+            'resumen' => $resumen,
+            'clientes' => $clientes,
+            'meta' => [
+                'totalClientesSinLimite' => (int) count($report['clientes'] ?? []),
+                'totalVentasSinLimite' => (int) ($report['resumen']['cantidadVentas'] ?? 0),
+                'cantidadDetallesSinLimite' => (int) ($report['resumen']['cantidadDetalles'] ?? 0),
+            ],
+        ]);
+    }
+
+    public function reporteServiciosContratoDetalle(Request $request)
+    {
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        $nit = trim((string) ($request->query('nit', $request->input('nit', ''))));
+        $razonSocial = trim((string) ($request->query('razonSocial', $request->input('razonSocial', ''))));
+
+        if ($nit === '' && $razonSocial === '') {
+            return response()->json([
+                'message' => 'Debes enviar el NIT o la razon social del cliente.',
+            ], 422);
+        }
+
+        $ventas = $this->mergedVentasForServiceReport($filters);
+        $report = $this->buildContractCustomerReportFromVentas($ventas);
+        $targetNit = mb_strtoupper($nit);
+        $targetRazonSocial = mb_strtoupper($razonSocial);
+
+        $detalle = collect($report['clientes'] ?? [])
+            ->first(function ($item) use ($targetNit, $targetRazonSocial) {
+                $itemNit = mb_strtoupper(trim((string) ($item['nit'] ?? '')));
+                $itemRazonSocial = mb_strtoupper(trim((string) ($item['razonSocial'] ?? '')));
+
+                if ($targetNit !== '' && $itemNit !== $targetNit) {
+                    return false;
+                }
+
+                if ($targetRazonSocial !== '' && $itemRazonSocial !== $targetRazonSocial) {
+                    return false;
+                }
+
+                return true;
+            });
+
+        if (!$detalle) {
+            return response()->json([
+                'message' => 'No se encontro el cliente solicitado para los filtros enviados.',
+                'nit' => $nit,
+                'razonSocial' => $razonSocial,
+            ], 404);
+        }
+
+        $detalle['rows'] = collect($detalle['rows'] ?? [])
+            ->sortByDesc(fn ($row) => strtotime((string) ($row['fecha'] ?? '1970-01-01 00:00:00')) ?: 0)
+            ->values()
+            ->all();
+
+        return response()->json([
+            'filters' => $filters,
+            'cliente' => $detalle,
+        ]);
+    }
+
     public function reporteKardexPdf(Request $request): HttpResponse
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
@@ -1924,6 +2009,113 @@ class VentaController extends Controller
         ];
     }
 
+    private function buildContractCustomerReportFromVentas(Collection $ventas): array
+    {
+        $grouped = [];
+        $ventaKeys = [];
+
+        foreach ($ventas as $venta) {
+            $venta = is_array($venta) ? $venta : (array) $venta;
+            $ventaKey = (string) ($venta['id'] ?? $venta['codigoSeguimiento'] ?? $venta['codigoOrden'] ?? uniqid('venta_', true));
+            $detalle = collect($venta['detalle'] ?? []);
+            $razonSocial = trim((string) ($venta['razonSocial'] ?? data_get($venta, 'cliente.razonSocial', '')));
+            $nit = trim((string) ($venta['documentoIdentidad'] ?? data_get($venta, 'cliente.documentoIdentidad', '')));
+
+            foreach ($detalle as $item) {
+                $item = is_array($item) ? $item : (array) $item;
+                $descripcion = $this->normalizeServiceReportDescription(
+                    $item['descripcion'] ?? $item['nombre_servicio'] ?? $item['titulo'] ?? 'SIN DETALLE'
+                );
+
+                if (!$this->isContractServiceDescription($descripcion)) {
+                    continue;
+                }
+
+                $cantidad = (float) ($item['cantidad'] ?? 0);
+                $precio = (float) ($item['precio'] ?? ($item['monto_base'] ?? 0));
+                $totalLinea = (float) ($item['total_linea'] ?? ($cantidad * $precio));
+                $nitKey = $nit !== '' ? $nit : 'SIN-NIT';
+                $razonSocialKey = $razonSocial !== '' ? $razonSocial : 'SIN RAZON SOCIAL';
+                $groupKey = mb_strtoupper($nitKey . '|' . $razonSocialKey);
+
+                if (!isset($grouped[$groupKey])) {
+                    $grouped[$groupKey] = [
+                        'nit' => $nitKey,
+                        'razonSocial' => $razonSocialKey,
+                        'cantidadDetalles' => 0,
+                        'totalCantidad' => 0.0,
+                        'totalMonto' => 0.0,
+                        'ultimaFecha' => '',
+                        'servicios' => [],
+                        'rows' => [],
+                        'ventaIds' => [],
+                    ];
+                }
+
+                $servicio = $this->serviceGroupLabel($descripcion);
+                $fecha = (string) ($venta['fecha'] ?? '');
+
+                $grouped[$groupKey]['cantidadDetalles'] += 1;
+                $grouped[$groupKey]['totalCantidad'] += $cantidad;
+                $grouped[$groupKey]['totalMonto'] += $totalLinea;
+                $grouped[$groupKey]['ventaIds'][$ventaKey] = true;
+
+                if ($servicio !== '' && !in_array($servicio, $grouped[$groupKey]['servicios'], true)) {
+                    $grouped[$groupKey]['servicios'][] = $servicio;
+                }
+
+                if ($fecha !== '' && ($grouped[$groupKey]['ultimaFecha'] === '' || $fecha > $grouped[$groupKey]['ultimaFecha'])) {
+                    $grouped[$groupKey]['ultimaFecha'] = $fecha;
+                }
+
+                $grouped[$groupKey]['rows'][] = [
+                    'ventaId' => $venta['id'] ?? null,
+                    'detalleId' => $item['id'] ?? ($item['detalle_id'] ?? null),
+                    'nit' => $nitKey,
+                    'razonSocial' => $razonSocialKey,
+                    'servicio' => $servicio,
+                    'descripcion' => $descripcion,
+                    'codigoOrden' => $venta['codigoOrden'] ?? '',
+                    'codigoSeguimiento' => $venta['codigoSeguimiento'] ?? '',
+                    'fecha' => $fecha,
+                    'totalLinea' => round($totalLinea, 2),
+                ];
+
+                $ventaKeys[$ventaKey] = true;
+            }
+        }
+
+        $clientes = collect(array_values($grouped))
+            ->map(function (array $group) {
+                return [
+                    'nit' => $group['nit'],
+                    'razonSocial' => $group['razonSocial'],
+                    'cantidadVentas' => count($group['ventaIds']),
+                    'cantidadDetalles' => (int) $group['cantidadDetalles'],
+                    'totalCantidad' => round((float) $group['totalCantidad'], 2),
+                    'totalMonto' => round((float) $group['totalMonto'], 2),
+                    'ultimaFecha' => $group['ultimaFecha'],
+                    'servicios' => array_values($group['servicios']),
+                    'servicioMuestra' => implode(' | ', array_slice($group['servicios'], 0, 3)),
+                    'rows' => array_values($group['rows']),
+                ];
+            })
+            ->sortByDesc('totalMonto')
+            ->values()
+            ->all();
+
+        return [
+            'resumen' => [
+                'cantidadClientes' => count($clientes),
+                'cantidadVentas' => count($ventaKeys),
+                'cantidadDetalles' => (int) collect($clientes)->sum('cantidadDetalles'),
+                'totalCantidad' => round((float) collect($clientes)->sum('totalCantidad'), 2),
+                'totalMonto' => round((float) collect($clientes)->sum('totalMonto'), 2),
+            ],
+            'clientes' => $clientes,
+        ];
+    }
+
     private function normalizeServiceReportDescription(mixed $value): string
     {
         return trim((string) preg_replace('/\s+/', ' ', (string) ($value ?? '')));
@@ -1945,6 +2137,16 @@ class VentaController extends Controller
     private function normalizeServiceReportSearch(string $value): string
     {
         return trim((string) preg_replace('/\s+/', ' ', mb_strtolower($value)));
+    }
+
+    private function isContractServiceDescription(string $value): bool
+    {
+        $normalized = $this->normalizeServiceReportSearch($value);
+
+        return str_contains($normalized, 'servicio contratos')
+            || str_contains($normalized, 'servicio contrato')
+            || $normalized === 'contratos'
+            || $normalized === 'contrato';
     }
 
     private function buildPdfRowsFromVentas(Collection $ventasRows, array $detalleVentasMap, array $numeroFacturaMap, array $numeroFacturaBridgeMap, array $bridgeCartMetaMap = []): Collection
