@@ -1858,13 +1858,19 @@ class VentaController extends Controller
         $detalleMaps = $this->detalleMapsFromRows($ventas);
         $itemsCountMaps = $this->itemsCountMapsFromRows($ventas);
         $notificationsMap = $this->latestNotificationsMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
+        $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
+        $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventas);
 
-        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap) {
+        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap) {
             $ventaId = (int) $venta->id;
             $cartId = (int) ($venta->origen_venta_id ?? 0);
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
             $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
             $status = $this->protocolStatusFromVentaNotification($venta, $notification);
+            $numeroFactura = trim((string) (
+                $venta->numero_factura
+                ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$cartId] ?? ''))
+            ));
             $detalle = $detalleMaps['detalle'][$ventaId] ?? [];
 
             if ($detalle === [] && $cartId > 0) {
@@ -1881,6 +1887,7 @@ class VentaController extends Controller
                 'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
                 'codigoOrden' => $venta->codigoOrden,
                 'codigoSeguimiento' => $venta->codigoSeguimiento,
+                'numeroFactura' => $numeroFactura !== '' ? $numeroFactura : null,
                 'origenVentaId' => $venta->origen_venta_id,
                 'origenVentaTipo' => $venta->origen_venta_tipo,
                 'detalle' => $detalle,
@@ -2069,8 +2076,7 @@ class VentaController extends Controller
                 }
 
                 $grouped[$groupKey]['rows'][] = [
-                    'ventaId' => $venta['id'] ?? null,
-                    'detalleId' => $item['id'] ?? ($item['detalle_id'] ?? null),
+                    'numeroFactura' => $venta['numeroFactura'] ?? null,
                     'nit' => $nitKey,
                     'razonSocial' => $razonSocialKey,
                     'servicio' => $servicio,
