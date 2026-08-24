@@ -30,6 +30,7 @@ class VentaController extends Controller
     private static ?bool $hasOrigenUsuarioCarnetColumn = null;
     private static ?bool $hasOrigenUsuarioEmailColumn = null;
     private static ?bool $hasOrigenSucursalCodigoColumn = null;
+    private static ?bool $hasVentaContratoPdfColumns = null;
     private static ?bool $hasCartOrigenUsuarioEmailColumn = null;
     private static ?bool $hasCartOrigenUsuarioAliasColumn = null;
     private static ?bool $hasCartOrigenUsuarioCarnetColumn = null;
@@ -474,6 +475,90 @@ class VentaController extends Controller
         }
 
         return url(str_replace('\\', '/', ltrim($cleanPath, '/')));
+    }
+
+    private function hasVentaContratoPdfColumns(): bool
+    {
+        if (self::$hasVentaContratoPdfColumns !== null) {
+            return self::$hasVentaContratoPdfColumns;
+        }
+
+        self::$hasVentaContratoPdfColumns = Schema::hasTable('ventas')
+            && Schema::hasColumn('ventas', 'contrato_pdf_path')
+            && Schema::hasColumn('ventas', 'contrato_pdf_nombre')
+            && Schema::hasColumn('ventas', 'contrato_pdf_mime')
+            && Schema::hasColumn('ventas', 'contrato_pdf_size');
+
+        return self::$hasVentaContratoPdfColumns;
+    }
+
+    private function contratoPdfUrl(?string $path): ?string
+    {
+        $cleanPath = trim((string) $path);
+        if ($cleanPath === '') {
+            return null;
+        }
+
+        return url(str_replace('\\', '/', ltrim($cleanPath, '/')));
+    }
+
+    private function contratoPdfPayloadForVenta(Venta $venta): ?array
+    {
+        if (!$this->hasVentaContratoPdfColumns()) {
+            return null;
+        }
+
+        $path = trim((string) ($venta->contrato_pdf_path ?? ''));
+        if ($path === '') {
+            return null;
+        }
+
+        return [
+            'path' => $path,
+            'url' => $this->contratoPdfUrl($path),
+            'nombre' => $venta->contrato_pdf_nombre,
+            'mime' => $venta->contrato_pdf_mime,
+            'size' => isset($venta->contrato_pdf_size) ? (int) $venta->contrato_pdf_size : null,
+            'subidoAt' => $venta->contrato_pdf_subido_at,
+            'subidoPorUserId' => $venta->contrato_pdf_subido_por_user_id,
+            'subidoPorNombre' => $venta->contrato_pdf_subido_por_nombre,
+            'subidoPorEmail' => $venta->contrato_pdf_subido_por_email,
+        ];
+    }
+
+    private function isContractVenta(Venta $venta): bool
+    {
+        if (mb_strtolower(trim((string) ($venta->canal_operativo ?? ''))) === 'contrato') {
+            return true;
+        }
+
+        $venta->loadMissing('detalleVentas');
+
+        if ($venta->detalleVentas->contains(fn ($detalle) => $this->isContractServiceDescription((string) ($detalle->descripcion ?? '')))) {
+            return true;
+        }
+
+        $cartId = (int) ($venta->origen_venta_id ?? 0);
+        if ($cartId > 0 && Schema::hasTable('facturacion_cart_items')) {
+            $columns = array_values(array_filter([
+                Schema::hasColumn('facturacion_cart_items', 'nombre_servicio') ? 'nombre_servicio' : null,
+                Schema::hasColumn('facturacion_cart_items', 'titulo') ? 'titulo' : null,
+            ]));
+
+            if ($columns === []) {
+                return false;
+            }
+
+            return DB::table('facturacion_cart_items')
+                ->where('cart_id', $cartId)
+                ->get($columns)
+                ->contains(function ($item) {
+                    return $this->isContractServiceDescription((string) ($item->nombre_servicio ?? ''))
+                        || $this->isContractServiceDescription((string) ($item->titulo ?? ''));
+                });
+        }
+
+        return false;
     }
 
     private function anulacionPayloadForVenta(Venta $venta): array
@@ -3984,6 +4069,14 @@ class VentaController extends Controller
                 Schema::hasColumn('ventas', 'es_cuenta_por_cobrar') ? 'es_cuenta_por_cobrar' : null,
                 Schema::hasColumn('ventas', 'empresa_nombre') ? 'empresa_nombre' : null,
                 Schema::hasColumn('ventas', 'empresa_sigla') ? 'empresa_sigla' : null,
+                $this->hasVentaContratoPdfColumns() ? 'contrato_pdf_path' : null,
+                $this->hasVentaContratoPdfColumns() ? 'contrato_pdf_nombre' : null,
+                $this->hasVentaContratoPdfColumns() ? 'contrato_pdf_mime' : null,
+                $this->hasVentaContratoPdfColumns() ? 'contrato_pdf_size' : null,
+                $this->hasVentaContratoPdfColumns() && Schema::hasColumn('ventas', 'contrato_pdf_subido_at') ? 'contrato_pdf_subido_at' : null,
+                $this->hasVentaContratoPdfColumns() && Schema::hasColumn('ventas', 'contrato_pdf_subido_por_user_id') ? 'contrato_pdf_subido_por_user_id' : null,
+                $this->hasVentaContratoPdfColumns() && Schema::hasColumn('ventas', 'contrato_pdf_subido_por_nombre') ? 'contrato_pdf_subido_por_nombre' : null,
+                $this->hasVentaContratoPdfColumns() && Schema::hasColumn('ventas', 'contrato_pdf_subido_por_email') ? 'contrato_pdf_subido_por_email' : null,
             ])));
         Log::info('ventas.index.ventas.ready', $this->reportLogContext($request, [
             'elapsed_ms' => $this->reportElapsedMs($startedAt),
@@ -4048,6 +4141,7 @@ class VentaController extends Controller
                 'empresa_nombre' => Schema::hasColumn('ventas', 'empresa_nombre') ? (string) ($venta->empresa_nombre ?? '') : '',
                 'empresa_sigla' => Schema::hasColumn('ventas', 'empresa_sigla') ? (string) ($venta->empresa_sigla ?? '') : '',
                 'cuf' => $venta->cuf,
+                'contratoPdf' => $this->contratoPdfPayloadForVenta($venta),
                 'status' => $status,
                 'seguimiento' => [
                     'codigoSeguimiento' => $venta->codigoSeguimiento,
@@ -4227,6 +4321,7 @@ class VentaController extends Controller
         ];
         $data['detalle'] = $detalle;
         $data['status'] = $status;
+        $data['contratoPdf'] = $this->contratoPdfPayloadForVenta($venta);
         $data['seguimiento'] = [
             'codigoSeguimiento' => $venta->codigoSeguimiento,
             'estadoSufe' => $venta->estado_sufe,
@@ -4243,6 +4338,79 @@ class VentaController extends Controller
         $data['anulacion'] = $this->anulacionPayloadForVenta($venta);
 
         return response()->json($data);
+    }
+
+    public function uploadContratoPdf(Request $request, Venta $venta)
+    {
+        if (!$this->hasVentaContratoPdfColumns()) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'La base de datos aun no tiene habilitado el PDF de contrato.',
+            ], 409);
+        }
+
+        $filters = $this->requestIdentityFilters($request);
+        $venta = $this->applyVentaFilters(
+            Venta::query()->whereKey($venta->id),
+            $filters
+        )->firstOrFail();
+
+        if (!$this->isContractVenta($venta)) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Solo las ventas de contrato permiten adjuntar un PDF.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'archivo' => ['required', 'file', 'max:20480', 'mimes:pdf'],
+        ]);
+
+        $file = $validated['archivo'];
+        $folderRelative = 'uploads/ventas/contratos/' . now()->format('Y/m');
+        $folder = public_path($folderRelative);
+        if (!is_dir($folder)) {
+            mkdir($folder, 0755, true);
+        }
+
+        $extension = 'pdf';
+        $originalName = $file->getClientOriginalName();
+        $originalMime = $file->getClientMimeType() ?: 'application/pdf';
+        $originalSize = (int) ($file->getSize() ?: 0);
+        $filename = 'contrato-' . $venta->id . '-' . now()->format('Ymd-His') . '-' . Str::random(8) . '.' . $extension;
+        $file->move($folder, $filename);
+
+        $storedPath = $folder . DIRECTORY_SEPARATOR . $filename;
+        $storedSize = is_file($storedPath) ? (int) filesize($storedPath) : $originalSize;
+
+        $previousPath = trim((string) ($venta->contrato_pdf_path ?? ''));
+        if ($previousPath !== '') {
+            $previousFullPath = public_path($previousPath);
+            if (is_file($previousFullPath)) {
+                @unlink($previousFullPath);
+            }
+        }
+
+        $currentUser = Auth::guard('api')->user() ?? $request->user();
+
+        $venta->forceFill([
+            'contrato_pdf_path' => $folderRelative . '/' . $filename,
+            'contrato_pdf_nombre' => $originalName,
+            'contrato_pdf_mime' => $originalMime,
+            'contrato_pdf_size' => $storedSize,
+            'contrato_pdf_subido_at' => now(),
+            'contrato_pdf_subido_por_user_id' => $currentUser->id ?? null,
+            'contrato_pdf_subido_por_nombre' => trim((string) data_get($currentUser, 'nombre', data_get($currentUser, 'name', data_get($currentUser, 'email', '')))) ?: null,
+            'contrato_pdf_subido_por_email' => trim((string) ($currentUser->email ?? '')) ?: null,
+        ])->save();
+
+        $venta->refresh();
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'PDF de contrato cargado correctamente.',
+            'contratoPdf' => $this->contratoPdfPayloadForVenta($venta),
+        ]);
     }
 
     // =========================

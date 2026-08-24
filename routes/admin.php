@@ -32,6 +32,7 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::post('/ventas/masiva', 'VentaController@emitirFacturasMasivas')->middleware('permission:ventas.write');
    Route::post('/ventas/contingencia-cafc', 'VentaController@emitirContingenciaCafc')->middleware('permission:ventas.write');
    Route::post('/ventas/contingencia-cafc-seleccion', 'VentaController@emitirContingenciaCafcSeleccionadas')->middleware('permission:ventas.write');
+   Route::post('/ventas/{venta}/contrato-pdf', 'VentaController@uploadContratoPdf')->middleware('permission:ventas.write');
    Route::get('/ventas/consultar-paquete/{codigoSeguimientoPaquete}', 'VentaController@consultarPaquete')->middleware('permission:ventas.read');
    Route::get('/ventas/consultar/{codigoSeguimiento}', 'VentaController@consultarVenta')->middleware('permission:ventas.read');
    Route::get('/ventas/anulacion/guard-status', 'VentaController@anulacionGuardStatus')->middleware('permission:ventas.read');
