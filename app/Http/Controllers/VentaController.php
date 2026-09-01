@@ -989,12 +989,16 @@ class VentaController extends Controller
             });
         }
 
+        $reportDateExpression = Schema::hasColumn('facturacion_carts', 'emitido_en')
+            ? 'coalesce(emitido_en, created_at)'
+            : 'created_at';
+
         if (!empty($filters['fechaInicio'])) {
-            $query->whereDate('created_at', '>=', $filters['fechaInicio']);
+            $query->whereRaw("DATE({$reportDateExpression}) >= ?", [$filters['fechaInicio']]);
         }
 
         if (!empty($filters['fechaFin'])) {
-            $query->whereDate('created_at', '<=', $filters['fechaFin']);
+            $query->whereRaw("DATE({$reportDateExpression}) <= ?", [$filters['fechaFin']]);
         }
 
         foreach (['origen_usuario_id', 'origen_sucursal_id', 'origen_venta_id', 'origen_venta_tipo'] as $field) {
