@@ -2916,6 +2916,10 @@ class VentaController extends Controller
                 or upper(coalesce(codigo_orden, '')) like 'VQ-%'
                 or upper(coalesce(codigo_orden, '')) like 'VQC-%'
             )";
+            $cartFacturaEmitidaExpr = "(
+                upper(coalesce(estado_emision, 'NO_APLICA')) = 'FACTURADA'
+                or {$this->cartHasProcessedLinkedVentaExpr('facturacion_carts')}
+            )";
 
             $qrSucursalMetrics = $this->applyNonContractFacturacionCartFilters($this->buildFacturacionCartReportQuery($filters))
                 ->selectRaw("
@@ -2923,25 +2927,25 @@ class VentaController extends Controller
                     sum(case
                         when {$cartIsQrExpr}
                             and lower(coalesce(estado_pago, 'pendiente')) = 'pagado'
-                            and upper(coalesce(estado_emision, 'NO_APLICA')) = 'FACTURADA'
+                            and {$cartFacturaEmitidaExpr}
                         then 1 else 0
                     end) as qr_facturado,
                     coalesce(sum(case
                         when {$cartIsQrExpr}
                             and lower(coalesce(estado_pago, 'pendiente')) = 'pagado'
-                            and upper(coalesce(estado_emision, 'NO_APLICA')) = 'FACTURADA'
+                            and {$cartFacturaEmitidaExpr}
                         then total else 0
                     end), 0) as total_qr_facturado_cart,
                     sum(case
                         when {$cartIsQrExpr}
                             and lower(coalesce(estado_pago, 'pendiente')) = 'pagado'
-                            and upper(coalesce(estado_emision, 'NO_APLICA')) <> 'FACTURADA'
+                            and not {$cartFacturaEmitidaExpr}
                         then 1 else 0
                     end) as qr_pagado_pendiente_factura,
                     coalesce(sum(case
                         when {$cartIsQrExpr}
                             and lower(coalesce(estado_pago, 'pendiente')) = 'pagado'
-                            and upper(coalesce(estado_emision, 'NO_APLICA')) <> 'FACTURADA'
+                            and not {$cartFacturaEmitidaExpr}
                         then total else 0
                     end), 0) as total_qr_pagado_pendiente_factura,
                     sum(case
@@ -3271,6 +3275,10 @@ class VentaController extends Controller
         $qrIncidencias = collect();
         $cartRejectedIncidencias = collect();
         if (Schema::hasTable('facturacion_carts')) {
+            $cartFacturaEmitidaExpr = "(
+                upper(coalesce(estado_emision, 'NO_APLICA')) = 'FACTURADA'
+                or {$this->cartHasProcessedLinkedVentaExpr('facturacion_carts')}
+            )";
             $qrIncidencias = $this->applyNonContractFacturacionCartFilters($this->buildFacturacionCartReportQuery($filters))
                 ->where(function ($scope) {
                     $scope->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
@@ -3278,10 +3286,10 @@ class VentaController extends Controller
                         ->orWhereRaw("upper(coalesce(codigo_orden, '')) like 'VQ-%'")
                         ->orWhereRaw("upper(coalesce(codigo_orden, '')) like 'VQC-%'");
                 })
-                ->where(function ($scope) {
-                    $scope->where(function ($paidNoFactura) {
+                ->where(function ($scope) use ($cartFacturaEmitidaExpr) {
+                    $scope->where(function ($paidNoFactura) use ($cartFacturaEmitidaExpr) {
                         $paidNoFactura->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
-                            ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) <> 'FACTURADA'");
+                            ->whereRaw("not {$cartFacturaEmitidaExpr}");
                     })->orWhere(function ($cancelled) {
                         $cancelled->whereRaw("lower(coalesce(estado_pago, 'pendiente')) in ('cancelado', 'fallido')");
                     })->orWhere(function ($pending) {
@@ -3490,6 +3498,18 @@ class VentaController extends Controller
         }
 
         return $query;
+    }
+
+    private function cartHasProcessedLinkedVentaExpr(string $cartAlias = 'facturacion_carts'): string
+    {
+        return "exists (
+            select 1
+            from ventas as venta_qr
+            where cast(venta_qr.origen_venta_id as varchar) = cast({$cartAlias}.id as varchar)
+                and venta_qr.origen_venta_tipo in ('facturacion_cart', 'facturacion_cart_remote')
+                and venta_qr.estado = 1
+                and upper(coalesce(venta_qr.estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+        )";
     }
 
     private function facturacionCartFiscalBackfillMap($cartRows): array
