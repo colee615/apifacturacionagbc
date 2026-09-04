@@ -2727,6 +2727,7 @@ class FacturacionCartIntegrationController extends Controller
         ];
 
         foreach ($candidates as $candidate) {
+            $candidate = $this->extractPackageCodeFromServiceReference($candidate);
             if ($candidate !== '' && ! $this->isServiceReferenceCode($candidate)) {
                 return $candidate;
             }
