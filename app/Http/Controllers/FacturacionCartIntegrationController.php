@@ -3071,12 +3071,23 @@ class FacturacionCartIntegrationController extends Controller
         ];
 
         foreach ($candidates as $candidate) {
+            $candidate = $this->extractPackageCodeFromServiceReference($candidate);
             if ($candidate !== '' && ! $this->isServiceReferenceCode($candidate) && ! $this->isInternalSaleReference($candidate)) {
                 return $candidate;
             }
         }
 
         return $this->resolvePackageReferenceFromOrigin($origenTipo, $origenId);
+    }
+
+    private function extractPackageCodeFromServiceReference(string $reference): string
+    {
+        $reference = trim($reference);
+        if (preg_match('/^SRVE-\d+\s*-\s*(.+)$/i', $reference, $matches)) {
+            return trim($matches[1]);
+        }
+
+        return $reference;
     }
 
     private function isInternalSaleReference(string $reference): bool
