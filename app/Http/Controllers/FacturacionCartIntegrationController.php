@@ -3027,6 +3027,7 @@ class FacturacionCartIntegrationController extends Controller
                 $titulo = trim((string) data_get($item, 'titulo', ''));
                 $codigo = trim((string) data_get($item, 'codigo', ''));
                 $itemId = (int) data_get($item, 'id', 0);
+                $codigoPaquete = $this->resolveKardexPackageCode($item, $origenTipo, (int) data_get($item, 'origen_id', 0));
                 $canalEmision = strtolower(trim((string) data_get($cart, 'canal_emision', 'factura_electronica')));
                 if (!in_array($canalEmision, ['factura_electronica', 'qr', 'oficial'], true)) {
                     $canalEmision = 'factura_electronica';
@@ -3041,7 +3042,9 @@ class FacturacionCartIntegrationController extends Controller
                     'fecha' => $fecha ? date('d/m/Y', strtotime((string) $fecha)) : '-',
                     'origen' => trim((string) ($resumen['ciudad'] ?? $resumen['origen'] ?? $origenTipo)) ?: '-',
                     'tipo_envio' => $nombreServicio !== '' ? $nombreServicio : ($titulo !== '' ? $titulo : 'SIN SERVICIO'),
-                    'codigo_item' => trim((string) (($resumen['codigo'] ?? null) ?: $codigo ?: ('ITEM-' . $itemId))),
+                    'codigo_item' => $codigoPaquete !== ''
+                        ? $codigoPaquete
+                        : trim((string) (($resumen['codigo'] ?? null) ?: $codigo ?: ('ITEM-' . $itemId))),
                     'peso' => (float) ($resumen['peso'] ?? 0),
                     'cantidad' => max(1, (int) data_get($item, 'cantidad', 1)),
                     'canal_emision' => $canalEmision,
@@ -3055,6 +3058,30 @@ class FacturacionCartIntegrationController extends Controller
                 ];
             });
         })->values();
+    }
+
+    private function resolveKardexPackageCode(mixed $item, string $origenTipo, int $origenId): string
+    {
+        $resumen = (array) data_get($item, 'resumen_origen', []);
+        $candidates = [
+            trim((string) data_get($item, 'codigo_paquete', '')),
+            trim((string) ($resumen['codigo_paquete'] ?? '')),
+            trim((string) data_get($item, 'codigo_detalle_enviado', '')),
+            trim((string) ($resumen['codigo_detalle_enviado'] ?? '')),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if ($candidate !== '' && ! $this->isServiceReferenceCode($candidate) && ! $this->isInternalSaleReference($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $this->resolvePackageReferenceFromOrigin($origenTipo, $origenId);
+    }
+
+    private function isInternalSaleReference(string $reference): bool
+    {
+        return (bool) preg_match('/^(VFC|VQC|OFI)-/i', trim($reference));
     }
 
     private function labelCanalEmision(string $canalEmision): string
