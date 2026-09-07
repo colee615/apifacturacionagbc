@@ -1602,6 +1602,104 @@ class VentaController extends Controller
         ]);
     }
 
+    public function kardexRegionales(Request $request)
+    {
+        $filters = $this->normalizeVentaReportPeriodFilters($this->validateVentaReportFilters($request));
+        $limite = max(1, min((int) ($filters['limite'] ?? 500), 500));
+        $filters['limite'] = $limite;
+
+        $cartRows = Schema::hasTable('facturacion_carts')
+            ? $this->buildFacturacionCartReportQuery($filters)
+                ->orderByDesc('emitido_en')
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
+                ->limit($limite)
+                ->get()
+            : collect();
+
+        $cartIds = $cartRows
+            ->pluck('id')
+            ->map(fn ($value) => (int) $value)
+            ->filter(fn ($value) => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
+        if ($cartIds !== []) {
+            $ventasQuery->where(function ($query) use ($cartIds) {
+                $query->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                    ->orWhereNull('origen_venta_tipo')
+                    ->orWhereNotIn('origen_venta_id', $cartIds);
+            });
+        }
+
+        $ventasRows = $ventasQuery
+            ->latest('created_at')
+            ->limit($limite)
+            ->get(array_values(array_filter([
+                'id',
+                'created_at',
+                'codigoOrden',
+                'codigoSeguimiento',
+                'numero_factura',
+                'origen_venta_id',
+                'origen_venta_tipo',
+                'origen_usuario_id',
+                'origen_usuario_nombre',
+                $this->hasOrigenUsuarioEmailColumn() ? 'origen_usuario_email' : null,
+                $this->hasOrigenUsuarioAliasColumn() ? 'origen_usuario_alias' : null,
+                $this->hasOrigenUsuarioCarnetColumn() ? 'origen_usuario_carnet' : null,
+                'origen_sucursal_id',
+                'origen_sucursal_nombre',
+                $this->hasOrigenSucursalCodigoColumn() ? 'origen_sucursal_codigo' : null,
+                'codigoSucursal',
+                'puntoVenta',
+                'razonSocial',
+                'documentoIdentidad',
+                'codigoCliente',
+                'total',
+                'estado_sufe',
+                'tipo_emision_sufe',
+                'cuf',
+                'url_pdf',
+                'url_xml',
+                'observacion_sufe',
+                'fecha_notificacion_sufe',
+                'departamento',
+                Schema::hasColumn('ventas', 'peso_total') ? 'peso_total' : null,
+                Schema::hasColumn('ventas', 'canal_operativo') ? 'canal_operativo' : null,
+                Schema::hasColumn('ventas', 'es_cuenta_por_cobrar') ? 'es_cuenta_por_cobrar' : null,
+                Schema::hasColumn('ventas', 'empresa_nombre') ? 'empresa_nombre' : null,
+                Schema::hasColumn('ventas', 'empresa_sigla') ? 'empresa_sigla' : null,
+            ])));
+
+        $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventasRows->pluck('codigoSeguimiento')->all());
+        $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventasRows);
+        $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventasRows);
+        $detalleMaps = $this->detalleMapsFromRows($ventasRows);
+        $regionalMap = $this->kardexRegionalMap($ventasRows->concat($cartRows));
+
+        $rows = $this->buildPdfRowsFromVentas($ventasRows, $detalleMaps['detalle'] ?? [], $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap)
+            ->concat($this->buildPdfRowsFromFacturacionCarts($cartRows))
+            ->sortByDesc(fn ($row) => (int) data_get($row, 'fecha_sort', 0))
+            ->take($limite)
+            ->values()
+            ->map(fn ($row, $index) => $this->formatKardexRegionalRow($row, $regionalMap, $index));
+
+        return response()->json([
+            'filters' => $filters,
+            'resumen' => [
+                'ventas' => $rows->count(),
+                'cantidad' => (int) $rows->sum('cantidad'),
+                'peso' => round((float) $rows->sum(fn ($row) => (float) $row['peso']), 3),
+                'totalVendido' => round((float) $rows->sum(fn ($row) => (float) $row['importe']), 2),
+                'regionales' => $rows->pluck('regionalRegistro')->filter()->unique()->count(),
+            ],
+            'detalle' => $rows,
+        ]);
+    }
+
     public function reporteServicios(Request $request)
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
@@ -2313,6 +2411,10 @@ class VentaController extends Controller
                 'origen_usuario_id' => trim((string) ($venta->origen_usuario_id ?? '')),
                 'origen_usuario_nombre' => trim((string) ($venta->origen_usuario_nombre ?? '')),
                 'origen_usuario_email' => trim((string) ($venta->origen_usuario_email ?? '')),
+                'origen_sucursal_id' => trim((string) ($venta->origen_sucursal_id ?? '')),
+                'origen_sucursal_nombre' => trim((string) ($venta->origen_sucursal_nombre ?? '')),
+                'origen_sucursal_codigo' => trim((string) ($venta->origen_sucursal_codigo ?? $venta->codigoSucursal ?? '')),
+                'origen_sucursal_departamento' => trim((string) ($venta->departamento ?? '')),
                 'fecha' => optional($venta->created_at)->format('d/m/Y') ?: '-',
                 'fecha_hora' => optional($venta->created_at)->format('d/m/Y H:i') ?: '-',
                 'fecha_sort' => optional($venta->created_at)->timestamp ?: 0,
@@ -2482,6 +2584,10 @@ class VentaController extends Controller
                 'origen_usuario_id' => trim((string) ($cart->origen_usuario_id ?? '')),
                 'origen_usuario_nombre' => trim((string) ($cart->origen_usuario_nombre ?? '')),
                 'origen_usuario_email' => trim((string) ($cart->origen_usuario_email ?? '')),
+                'origen_sucursal_id' => trim((string) ($cart->origen_sucursal_id ?? '')),
+                'origen_sucursal_nombre' => trim((string) ($cart->origen_sucursal_nombre ?? '')),
+                'origen_sucursal_codigo' => trim((string) ($cart->origen_sucursal_codigo ?? $cart->codigoSucursal ?? '')),
+                'origen_sucursal_departamento' => trim((string) ($cart->departamento ?? '')),
                 'fecha' => $fechaBase ? date('d/m/Y', strtotime((string) $fechaBase)) : '-',
                 'fecha_hora' => $fechaBase ? date('d/m/Y H:i', strtotime((string) $fechaBase)) : '-',
                 'fecha_sort' => $fechaBase ? strtotime((string) $fechaBase) : 0,
@@ -2511,6 +2617,109 @@ class VentaController extends Controller
                 'importe_general' => round((float) ($cart->total ?? 0), 2),
             ];
         })->values();
+    }
+
+    private function kardexRegionalMap(Collection $rows): Collection
+    {
+        if (!Schema::hasTable('sucursales')) {
+            return collect();
+        }
+
+        $codeColumn = collect(['codigoSucursal', 'codigosucursal', 'codigo_sucursal'])
+            ->first(fn ($column) => Schema::hasColumn('sucursales', $column));
+
+        if (!$codeColumn) {
+            return collect();
+        }
+
+        $codes = $rows
+            ->map(fn ($row) => trim((string) (data_get($row, 'origen_sucursal_codigo') ?: data_get($row, 'codigoSucursal'))))
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($codes->isEmpty()) {
+            return collect();
+        }
+
+        $columns = array_values(array_filter([
+            $codeColumn,
+            Schema::hasColumn('sucursales', 'municipio') ? 'municipio' : null,
+            Schema::hasColumn('sucursales', 'departamento') ? 'departamento' : null,
+            Schema::hasColumn('sucursales', 'nombre') ? 'nombre' : null,
+        ]));
+
+        return DB::table('sucursales')
+            ->whereIn($codeColumn, $codes->all())
+            ->get($columns)
+            ->keyBy(fn ($row) => trim((string) data_get($row, $codeColumn)));
+    }
+
+    private function formatKardexRegionalRow(array $row, Collection $regionalMap, int $index): array
+    {
+        $codigoSucursal = trim((string) (data_get($row, 'origen_sucursal_codigo') ?: data_get($row, 'codigoSucursal')));
+        $regional = $regionalMap->get($codigoSucursal);
+        $detalleCodigos = collect(data_get($row, 'detalle_codigos', []));
+        $guiaCasilla = $detalleCodigos->pluck('codigo')->filter()->implode(', ');
+        if ($guiaCasilla === '') {
+            $guiaCasilla = trim((string) (data_get($row, 'codigo_referencia') ?: data_get($row, 'codigo_item')));
+        }
+
+        return [
+            'nro' => $index + 1,
+            'fecha' => data_get($row, 'fecha', '-'),
+            'cantidad' => (int) data_get($row, 'cantidad', 0),
+            'regionalRegistro' => $this->resolveKardexRegionalName($row, $regional),
+            'tipoServicio' => trim((string) data_get($row, 'tipo_envio', '')) ?: 'SIN DETALLE',
+            'guiaCasilla' => $guiaCasilla !== '' ? $guiaCasilla : '-',
+            'peso' => round((float) data_get($row, 'peso', 0), 3),
+            'paisCiudad' => $this->resolveKardexDestinationName($row),
+            'numeroFactura' => data_get($row, 'numero_factura', '-'),
+            'importe' => round((float) data_get($row, 'importe_general', 0), 2),
+            'codigoSucursal' => $codigoSucursal,
+            'sucursalNombre' => trim((string) data_get($row, 'origen_sucursal_nombre', '')),
+        ];
+    }
+
+    private function resolveKardexRegionalName(array $row, ?object $regional): string
+    {
+        $value = trim((string) (
+            data_get($regional, 'municipio')
+            ?: data_get($regional, 'departamento')
+            ?: data_get($row, 'origen_sucursal_departamento')
+            ?: data_get($row, 'origen_sucursal_nombre')
+        ));
+
+        return $value !== '' ? mb_strtoupper($value) : '-';
+    }
+
+    private function resolveKardexDestinationName(array $row): string
+    {
+        $values = collect(data_get($row, 'detalle_codigos', []))
+            ->map(function ($entry) {
+                $source = data_get($entry, 'source');
+                $city = collect([
+                    data_get($source, 'resumen_origen.ciudad_destino'),
+                    data_get($source, 'resumen_origen.ciudad'),
+                    data_get($source, 'ciudad_destino'),
+                    data_get($source, 'ciudad'),
+                    data_get($source, 'destino_ciudad'),
+                ])->first(fn ($value) => trim((string) $value) !== '');
+                $country = collect([
+                    data_get($source, 'resumen_origen.pais_destino'),
+                    data_get($source, 'resumen_origen.pais'),
+                    data_get($source, 'pais_destino'),
+                    data_get($source, 'pais'),
+                    data_get($source, 'destino_pais'),
+                ])->first(fn ($value) => trim((string) $value) !== '');
+
+                return trim(implode(' / ', array_filter([trim((string) $city), trim((string) $country)])));
+            })
+            ->filter()
+            ->unique()
+            ->values();
+
+        return $values->isNotEmpty() ? $values->implode(', ') : '-';
     }
 
     private function extractPdfPackageCodesFromItems(Collection $items): Collection
