@@ -2703,24 +2703,52 @@ class VentaController extends Controller
             ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
             ->values();
 
+        if ($detalleCodigos->isEmpty()) {
+            $detalleCodigos = collect(data_get($row, 'codigo_paquetes', []))
+                ->map(fn ($codigo) => [
+                    'codigo' => trim((string) $codigo),
+                    'source' => null,
+                ])
+                ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
+                ->values();
+        }
+
+        if ($detalleCodigos->isEmpty()) {
+            $referencia = trim((string) data_get($row, 'codigo_referencia', ''));
+            if (preg_match('/Paquetes:\s*(.+)$/is', $referencia, $matches)) {
+                $detalleCodigos = collect(explode(',', (string) $matches[1]))
+                    ->map(fn ($codigo) => [
+                        'codigo' => trim((string) $codigo),
+                        'source' => null,
+                    ])
+                    ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
+                    ->values();
+            }
+        }
+
         if ($detalleCodigos->count() <= 1) {
             return collect([$row]);
         }
 
+        $totalImporte = (float) data_get($row, 'importe_general', 0);
+        $fallbackImporte = $detalleCodigos->count() > 0 ? round($totalImporte / $detalleCodigos->count(), 2) : 0.0;
+
         return $detalleCodigos
-            ->map(function ($entry) use ($row) {
+            ->map(function ($entry) use ($row, $fallbackImporte) {
                 $source = data_get($entry, 'source');
                 $codigoPaquete = trim((string) data_get($entry, 'codigo'));
-                $peso = (float) (
-                    data_get($source, 'resumen_origen.peso')
-                    ?: data_get($source, 'peso')
-                    ?: 0
-                );
+                $peso = data_get($source, 'resumen_origen.peso');
+                $peso = $peso !== null && trim((string) $peso) !== ''
+                    ? $peso
+                    : data_get($source, 'peso');
+                $peso = $peso !== null && trim((string) $peso) !== ''
+                    ? round((float) $peso, 3)
+                    : null;
                 $importe = (float) (
                     data_get($source, 'total_linea')
                     ?: ((float) data_get($source, 'monto_base', 0) + (float) data_get($source, 'monto_extras', 0))
                     ?: data_get($source, 'precio')
-                    ?: 0
+                    ?: $fallbackImporte
                 );
                 $cantidad = max(1, (int) data_get($source, 'cantidad', 1));
 
@@ -2732,7 +2760,7 @@ class VentaController extends Controller
                         'codigo' => $codigoPaquete,
                         'source' => $source,
                     ]],
-                    'peso' => round($peso, 3),
+                    'peso' => $peso,
                     'cantidad' => $cantidad,
                     'importe_parcial' => round($importe, 2),
                     'importe_general' => round($importe, 2),
