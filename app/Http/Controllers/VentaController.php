@@ -2625,7 +2625,7 @@ class VentaController extends Controller
             return collect();
         }
 
-        $codeColumn = collect(['codigoSucursal', 'codigosucursal', 'codigo_sucursal'])
+        $codeColumn = collect(['codigosucursal', 'codigo_sucursal', 'codigoSucursal'])
             ->first(fn ($column) => Schema::hasColumn('sucursales', $column));
 
         if (!$codeColumn) {
