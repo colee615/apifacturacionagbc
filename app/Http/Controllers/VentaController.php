@@ -1682,6 +1682,7 @@ class VentaController extends Controller
 
         $rows = $this->buildPdfRowsFromVentas($ventasRows, $detalleMaps['detalle'] ?? [], $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap)
             ->concat($this->buildPdfRowsFromFacturacionCarts($cartRows))
+            ->flatMap(fn ($row) => $this->expandKardexRegionalRow($row))
             ->sortByDesc(fn ($row) => (int) data_get($row, 'fecha_sort', 0))
             ->take($limite)
             ->values()
@@ -2424,6 +2425,20 @@ class VentaController extends Controller
                 'detalle_resumen' => $detalleResumen,
                 'codigo_item' => $codigoOrden,
                 'codigo_paquetes' => $codigosPaquete,
+                'detalle_codigos' => $items
+                    ->map(function ($item) {
+                        return [
+                            'codigo' => trim((string) (
+                                data_get($item, 'codigo_paquete')
+                                ?: data_get($item, 'resumen_origen.codigo_paquete')
+                                ?: data_get($item, 'codigo')
+                            )),
+                            'source' => $item,
+                        ];
+                    })
+                    ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
+                    ->values()
+                    ->all(),
                 'codigo_referencia' => $codigosPaquete->isNotEmpty()
                     ? $codigoOrden . "\nPaquetes: " . $codigosPaquete->implode(', ')
                     : $codigoOrden,
@@ -2676,9 +2691,64 @@ class VentaController extends Controller
             'paisCiudad' => $this->resolveKardexDestinationName($row),
             'numeroFactura' => data_get($row, 'numero_factura', '-'),
             'importe' => round((float) data_get($row, 'importe_general', 0), 2),
+            'estadoEmision' => strtoupper(trim((string) data_get($row, 'estado_emision', ''))),
             'codigoSucursal' => $codigoSucursal,
             'sucursalNombre' => trim((string) data_get($row, 'origen_sucursal_nombre', '')),
         ];
+    }
+
+    private function expandKardexRegionalRow(array $row): Collection
+    {
+        $detalleCodigos = collect(data_get($row, 'detalle_codigos', []))
+            ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
+            ->values();
+
+        if ($detalleCodigos->count() <= 1) {
+            return collect([$row]);
+        }
+
+        return $detalleCodigos
+            ->map(function ($entry) use ($row) {
+                $source = data_get($entry, 'source');
+                $codigoPaquete = trim((string) data_get($entry, 'codigo'));
+                $peso = (float) (
+                    data_get($source, 'resumen_origen.peso')
+                    ?: data_get($source, 'peso')
+                    ?: 0
+                );
+                $importe = (float) (
+                    data_get($source, 'total_linea')
+                    ?: ((float) data_get($source, 'monto_base', 0) + (float) data_get($source, 'monto_extras', 0))
+                    ?: data_get($source, 'precio')
+                    ?: 0
+                );
+                $cantidad = max(1, (int) data_get($source, 'cantidad', 1));
+
+                return array_merge($row, [
+                    'codigo_item' => $codigoPaquete,
+                    'codigo_paquetes' => collect([$codigoPaquete]),
+                    'codigo_referencia' => $codigoPaquete,
+                    'detalle_codigos' => [[
+                        'codigo' => $codigoPaquete,
+                        'source' => $source,
+                    ]],
+                    'peso' => round($peso, 3),
+                    'cantidad' => $cantidad,
+                    'importe_parcial' => round($importe, 2),
+                    'importe_general' => round($importe, 2),
+                    'tipo_envio' => trim((string) (
+                        data_get($source, 'nombre_servicio')
+                        ?: data_get($source, 'titulo')
+                        ?: data_get($row, 'tipo_envio')
+                    )),
+                    'detalle_items' => trim((string) (
+                        data_get($source, 'titulo')
+                        ?: data_get($source, 'nombre_servicio')
+                        ?: data_get($row, 'detalle_items')
+                    )),
+                ]);
+            })
+            ->values();
     }
 
     private function resolveKardexRegionalName(array $row, ?object $regional): string
