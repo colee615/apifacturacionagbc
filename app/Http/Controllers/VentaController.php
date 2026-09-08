@@ -2444,8 +2444,8 @@ class VentaController extends Controller
                     ? $codigoOrden . "\nPaquetes: " . $codigosPaquete->implode(', ')
                     : $codigoOrden,
                 'peso' => Schema::hasColumn('ventas', 'peso_total')
-                    ? round((float) ($venta->peso_total ?? 0), 3)
-                    : 0.0,
+                    ? $this->normalizeKardexWeight($venta->peso_total ?? null)
+                    : null,
                 'cantidad' => $cantidadTotal,
                 'canal_emision' => $canalEmision,
                 'metodo_pago' => $metodoPago,
@@ -2494,7 +2494,7 @@ class VentaController extends Controller
                         ?: data_get($item, 'codigo')
                     ));
                     $codigoPaquete = $this->isKardexPackageCode($codigoPaquete) ? $codigoPaquete : '';
-                    $codigoReferencia = $codigoPaquete !== '' ? $codigoPaquete : $codigoOrden;
+                    $codigoReferencia = $codigoPaquete !== '' ? $codigoPaquete : '';
                     $peso = data_get($item, 'peso');
 
                     return array_merge($baseRow, [
@@ -2508,7 +2508,7 @@ class VentaController extends Controller
                             'source' => $item,
                         ]] : [],
                         'codigo_referencia' => $codigoReferencia,
-                        'peso' => $peso !== null && trim((string) $peso) !== '' ? round((float) $peso, 3) : null,
+                    'peso' => $this->normalizeKardexWeight($peso),
                         'cantidad' => max(1, (int) data_get($item, 'cantidad', 1)),
                         'importe_parcial' => round((float) data_get($item, 'total_linea', 0), 2),
                         'importe_general' => round((float) data_get($item, 'total_linea', 0), 2),
@@ -2651,7 +2651,7 @@ class VentaController extends Controller
                 'codigo_referencia' => $codigosPaquete->isNotEmpty()
                     ? $codigoOrden . "\nPaquetes: " . $codigosPaquete->implode(', ')
                     : $codigoOrden,
-                'peso' => $pesoTotal,
+                'peso' => $this->normalizeKardexWeight($pesoTotal),
                 'cantidad' => $cantidadTotal,
                 'canal_emision' => $canalEmision,
                 'metodo_pago' => $metodoPago,
@@ -2680,7 +2680,7 @@ class VentaController extends Controller
                         ?: data_get($item, 'codigo')
                     ));
                     $codigoPaquete = $this->isKardexPackageCode($codigoPaquete) ? $codigoPaquete : '';
-                    $codigoReferencia = $codigoPaquete !== '' ? $codigoPaquete : $codigoOrden;
+                    $codigoReferencia = $codigoPaquete !== '' ? $codigoPaquete : '';
                     $peso = data_get($item, 'resumen_origen.peso');
                     $peso = $peso !== null && trim((string) $peso) !== ''
                         ? $peso
@@ -2697,7 +2697,7 @@ class VentaController extends Controller
                             'source' => $item,
                         ]] : [],
                         'codigo_referencia' => $codigoReferencia,
-                        'peso' => $peso !== null && trim((string) $peso) !== '' ? round((float) $peso, 3) : null,
+                        'peso' => $this->normalizeKardexWeight($peso),
                         'cantidad' => max(1, (int) data_get($item, 'cantidad', 1)),
                         'importe_parcial' => round((float) data_get($item, 'total_linea', 0), 2),
                         'importe_general' => round((float) data_get($item, 'total_linea', 0), 2),
@@ -2767,9 +2767,7 @@ class VentaController extends Controller
                 trim((string) data_get($row, 'tipo_envio', '')) ?: 'SIN DETALLE'
             ),
             'guiaCasilla' => $guiaCasilla !== '' ? $guiaCasilla : '-',
-            'peso' => data_get($row, 'peso') !== null && trim((string) data_get($row, 'peso')) !== ''
-                ? round((float) data_get($row, 'peso'), 3)
-                : null,
+            'peso' => $this->normalizeKardexWeight(data_get($row, 'peso')),
             'paisCiudad' => $this->resolveKardexDestinationName($row),
             'numeroFactura' => data_get($row, 'numero_factura', '-'),
             'importe' => round((float) data_get($row, 'importe_general', 0), 2),
@@ -2827,9 +2825,7 @@ class VentaController extends Controller
                 $peso = $peso !== null && trim((string) $peso) !== ''
                     ? $peso
                     : data_get($source, 'peso');
-                $peso = $peso !== null && trim((string) $peso) !== ''
-                    ? round((float) $peso, 3)
-                    : null;
+                $peso = $this->normalizeKardexWeight($peso);
                 $importe = (float) (
                     data_get($source, 'total_linea')
                     ?: ((float) data_get($source, 'monto_base', 0) + (float) data_get($source, 'monto_extras', 0))
@@ -2948,8 +2944,20 @@ class VentaController extends Controller
         $code = strtoupper(trim($code));
 
         return $code !== ''
-            && !preg_match('/^SRVE-\d+$/', $code)
-            && !preg_match('/^VFC-\d+$/', $code);
+            && !preg_match('/^SRVE-\d+\s*-?$/', $code)
+            && !preg_match('/^VFC-\d+$/', $code)
+            && !preg_match('/^VQC-\d+$/', $code);
+    }
+
+    private function normalizeKardexWeight(mixed $value): ?float
+    {
+        if ($value === null || trim((string) $value) === '') {
+            return null;
+        }
+
+        $weight = round((float) str_replace(',', '.', (string) $value), 3);
+
+        return $weight > 0 ? $weight : null;
     }
 
     private function cleanKardexPackageReference(string $value): string
@@ -2966,7 +2974,7 @@ class VentaController extends Controller
 
         return collect(explode(',', $value))
             ->map(fn ($code) => trim((string) $code))
-            ->map(fn ($code) => preg_replace('/^SRVE-\d+-/i', '', $code) ?: '')
+            ->map(fn ($code) => preg_replace('/^SRVE-\d+\s*-\s*/i', '', $code) ?: '')
             ->filter(fn ($code) => $this->isKardexPackageCode($code))
             ->implode(', ');
     }
