@@ -2556,7 +2556,7 @@ class VentaController extends Controller
                 ->toArray();
         }
 
-        return $cartRows->map(function ($cart) use ($cartItemsMap) {
+        return $cartRows->flatMap(function ($cart) use ($cartItemsMap) {
             $cart = is_array($cart) ? (object) $cart : $cart;
             $items = collect($cartItemsMap[(int) $cart->id] ?? [])
                 ->map(function ($item) {
@@ -2607,7 +2607,7 @@ class VentaController extends Controller
                 default => 'Cobro registrado en caja.',
             };
             $tipoEnvio = $items
-                ->map(fn ($item) => trim((string) data_get($item, 'nombre_servicio', data_get($item, 'titulo', ''))))
+                ->map(fn ($item) => $this->resolveKardexServiceFullName($item))
                 ->filter()
                 ->unique()
                 ->implode(' / ');
@@ -2631,7 +2631,7 @@ class VentaController extends Controller
                 $clienteLabel = 'Sin cliente';
             }
 
-            return [
+            $baseRow = [
                 'origen_usuario_id' => trim((string) ($cart->origen_usuario_id ?? '')),
                 'origen_usuario_nombre' => trim((string) ($cart->origen_usuario_nombre ?? '')),
                 'origen_usuario_email' => trim((string) ($cart->origen_usuario_email ?? '')),
@@ -2667,6 +2667,44 @@ class VentaController extends Controller
                 'importe_parcial' => round((float) ($cart->total ?? 0), 2),
                 'importe_general' => round((float) ($cart->total ?? 0), 2),
             ];
+
+            if ($items->count() <= 1) {
+                return [$baseRow];
+            }
+
+            return $items
+                ->map(function ($item) use ($baseRow, $codigoOrden) {
+                    $codigoPaquete = trim((string) (
+                        data_get($item, 'codigo_paquete')
+                        ?: data_get($item, 'resumen_origen.codigo_paquete')
+                        ?: data_get($item, 'codigo')
+                    ));
+                    $codigoPaquete = $this->isKardexPackageCode($codigoPaquete) ? $codigoPaquete : '';
+                    $codigoReferencia = $codigoPaquete !== '' ? $codigoPaquete : $codigoOrden;
+                    $peso = data_get($item, 'resumen_origen.peso');
+                    $peso = $peso !== null && trim((string) $peso) !== ''
+                        ? $peso
+                        : data_get($item, 'peso');
+
+                    return array_merge($baseRow, [
+                        'tipo_envio' => $this->resolveKardexServiceFullName($item) ?: $baseRow['tipo_envio'],
+                        'detalle_items' => trim((string) data_get($item, 'titulo', data_get($item, 'nombre_servicio', ''))) ?: $baseRow['detalle_items'],
+                        'detalle_resumen' => '',
+                        'codigo_item' => $codigoReferencia,
+                        'codigo_paquetes' => $codigoPaquete !== '' ? collect([$codigoPaquete]) : collect(),
+                        'detalle_codigos' => $codigoPaquete !== '' ? [[
+                            'codigo' => $codigoPaquete,
+                            'source' => $item,
+                        ]] : [],
+                        'codigo_referencia' => $codigoReferencia,
+                        'peso' => $peso !== null && trim((string) $peso) !== '' ? round((float) $peso, 3) : null,
+                        'cantidad' => max(1, (int) data_get($item, 'cantidad', 1)),
+                        'importe_parcial' => round((float) data_get($item, 'total_linea', 0), 2),
+                        'importe_general' => round((float) data_get($item, 'total_linea', 0), 2),
+                    ]);
+                })
+                ->values()
+                ->all();
         })->values();
     }
 
