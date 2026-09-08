@@ -2975,6 +2975,7 @@ class VentaController extends Controller
         return collect(explode(',', $value))
             ->map(fn ($code) => trim((string) $code))
             ->map(fn ($code) => preg_replace('/^SRVE-\d+\s*-\s*/i', '', $code) ?: '')
+            ->map(fn ($code) => mb_strtoupper($code))
             ->filter(fn ($code) => $this->isKardexPackageCode($code))
             ->implode(', ');
     }
