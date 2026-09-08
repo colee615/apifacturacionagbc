@@ -2369,6 +2369,7 @@ class VentaController extends Controller
                     'monto_base' => $precio,
                     'monto_extras' => 0.0,
                     'total_linea' => round($cantidad * $precio, 2),
+                    'peso' => $item->peso ?? null,
                     'resumen_origen' => [],
                 ];
             })->values();
@@ -2408,7 +2409,7 @@ class VentaController extends Controller
                 'razon_social' => $venta->razonSocial,
             ]);
 
-            return [[
+            $baseRow = [
                 'origen_usuario_id' => trim((string) ($venta->origen_usuario_id ?? '')),
                 'origen_usuario_nombre' => trim((string) ($venta->origen_usuario_nombre ?? '')),
                 'origen_usuario_email' => trim((string) ($venta->origen_usuario_email ?? '')),
@@ -2479,7 +2480,42 @@ class VentaController extends Controller
                 'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
                 'importe_parcial' => round((float) ($venta->total ?? 0), 2),
                 'importe_general' => round((float) ($venta->total ?? 0), 2),
-            ]];
+            ];
+
+            if ($items->count() <= 1) {
+                return [$baseRow];
+            }
+
+            return $items
+                ->map(function ($item) use ($baseRow, $codigoOrden) {
+                    $codigoPaquete = trim((string) (
+                        data_get($item, 'codigo_paquete')
+                        ?: data_get($item, 'resumen_origen.codigo_paquete')
+                        ?: data_get($item, 'codigo')
+                    ));
+                    $codigoPaquete = $this->isKardexPackageCode($codigoPaquete) ? $codigoPaquete : '';
+                    $codigoReferencia = $codigoPaquete !== '' ? $codigoPaquete : $codigoOrden;
+                    $peso = data_get($item, 'peso');
+
+                    return array_merge($baseRow, [
+                        'tipo_envio' => $this->resolveKardexServiceFullName($item) ?: $baseRow['tipo_envio'],
+                        'detalle_items' => trim((string) data_get($item, 'titulo', data_get($item, 'nombre_servicio', ''))) ?: $baseRow['detalle_items'],
+                        'detalle_resumen' => '',
+                        'codigo_item' => $codigoReferencia,
+                        'codigo_paquetes' => $codigoPaquete !== '' ? collect([$codigoPaquete]) : collect(),
+                        'detalle_codigos' => $codigoPaquete !== '' ? [[
+                            'codigo' => $codigoPaquete,
+                            'source' => $item,
+                        ]] : [],
+                        'codigo_referencia' => $codigoReferencia,
+                        'peso' => $peso !== null && trim((string) $peso) !== '' ? round((float) $peso, 3) : null,
+                        'cantidad' => max(1, (int) data_get($item, 'cantidad', 1)),
+                        'importe_parcial' => round((float) data_get($item, 'total_linea', 0), 2),
+                        'importe_general' => round((float) data_get($item, 'total_linea', 0), 2),
+                    ]);
+                })
+                ->values()
+                ->all();
         })->values();
     }
 
