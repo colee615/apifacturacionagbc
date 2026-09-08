@@ -2918,6 +2918,10 @@ class VentaController extends Controller
     {
         $value = preg_replace('/\s+/', ' ', trim($value)) ?: '';
 
+        if ($this->isContractServiceDescription($value)) {
+            return 'CONTRATOS';
+        }
+
         return $value !== '' ? mb_strtoupper($value) : '';
     }
 
