@@ -2687,7 +2687,9 @@ class VentaController extends Controller
             'regionalRegistro' => $this->resolveKardexRegionalName($row, $regional),
             'tipoServicio' => trim((string) data_get($row, 'tipo_envio', '')) ?: 'SIN DETALLE',
             'guiaCasilla' => $guiaCasilla !== '' ? $guiaCasilla : '-',
-            'peso' => round((float) data_get($row, 'peso', 0), 3),
+            'peso' => data_get($row, 'peso') !== null && trim((string) data_get($row, 'peso')) !== ''
+                ? round((float) data_get($row, 'peso'), 3)
+                : null,
             'paisCiudad' => $this->resolveKardexDestinationName($row),
             'numeroFactura' => data_get($row, 'numero_factura', '-'),
             'importe' => round((float) data_get($row, 'importe_general', 0), 2),
