@@ -2488,7 +2488,7 @@ class VentaController extends Controller
 
             return $items
                 ->map(function ($item) use ($baseRow, $codigoOrden) {
-                    $codigoPaquete = trim((string) (
+                    $codigoPaquete = $this->cleanKardexPackageReference((string) (
                         data_get($item, 'codigo_paquete')
                         ?: data_get($item, 'resumen_origen.codigo_paquete')
                         ?: data_get($item, 'codigo')
@@ -2674,7 +2674,7 @@ class VentaController extends Controller
 
             return $items
                 ->map(function ($item) use ($baseRow, $codigoOrden) {
-                    $codigoPaquete = trim((string) (
+                    $codigoPaquete = $this->cleanKardexPackageReference((string) (
                         data_get($item, 'codigo_paquete')
                         ?: data_get($item, 'resumen_origen.codigo_paquete')
                         ?: data_get($item, 'codigo')
@@ -2749,9 +2749,13 @@ class VentaController extends Controller
         $codigoSucursal = trim((string) (data_get($row, 'origen_sucursal_codigo') ?: data_get($row, 'codigoSucursal')));
         $regional = $regionalMap->get($codigoSucursal);
         $detalleCodigos = collect(data_get($row, 'detalle_codigos', []));
-        $guiaCasilla = $detalleCodigos->pluck('codigo')->filter()->implode(', ');
+        $guiaCasilla = $detalleCodigos
+            ->pluck('codigo')
+            ->map(fn ($codigo) => $this->cleanKardexPackageReference((string) $codigo))
+            ->filter()
+            ->implode(', ');
         if ($guiaCasilla === '') {
-            $guiaCasilla = trim((string) (data_get($row, 'codigo_referencia') ?: data_get($row, 'codigo_item')));
+            $guiaCasilla = $this->cleanKardexPackageReference((string) (data_get($row, 'codigo_referencia') ?: data_get($row, 'codigo_item')));
         }
 
         return [
@@ -2778,13 +2782,17 @@ class VentaController extends Controller
     private function expandKardexRegionalRow(array $row): Collection
     {
         $detalleCodigos = collect(data_get($row, 'detalle_codigos', []))
+            ->map(function ($entry) {
+                data_set($entry, 'codigo', $this->cleanKardexPackageReference((string) data_get($entry, 'codigo')));
+                return $entry;
+            })
             ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
             ->values();
 
         if ($detalleCodigos->isEmpty()) {
             $detalleCodigos = collect(data_get($row, 'codigo_paquetes', []))
                 ->map(fn ($codigo) => [
-                    'codigo' => trim((string) $codigo),
+                    'codigo' => $this->cleanKardexPackageReference((string) $codigo),
                     'source' => null,
                 ])
                 ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
@@ -2796,7 +2804,7 @@ class VentaController extends Controller
             if (preg_match('/Paquetes:\s*(.+)$/is', $referencia, $matches)) {
                 $detalleCodigos = collect(explode(',', (string) $matches[1]))
                     ->map(fn ($codigo) => [
-                        'codigo' => trim((string) $codigo),
+                    'codigo' => $this->cleanKardexPackageReference((string) $codigo),
                         'source' => null,
                     ])
                     ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
@@ -2814,7 +2822,7 @@ class VentaController extends Controller
         return $detalleCodigos
             ->map(function ($entry) use ($row, $fallbackImporte) {
                 $source = data_get($entry, 'source');
-                $codigoPaquete = trim((string) data_get($entry, 'codigo'));
+                $codigoPaquete = $this->cleanKardexPackageReference((string) data_get($entry, 'codigo'));
                 $peso = data_get($source, 'resumen_origen.peso');
                 $peso = $peso !== null && trim((string) $peso) !== ''
                     ? $peso
@@ -2937,6 +2945,24 @@ class VentaController extends Controller
 
         return $code !== ''
             && !preg_match('/^SRVE-\d+$/', $code);
+    }
+
+    private function cleanKardexPackageReference(string $value): string
+    {
+        $value = preg_replace('/\s+/', ' ', trim($value)) ?: '';
+
+        if ($value === '') {
+            return '';
+        }
+
+        if (preg_match('/Paquetes:\s*(.+)$/i', $value, $matches)) {
+            $value = trim((string) $matches[1]);
+        }
+
+        return collect(explode(',', $value))
+            ->map(fn ($code) => trim((string) $code))
+            ->filter(fn ($code) => $this->isKardexPackageCode($code))
+            ->implode(', ');
     }
 
     private function isQrPaymentRow(object|array $row): bool
