@@ -2374,7 +2374,7 @@ class VentaController extends Controller
             })->values();
 
             $tipoEnvio = $items
-                ->map(fn ($item) => trim((string) data_get($item, 'nombre_servicio', data_get($item, 'titulo', ''))))
+                ->map(fn ($item) => $this->resolveKardexServiceFullName($item))
                 ->filter()
                 ->unique()
                 ->implode(' / ');
@@ -2685,7 +2685,9 @@ class VentaController extends Controller
             'fecha' => data_get($row, 'fecha', '-'),
             'cantidad' => (int) data_get($row, 'cantidad', 0),
             'regionalRegistro' => $this->resolveKardexRegionalName($row, $regional),
-            'tipoServicio' => trim((string) data_get($row, 'tipo_envio', '')) ?: 'SIN DETALLE',
+            'tipoServicio' => $this->normalizeKardexServiceText(
+                trim((string) data_get($row, 'tipo_envio', '')) ?: 'SIN DETALLE'
+            ),
             'guiaCasilla' => $guiaCasilla !== '' ? $guiaCasilla : '-',
             'peso' => data_get($row, 'peso') !== null && trim((string) data_get($row, 'peso')) !== ''
                 ? round((float) data_get($row, 'peso'), 3)
@@ -2766,11 +2768,8 @@ class VentaController extends Controller
                     'cantidad' => $cantidad,
                     'importe_parcial' => round($importe, 2),
                     'importe_general' => round($importe, 2),
-                    'tipo_envio' => trim((string) (
-                        data_get($source, 'nombre_servicio')
-                        ?: data_get($source, 'titulo')
-                        ?: data_get($row, 'tipo_envio')
-                    )),
+                    'tipo_envio' => $this->resolveKardexServiceFullName($source)
+                        ?: trim((string) data_get($row, 'tipo_envio')),
                     'detalle_items' => trim((string) (
                         data_get($source, 'titulo')
                         ?: data_get($source, 'nombre_servicio')
@@ -2820,6 +2819,24 @@ class VentaController extends Controller
             ->values();
 
         return $values->isNotEmpty() ? $values->implode(', ') : '-';
+    }
+
+    private function resolveKardexServiceFullName(mixed $item): string
+    {
+        return $this->normalizeKardexServiceText((string) (
+            data_get($item, 'resumen_origen.descripcion_servicio')
+            ?: data_get($item, 'descripcion')
+            ?: data_get($item, 'nombre_servicio')
+            ?: data_get($item, 'titulo')
+            ?: ''
+        ));
+    }
+
+    private function normalizeKardexServiceText(string $value): string
+    {
+        $value = preg_replace('/\s+/', ' ', trim($value)) ?: '';
+
+        return $value !== '' ? mb_strtoupper($value) : '';
     }
 
     private function extractPdfPackageCodesFromItems(Collection $items): Collection
