@@ -2944,7 +2944,8 @@ class VentaController extends Controller
         $code = strtoupper(trim($code));
 
         return $code !== ''
-            && !preg_match('/^SRVE-\d+$/', $code);
+            && !preg_match('/^SRVE-\d+$/', $code)
+            && !preg_match('/^VFC-\d+$/', $code);
     }
 
     private function cleanKardexPackageReference(string $value): string
