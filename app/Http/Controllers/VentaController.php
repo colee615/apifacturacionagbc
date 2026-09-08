@@ -2436,7 +2436,7 @@ class VentaController extends Controller
                             'source' => $item,
                         ];
                     })
-                    ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
+                    ->filter(fn ($entry) => $this->isKardexPackageCode((string) data_get($entry, 'codigo')))
                     ->values()
                     ->all(),
                 'codigo_referencia' => $codigosPaquete->isNotEmpty()
@@ -2852,9 +2852,17 @@ class VentaController extends Controller
                     trim((string) data_get($item, 'resumen_origen.codigo_paquete', '')),
                 ];
             })
-            ->filter()
+            ->filter(fn ($code) => $this->isKardexPackageCode((string) $code))
             ->unique()
             ->values();
+    }
+
+    private function isKardexPackageCode(string $code): bool
+    {
+        $code = strtoupper(trim($code));
+
+        return $code !== ''
+            && !preg_match('/^SRVE-\d+$/', $code);
     }
 
     private function isQrPaymentRow(object|array $row): bool
