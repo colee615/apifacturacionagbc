@@ -2873,7 +2873,7 @@ class VentaController extends Controller
     private function resolveKardexDestinationName(array $row): string
     {
         $values = collect(data_get($row, 'detalle_codigos', []))
-            ->map(function ($entry) {
+            ->map(function ($entry) use ($row) {
                 $source = data_get($entry, 'source');
                 $city = collect([
                     data_get($source, 'resumen_origen.ciudad_destino'),
@@ -2881,22 +2881,314 @@ class VentaController extends Controller
                     data_get($source, 'ciudad_destino'),
                     data_get($source, 'ciudad'),
                     data_get($source, 'destino_ciudad'),
-                ])->first(fn ($value) => trim((string) $value) !== '');
+                ])->first(fn ($value) => trim((string) $value) !== '' && trim((string) $value) !== '-');
                 $country = collect([
                     data_get($source, 'resumen_origen.pais_destino'),
                     data_get($source, 'resumen_origen.pais'),
                     data_get($source, 'pais_destino'),
                     data_get($source, 'pais'),
                     data_get($source, 'destino_pais'),
-                ])->first(fn ($value) => trim((string) $value) !== '');
+                ])->first(fn ($value) => trim((string) $value) !== '' && trim((string) $value) !== '-');
 
-                return trim(implode(' / ', array_filter([trim((string) $city), trim((string) $country)])));
+                $city = $this->cleanKardexDestinationValue((string) $city);
+                $country = $this->cleanKardexDestinationValue((string) $country);
+
+                if ($city !== '' && ! $this->isBoliviaDestinationValue($country)) {
+                    return trim(implode(' / ', array_filter([$city, $country])));
+                }
+
+                if ($city !== '') {
+                    return $city;
+                }
+
+                if ($country !== '' && ! $this->isBoliviaDestinationValue($country)) {
+                    return $country;
+                }
+
+                return $this->resolveKardexDestinationFromPackageCode((string) data_get($entry, 'codigo'));
             })
             ->filter()
             ->unique()
             ->values();
 
-        return $values->isNotEmpty() ? $values->implode(', ') : '-';
+        if ($values->isNotEmpty()) {
+            return $values->implode(', ');
+        }
+
+        return $this->resolveKardexDestinationFromPackageCode((string) data_get($row, 'codigo_referencia')) ?: '-';
+    }
+
+    private function cleanKardexDestinationValue(string $value): string
+    {
+        $value = preg_replace('/\s+/', ' ', trim($value)) ?: '';
+        return $value !== '' ? mb_strtoupper($value) : '';
+    }
+
+    private function isBoliviaDestinationValue(string $value): bool
+    {
+        $value = $this->cleanKardexDestinationValue($value);
+        return in_array($value, ['BO', 'BOLIVIA'], true);
+    }
+
+    private function resolveKardexDestinationFromPackageCode(string $code): string
+    {
+        $code = mb_strtoupper(trim($this->cleanKardexPackageReference($code)));
+        if (! preg_match('/([A-Z]{2})$/', $code, $matches)) {
+            return '';
+        }
+
+        $countryCode = $matches[1];
+        if ($countryCode === 'BO') {
+            return '';
+        }
+
+        return $this->kardexIsoCountryNames()[$countryCode] ?? '';
+    }
+
+    private function kardexIsoCountryNames(): array
+    {
+        return [
+            'AD' => 'ANDORRA',
+            'AE' => 'EMIRATOS ÁRABES UNIDOS (ABU DABI, DUBAI, SHARYA, AYMAN, UMM AL-QAIWAIN, RAS AL-JAIMA Y FUYAIRA)',
+            'AF' => 'AFGANISTÁN',
+            'AG' => 'ANTIGUA Y BARBUDA',
+            'AI' => 'ANGUILA',
+            'AL' => 'ALBANIA',
+            'AM' => 'ARMENIA',
+            'AN' => 'ANTILLAS NEERLANDESAS (CURAÇAO, BONAIRE, SAN EUSTAQUIO, SABA Y LA PARTE MERIDIONAL DE SAN MARTÍN)',
+            'AO' => 'ANGOLA (INCLUIDO CABINDA)',
+            'AQ' => 'ANTÁRTIDA',
+            'AR' => 'ARGENTINA',
+            'AS' => 'SAMOA AMERICANA',
+            'AT' => 'AUSTRIA',
+            'AU' => 'AUSTRALIA',
+            'AW' => 'ARUBA',
+            'AZ' => 'AZERBAIYÁN',
+            'BA' => 'BOSNIA-HERZEGOVINA',
+            'BB' => 'BARBADOS',
+            'BD' => 'BANGLADESH',
+            'BE' => 'BÉLGICA',
+            'BF' => 'BURKINA FASO (ALTO VOLTA)',
+            'BG' => 'BULGARIA',
+            'BH' => 'BAHRÉIN',
+            'BI' => 'BURUNDI',
+            'BJ' => 'BENÍN',
+            'BM' => 'BERMUDAS',
+            'BN' => 'BRUNÉI (BRUNÉI DARUSSALAM)',
+            'BO' => 'BOLIVIA',
+            'BR' => 'BRASIL',
+            'BS' => 'BAHAMAS',
+            'BT' => 'BUTÁN',
+            'BV' => 'BOUVET, ISLA',
+            'BW' => 'BOTSUANA',
+            'BY' => 'BIELORRUSIA (BELARÚS)',
+            'BZ' => 'BELICE',
+            'CA' => 'CANADÁ',
+            'CC' => 'COCOS, ISLA DE (KEELING)',
+            'CD' => 'CONGO, REPÚBLICA DEMOCRÁTICA DEL (ZAIRE)',
+            'CF' => 'CENTROAFRICANA, REPÚBLICA',
+            'CG' => 'CONGO',
+            'CH' => 'SUIZA',
+            'CI' => 'COSTA DE MARFIL',
+            'CK' => 'COOK, ISLAS',
+            'CL' => 'CHILE',
+            'CM' => 'CAMERÚN',
+            'CN' => 'CHINA',
+            'CO' => 'COLOMBIA',
+            'CR' => 'COSTA RICA',
+            'CS' => 'SERBIA Y MONTENEGRO',
+            'CU' => 'CUBA',
+            'CV' => 'CABO VERDE, REPÚBLICA DE',
+            'CX' => 'NAVIDAD, ISLA',
+            'CY' => 'CHIPRE',
+            'CZ' => 'CHECA, REPÚBLICA',
+            'DE' => 'ALEMANIA (INCLUIDA LA ISLA DE HELGOLAND)',
+            'DJ' => 'YIBUTI',
+            'DK' => 'DINAMARCA',
+            'DM' => 'DOMINICA',
+            'DO' => 'DOMINICANA, REPÚBLICA',
+            'DZ' => 'ARGELIA',
+            'EC' => 'ECUADOR (INCLUIDAS LAS ISLAS GALÁPAGOS)',
+            'EE' => 'ESTONIA',
+            'EG' => 'EGIPTO',
+            'ER' => 'ERITREA',
+            'ES' => 'ESPAÑA',
+            'ET' => 'ETIOPÍA',
+            'FI' => 'FINLANDIA (INCLUIDAS LAS ISLAS ALAND)',
+            'FJ' => 'FIYI',
+            'FK' => 'MALVINAS, ISLAS (FALKLANDS)',
+            'FM' => 'MICRONESIA, FEDERACIÓN DE ESTADOS DE (YAP, KOSRAE, TRUK, POHNPEI)',
+            'FO' => 'FEROE, ISLAS',
+            'FR' => 'FRANCIA (INCLUIDOS LOS DEPARTAMENTOS FRANCESES DE ULTRAMAR: REUNIÓN, GUADALUPE, MARTINICA Y GUAYANA FRANCESA)',
+            'GA' => 'GABÓN',
+            'GB' => 'REINO UNIDO',
+            'GD' => 'GRANADA (INCLUIDAS LAS ISLAS GRANADINAS DEL SUR)',
+            'GE' => 'GEORGIA',
+            'GG' => 'GUERNESEY (ISLA ANGLONORMANDA DEL CANAL)',
+            'GH' => 'GHANA',
+            'GI' => 'GIBRALTAR',
+            'GL' => 'GROENLANDIA',
+            'GM' => 'GAMBIA',
+            'GN' => 'GUINEA',
+            'GQ' => 'GUINEA ECUATORIAL',
+            'GR' => 'GRECIA',
+            'GS' => 'GEORGIA DEL SUR Y LAS ISLAS SANDWICH DEL SUR',
+            'GT' => 'GUATEMALA',
+            'GU' => 'GUAM',
+            'GW' => 'GUINEA-BISSAU',
+            'GY' => 'GUYANA',
+            'HK' => 'HONG-KONG',
+            'HM' => 'HEARD Y MCDONALD, ISLAS',
+            'HN' => 'HONDURAS (INCLUIDAS ISLAS DEL CISNE)',
+            'HR' => 'CROACIA',
+            'HT' => 'HAITÍ',
+            'HU' => 'HUNGRÍA',
+            'ID' => 'INDONESIA',
+            'IE' => 'IRLANDA',
+            'IL' => 'ISRAEL',
+            'IM' => 'ISLA DE MAN',
+            'IN' => 'INDIA',
+            'IO' => 'OCÉANO ÍNDICO, TERRITORIO BRITÁNICO DEL (ARCHIPIÉLAGO DE CHAGOS)',
+            'IQ' => 'IRAQ',
+            'IR' => 'IRÁN',
+            'IS' => 'ISLANDIA',
+            'IT' => 'ITALIA (INCLUIDO LIVIGNO)',
+            'JE' => 'JERSEY (ISLA ANGLONORMANDA DEL CANAL)',
+            'JM' => 'JAMAICA',
+            'JO' => 'JORDANIA',
+            'JP' => 'JAPÓN',
+            'KE' => 'KENIA',
+            'KG' => 'KIRGUISTÁN',
+            'KH' => 'CAMBOYA',
+            'KI' => 'KIRIBATI',
+            'KM' => 'COMORAS (GRAN COMORA, ANJOUAN Y MOHÉLI)',
+            'KN' => 'SAN CRISTÓBAL Y NIEVES (SAINT KITTS Y NEVIS)',
+            'KP' => 'COREA DEL NORTE (REPÚBLICA POPULAR DEMOCRÁTICA DE COREA)',
+            'KR' => 'COREA DEL SUR (REPÚBLICA DE COREA)',
+            'KW' => 'KUWAIT',
+            'KY' => 'CAIMÁN, ISLAS',
+            'KZ' => 'KAZAJSTÁN',
+            'LA' => 'LAOS (LAO)',
+            'LB' => 'LÍBANO',
+            'LC' => 'SANTA LUCÍA',
+            'LI' => 'LIECHTENSTEIN',
+            'LK' => 'SRI LANKA',
+            'LR' => 'LIBERIA',
+            'LS' => 'LESOTHO',
+            'LT' => 'LITUANIA',
+            'LU' => 'LUXEMBURGO',
+            'LV' => 'LETONIA',
+            'LY' => 'LIBIA',
+            'MA' => 'MARRUECOS',
+            'MC' => 'MÓNACO',
+            'MD' => 'MOLDAVIA',
+            'MG' => 'MADAGASCAR',
+            'MH' => 'MARSHALL, ISLAS',
+            'MK' => 'MACEDONIA (ANTIGUA REPÚBLICA YUGOSLAVA)',
+            'ML' => 'MALI',
+            'MM' => 'MYANMAR (ANTIGUA BIRMANIA)',
+            'MN' => 'MONGOLIA',
+            'MO' => 'MACAO',
+            'MP' => 'MARIANAS DEL NORTE, ISLAS',
+            'MR' => 'MAURITANIA',
+            'MS' => 'MONTSERRAT',
+            'MT' => 'MALTA (INCLUIDOS GOZO Y COMINO)',
+            'MU' => 'MAURICIO [ISLA MAURICIO, ISLA RODRÍGUES, ISLAS AGALEGA Y CARGADOS, CARAJOS SHOALS (ISLAS SAN BRANDÓN)]',
+            'MV' => 'MALDIVAS',
+            'MW' => 'MALAWI',
+            'MX' => 'MÉXICO',
+            'MY' => 'MALASIA',
+            'MZ' => 'MOZAMBIQUE',
+            'NA' => 'NAMIBIA',
+            'NC' => 'NUEVA CALEDONIA (INCLUIDAS LAS ISLAS LEALTAD: MARÉ, LIFOU Y OUVÉA)',
+            'NE' => 'NÍGER',
+            'NF' => 'NORFOLK, ISLA',
+            'NG' => 'NIGERIA',
+            'NI' => 'NICARAGUA (INCLUIDAS LAS ISLAS DEL MAÍZ)',
+            'NL' => 'PAÍSES BAJOS',
+            'NO' => 'NORUEGA (INCLUIDOS LA ISLA JAN MAYEN Y EL ARCHIPIÉLAGO SVALBARD)',
+            'NP' => 'NEPAL',
+            'NR' => 'NAURU',
+            'NU' => 'NIUE, ISLA',
+            'NZ' => 'NUEVA ZELANDA',
+            'OM' => 'OMÁN',
+            'PA' => 'PANAMÁ (INCLUIDA LA ANTIGUA ZONA DEL CANAL)',
+            'PE' => 'PERÚ',
+            'PF' => 'POLINESIA FRANCESA [ISLAS MARQUESAS, ISLA DE LA SOCIEDAD (INCLUIDO TAHITÍ), ISLAS GAMBIER, ISLAS TUAMOTÚ E ISLAS AUSTRALES INCLUIDA LA ISLA DE CLIPPERTON)]',
+            'PG' => 'PAPÚA NUEVA GUINEA [PARTE ORIENTAL DE NUEVA GUINEA; ARCHIPIÉLAGO BISMARCK (INCLUIDAS: NUEVA BRETAÑA, NUEVA IRLANDA, LAVONGAI Y LAS ISLAS DEL ALMIRANTAZGO); ISLAS SALOMÓN DEL NORTE (BOUGAINVILLE Y BUKA); ISLAS TROBRIAND, ISLAS WOODLARK, ISLAS ENTRECASTEAUX Y ARCHIPIÉLAGO DE LA LOUSIADE]',
+            'PH' => 'FILIPINAS',
+            'PK' => 'PAKISTÁN',
+            'PL' => 'POLONIA',
+            'PM' => 'SAN PEDRO Y MIQUELÓN',
+            'PN' => 'PITCAIRN (INCLUIDAS LAS ISLAS HENDERSON, DUCIE Y OENO)',
+            'PR' => 'PUERTO RICO',
+            'PS' => 'TERRITORIO PALESTINO OCUPADO (CISJORDANIA Y FRANJA DE GAZA)',
+            'PT' => 'PORTUGAL (INCLUIDOS LOS ARCHIPIÉLAGOS DE LAS AZORES Y DE MADEIRA)',
+            'PW' => 'PALAU',
+            'PY' => 'PARAGUAY',
+            'QA' => 'QATAR',
+            'RO' => 'RUMANÍA',
+            'RU' => 'RUSIA',
+            'RW' => 'RUANDA',
+            'SA' => 'ARABIA SAUDÍ',
+            'SB' => 'SALOMÓN, ISLAS',
+            'SC' => 'SEYCHELLES [(ISLAS MAHÉ, ISLA PRASLIN, LA DIGUE, FRAGATA Y SILHOUETTE, ISLAS ALMIRANTES (ENTRE ELLAS DESROCHES, ALPHONSE, PLATE Y COËTIVY); ISLAS FARQUHAR (ENTRE ELLAS PROVIDENCIA); ISLAS ALDABRA E ISLAS COSMOLEDO)]',
+            'SD' => 'SUDÁN',
+            'SE' => 'SUECIA',
+            'SG' => 'SINGAPUR',
+            'SH' => 'SANTA ELENA (INCLUIDOS LA ISLA DE LA ASCENSIÓN Y EL ARCHIPIÉLAGO TRISTÁN DA CUHNA)',
+            'SI' => 'ESLOVENIA',
+            'SK' => 'ESLOVAQUIA',
+            'SL' => 'SIERRA LEONA',
+            'SM' => 'SAN MARINO',
+            'SN' => 'SENEGAL',
+            'SO' => 'SOMALIA',
+            'SR' => 'SURINAM',
+            'ST' => 'SANTO TOMÉ Y PRÍNCIPE',
+            'SV' => 'SALVADOR, EL',
+            'SY' => 'SIRIA (REPÚBLICA ÁRABE)',
+            'SZ' => 'SUAZILANDIA',
+            'TC' => 'TURCAS Y CAICOS, ISLAS',
+            'TD' => 'CHAD',
+            'TF' => 'TIERRAS AUSTRALES FRANCESAS (ISLA DE NUEVA AMSTERDAM, ISLA SAN PABLO, LAS ISLAS CROZET Y KERGUELÉN)',
+            'TG' => 'TOGO',
+            'TH' => 'TAILANDIA',
+            'TJ' => 'TAYIKISTÁN',
+            'TK' => 'TOKELAU, ISLAS',
+            'TL' => 'TIMOR LESTE',
+            'TM' => 'TURKMENISTÁN',
+            'TN' => 'TÚNEZ',
+            'TO' => 'TONGA',
+            'TR' => 'TURQUÍA',
+            'TT' => 'TRINIDAD Y TOBAGO',
+            'TV' => 'TUVALU',
+            'TW' => 'TAIWÁN',
+            'TZ' => 'TANZANIA (REPÚBLICA UNIDA DE) (TANGANICA E ISLAS DE ZANZÍBAR Y PEMBA)',
+            'UA' => 'UCRANIA',
+            'UG' => 'UGANDA',
+            'UM' => 'MENORES ALEJADAS DE LOS EE.UU, ISLAS (BAKER, HOWLAND, JARVIS, JOHSTON, KINGMAN REEF, MIDWAY, NAVASSA, PALMIRA Y WAKE)',
+            'US' => 'ESTADOS UNIDOS',
+            'UY' => 'URUGUAY',
+            'UZ' => 'UZBEKISTÁN',
+            'VA' => 'VATICANO, CIUDAD DEL (SANTA SEDE)',
+            'VC' => 'SAN VICENTE Y LAS GRANADINAS',
+            'VE' => 'VENEZUELA',
+            'VG' => 'VÍRGENES BRITÁNICAS, ISLAS',
+            'VI' => 'VÍRGENES DE LOS EE.UU, ISLAS',
+            'VN' => 'VIETNAM',
+            'VU' => 'VANUATU',
+            'WF' => 'WALLIS Y FUTUNA, ISLAS (INCLUIDA LA ISLA ALOFI)',
+            'WS' => 'SAMOA (SAMOA OCCIDENTAL)',
+            'XB' => 'BANCO CENTRAL EUROPEO',
+            'XG' => 'LUXEMBURGO [POR LO QUE RESPECTA A LAS RENTAS PERCIBIDAS POR LAS SOCIEDADES A QUE SE REFIERE EL PÁRRAFO 1 DEL PROTOCOLO ANEXO AL CONVENIO DE DOBLE IMPOSICIÓN (3 JUNIO 1986)]',
+            'XN' => 'ORGANISMOS INTERNACIONALES DISTINTOS DE LAS INSTITUCIONES DE LA UNIÓN EUROPEA Y DEL BANCO CENTRAL EUROPEO',
+            'XU' => 'INSTITUCIONES DE LA UNIÓN EUROPEA',
+            'YE' => 'YEMEN (YEMEN DEL NORTE Y YEMEN DEL SUR)',
+            'YT' => 'MAYOTTE (GRAN TIERRA Y PAMANDZI)',
+            'ZA' => 'SUDÁFRICA',
+            'ZM' => 'ZAMBIA',
+            'ZW' => 'ZIMBABUE',
+        ];
     }
 
     private function resolveKardexServiceFullName(mixed $item): string
