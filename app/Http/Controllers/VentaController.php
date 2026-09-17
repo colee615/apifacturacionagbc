@@ -3513,6 +3513,20 @@ class VentaController extends Controller
                     and fc_review.incidencia_revisada_at is not null
             )"
             : 'false';
+        // Una venta puede conservar OBSERVADA en ventas aunque exista una
+        // notificacion EXITO para el mismo seguimiento. En ese caso no es
+        // una incidencia del cierre.
+        $successfulFiscalNotificationExpr = Schema::hasTable('notificaciones')
+            ? "exists (
+                select 1
+                from notificaciones as nf_success
+                where nf_success.codigo_seguimiento = ventas.\"codigoSeguimiento\"
+                    and upper(coalesce(nf_success.estado, '')) = 'EXITO'
+            )"
+            : 'false';
+        $reviewedDiscardedLinkedVentaExpr = "({$reviewedDiscardedLinkedVentaExpr} or {$successfulFiscalNotificationExpr})";
+        $processedFiscalExpr = "(upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL') or {$successfulFiscalNotificationExpr})";
+        $processedOnlyExpr = "(upper(coalesce(estado_sufe, '')) = 'PROCESADA' or {$successfulFiscalNotificationExpr})";
         $sucursalCodigoExpr = $this->hasOrigenSucursalCodigoColumn()
             ? "coalesce(nullif(origen_sucursal_codigo, ''), cast(coalesce(\"codigoSucursal\", 0) as varchar))"
             : "cast(coalesce(\"codigoSucursal\", 0) as varchar)";
@@ -3523,15 +3537,15 @@ class VentaController extends Controller
         $resumen = (clone $settledBaseQuery)
             ->selectRaw("
                 sum(case
-                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+                    when {$processedFiscalExpr}
                     then 1 else 0
                 end) as cantidad_ventas,
                 coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+                    when {$processedFiscalExpr}
                     then total else 0
                 end), 0) as total_vendido,
                 coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                    when {$processedOnlyExpr}
                         and (
                             upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
                             or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
@@ -3539,7 +3553,7 @@ class VentaController extends Controller
                     then total else 0
                 end), 0) as total_qr_facturado,
                 coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                    when {$processedOnlyExpr}
                         and not (
                             upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
                             or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
@@ -3547,9 +3561,9 @@ class VentaController extends Controller
                     then total else 0
                 end), 0) as total_efectivo_facturado,
                 count(distinct coalesce(origen_usuario_id, origen_usuario_email, origen_usuario_alias, origen_usuario_nombre, 'SIN-USUARIO')) as cajeros_unicos,
-                sum(case when upper(coalesce(estado_sufe, '')) = 'PROCESADA' then 1 else 0 end) as facturadas,
+                sum(case when {$processedOnlyExpr} then 1 else 0 end) as facturadas,
                 sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                    when {$processedOnlyExpr}
                         and (
                             upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
                             or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
@@ -3557,7 +3571,7 @@ class VentaController extends Controller
                     then 1 else 0
                 end) as qr_facturadas,
                 sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                    when {$processedOnlyExpr}
                         and not (
                             upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
                             or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
@@ -3584,15 +3598,15 @@ class VentaController extends Controller
                 {$puntoVentaExpr} as punto_venta,
                 coalesce(max(nullif(departamento, '')), '') as departamento,
                 sum(case
-                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+                    when {$processedFiscalExpr}
                     then 1 else 0
                 end) as cantidad_ventas,
                 coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
+                    when {$processedFiscalExpr}
                     then total else 0
                 end), 0) as total_vendido,
                 coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                    when {$processedOnlyExpr}
                         and (
                             upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
                             or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
@@ -3600,7 +3614,7 @@ class VentaController extends Controller
                     then total else 0
                 end), 0) as total_qr_facturado,
                 coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                    when {$processedOnlyExpr}
                         and not (
                             upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
                             or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
@@ -3608,9 +3622,9 @@ class VentaController extends Controller
                     then total else 0
                 end), 0) as total_efectivo_facturado,
                 count(distinct coalesce(origen_usuario_id, origen_usuario_email, origen_usuario_alias, origen_usuario_nombre, 'SIN-USUARIO')) as cajeros_unicos,
-                sum(case when upper(coalesce(estado_sufe, '')) = 'PROCESADA' then 1 else 0 end) as facturadas,
+                sum(case when {$processedOnlyExpr} then 1 else 0 end) as facturadas,
                 sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                    when {$processedOnlyExpr}
                         and (
                             upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
                             or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
@@ -3618,7 +3632,7 @@ class VentaController extends Controller
                     then 1 else 0
                 end) as qr_facturadas,
                 sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
+                    when {$processedOnlyExpr}
                         and not (
                             upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
                             or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
