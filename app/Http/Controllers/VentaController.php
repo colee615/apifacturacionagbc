@@ -389,16 +389,6 @@ class VentaController extends Controller
         $tipoEmision = data_get($detalle, 'tipoEmision');
         $cuf = data_get($detalle, 'cuf');
 
-        if ($estadoSufe === 'PROCESADA' && $estado !== 'EXITO' && $tipoEmision !== 'ANULACION') {
-            return $this->makeStatusPayload('fiscal', 'PROCESADO', [
-                'can_consult' => true,
-                'can_annul' => !blank($venta->cuf ?: $cuf),
-                'notification_state' => $estado,
-                'tipoEmision' => $tipoEmision,
-                'cuf' => $venta->cuf ?: $cuf,
-            ]);
-        }
-
         if ($estado === 'EXITO') {
             return $this->makeStatusPayload('fiscal', 'PROCESADO', [
                 'can_consult' => true,
@@ -4369,15 +4359,6 @@ class VentaController extends Controller
             && ($estadoEmision === 'FACTURADA'
                 || $linkedVentaStatus === 'PROCESADA'
                 || !blank($linkedVenta->cuf ?? null));
-
-        // El estado fiscal confirmado de la venta prevalece sobre un estado
-        // antiguo del carrito o una notificacion observada tardia.
-        if ($linkedVentaStatus === 'PROCESADA' && !blank($linkedVenta->cuf ?? null)) {
-            return $this->makeStatusPayload('cart', 'FACTURADA', [
-                'can_annul' => true,
-                'cuf' => $linkedVenta->cuf,
-            ]);
-        }
 
         if ($estado === 'descartado') {
             return $this->makeStatusPayload('cart', 'DESCARTADA', [

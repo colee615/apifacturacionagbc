@@ -623,43 +623,6 @@ class FacturacionCartIntegrationController extends Controller
         $cart = $cartQuery->latest('id')->first();
         if (!$cart) return response()->json(['ok' => false, 'message' => 'No se encontro un borrador de facturacion activo.'], 422);
 
-        // Compatibilidad con carritos emitidos antes de crear el historial:
-        // si ya tenemos un seguimiento fiscal pendiente, consultar es la
-        // unica operacion segura; no se debe crear otra factura.
-        $currentEmissionState = strtoupper(trim((string) ($cart->estado_emision ?? '')));
-        $currentFiscalTracking = trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')));
-        if ($currentFiscalTracking !== '' && in_array($currentEmissionState, ['PENDIENTE', 'RECEPCIONADA'], true)) {
-            return response()->json([
-                'ok' => false,
-                'message' => 'La venta ya tiene una emision fiscal pendiente. Consulte el estado antes de reintentar.',
-                'duplicate_emission_blocked' => true,
-                'codigo_seguimiento' => $currentFiscalTracking,
-                'cart' => $this->cartById((int) $cart->id),
-            ], 409);
-        }
-
-        // Un 202 de SEFE significa que la solicitud fue recibida, no que se
-        // pueda volver a enviar. El intento queda pendiente hasta recibir la
-        // notificacion final o una consulta concluyente.
-        if (Schema::hasTable('facturacion_cart_emisiones')) {
-            $activeEmission = DB::table('facturacion_cart_emisiones')
-                ->where('cart_id', (int) $cart->id)
-                ->where('canal_emision', 'factura_electronica')
-                ->whereIn('estado', ['PENDIENTE', 'RECEPCIONADA', 'FACTURADA'])
-                ->orderByDesc('id')
-                ->first();
-
-            if ($activeEmission) {
-                return response()->json([
-                    'ok' => false,
-                    'message' => 'La venta ya tiene una emision fiscal en curso o facturada. Consulte el estado antes de reintentar.',
-                    'duplicate_emission_blocked' => true,
-                    'emision' => $activeEmission,
-                    'cart' => $this->cartById((int) $cart->id),
-                ], 409);
-            }
-        }
-
         $overrideCanal = in_array((string) ($validated['canal_emision'] ?? ''), ['factura_electronica', 'qr'], true)
             ? (string) $validated['canal_emision']
             : strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
@@ -790,18 +753,6 @@ class FacturacionCartIntegrationController extends Controller
             'codigo_orden_anterior' => $cart->codigo_orden ?? null,
             'codigo_orden_intento' => $codigoOrdenIntento,
         ]);
-        $emissionAttemptId = null;
-        if ($canalEmision === 'factura_electronica' && Schema::hasTable('facturacion_cart_emisiones')) {
-            $emissionAttemptId = DB::table('facturacion_cart_emisiones')->insertGetId([
-                'cart_id' => (int) $cart->id,
-                'venta_id' => $latestLinkedVenta->id ?? null,
-                'canal_emision' => $canalEmision,
-                'codigo_orden' => $codigoOrdenIntento,
-                'estado' => 'PENDIENTE',
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        }
         $codigoOrdenAnterior = trim((string) ($cart->codigo_orden ?? ''));
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
@@ -943,34 +894,6 @@ class FacturacionCartIntegrationController extends Controller
         $isFailedPaidQrInvoiceConversion = $preservePaidQrPayment
             && $canalEmision !== 'qr'
             && (!$ok || $emitStatusCode >= 400);
-
-        $attemptNumeroFactura = trim((string) (
-            data_get($body, 'factura.nroFactura')
-            ?: data_get($body, 'factura.numeroFactura')
-            ?: data_get($body, 'nroFactura')
-            ?: ''
-        ));
-        $attemptCuf = trim((string) (
-            data_get($body, 'factura.cuf')
-            ?: data_get($body, 'cuf')
-            ?: data_get($body, 'datos.cuf')
-            ?: ''
-        ));
-        if ($emissionAttemptId) {
-            DB::table('facturacion_cart_emisiones')->where('id', $emissionAttemptId)->update([
-                'venta_id' => $latestLinkedVenta->id ?? null,
-                'codigo_orden' => $codigoOrdenEmitido !== '' ? $codigoOrdenEmitido : $codigoOrdenIntento,
-                'codigo_seguimiento' => $codigoSeguimientoEmitido !== '' ? $codigoSeguimientoEmitido : null,
-                'codigo_seguimiento_fiscal' => $codigoSeguimientoEmitido !== '' ? $codigoSeguimientoEmitido : null,
-                'numero_factura' => $attemptNumeroFactura !== '' ? $attemptNumeroFactura : null,
-                'cuf' => $attemptCuf !== '' ? $attemptCuf : null,
-                'estado' => $ok && $emitStatusCode < 400
-                    ? (strtoupper((string) ($body['estado'] ?? 'PENDIENTE')) === 'FACTURADA' ? 'FACTURADA' : 'PENDIENTE')
-                    : ($emitStatusCode >= 400 ? 'RECHAZADA' : 'ERROR'),
-                'respuesta' => json_encode($body, JSON_UNESCAPED_UNICODE),
-                'updated_at' => now(),
-            ]);
-        }
 
         $resolvedEstadoEmision = (string) ($body['estado'] ?? (
             $ok
@@ -1280,7 +1203,6 @@ class FacturacionCartIntegrationController extends Controller
 
         DB::table('facturacion_carts')->where('id', $cart->id)->update($updates);
         $this->syncLinkedVentaFiscalData($cart, $mergedResponse);
-        $this->syncEmissionAttemptFromResponse($cart, $mergedResponse, $statusCode);
 
         $shouldAutoEmitInvoice = $shouldConsultQr
             && $autoEmitInvoice
@@ -2931,37 +2853,6 @@ class FacturacionCartIntegrationController extends Controller
             && (Str::startsWith($reference, 'SRVE-')
                 || Str::startsWith($reference, 'SERV-')
                 || Str::startsWith($reference, 'SERVICIO-'));
-    }
-
-    private function syncEmissionAttemptFromResponse(object $cart, array $response, int $statusCode): void
-    {
-        if (!Schema::hasTable('facturacion_cart_emisiones')) {
-            return;
-        }
-
-        $codigoSeguimiento = trim((string) (
-            data_get($response, 'codigoSeguimiento')
-            ?: $cart->codigo_seguimiento_fiscal
-            ?: $cart->codigo_seguimiento
-            ?: ''
-        ));
-        if ($codigoSeguimiento === '') {
-            return;
-        }
-
-        $estado = strtoupper(trim((string) ($response['estado'] ?? '')));
-        $attemptState = $statusCode >= 400 || $estado === 'ERROR'
-            ? 'RECHAZADA'
-            : ($estado === 'FACTURADA' ? 'FACTURADA' : 'PENDIENTE');
-        DB::table('facturacion_cart_emisiones')
-            ->where('codigo_seguimiento', $codigoSeguimiento)
-            ->update([
-                'numero_factura' => data_get($response, 'factura.nroFactura') ?: data_get($response, 'nroFactura'),
-                'cuf' => data_get($response, 'factura.cuf') ?: data_get($response, 'cuf'),
-                'estado' => $attemptState,
-                'respuesta' => json_encode($response, JSON_UNESCAPED_UNICODE),
-                'updated_at' => now(),
-            ]);
     }
 
     private function latestNotificationDetailBySeguimiento(?string $codigoSeguimiento): array
