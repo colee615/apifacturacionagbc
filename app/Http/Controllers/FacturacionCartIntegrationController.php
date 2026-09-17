@@ -1236,19 +1236,10 @@ class FacturacionCartIntegrationController extends Controller
             : $existingResponse;
         $mergedResponse = $this->enrichCartResponseWithFiscalBackfill($cart, $mergedResponse);
 
-        $hasSuccessfulFiscalNotification = $codigoSeguimientoFiscal !== ''
-            && Notificacione::query()
-                ->where('codigo_seguimiento', $codigoSeguimientoFiscal)
-                ->where('estado', 'EXITO')
-                ->exists();
-        $preserveProcessedVenta = ($latestLinkedVentaStatus === 'PROCESADA' || $hasSuccessfulFiscalNotification)
-            && !in_array(strtoupper((string) ($body['estado'] ?? '')), ['ANULADA', 'ANULACION_SOLICITADA'], true);
         $updates = [
-            'estado_emision' => $preserveProcessedVenta
-                ? 'FACTURADA'
-                : ($consultSucceeded
-                    ? (string) ($body['estado'] ?? ($cart->estado_emision ?? 'ERROR'))
-                    : (string) ($cart->estado_emision ?? 'ERROR')),
+            'estado_emision' => $consultSucceeded
+                ? (string) ($body['estado'] ?? ($cart->estado_emision ?? 'ERROR'))
+                : (string) ($cart->estado_emision ?? 'ERROR'),
             'mensaje_emision' => (string) ($body['mensaje'] ?? ($body['message'] ?? ($cart->mensaje_emision ?? ''))),
             'respuesta_emision' => json_encode($mergedResponse, JSON_UNESCAPED_UNICODE),
             'updated_at' => now(),
@@ -2283,30 +2274,10 @@ class FacturacionCartIntegrationController extends Controller
         ));
         $codigoSeguimientoFiscal = trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')));
         $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
-        $successfulNotification = $codigoSeguimientoFiscal !== ''
-            ? Notificacione::query()
-                ->where('codigo_seguimiento', $codigoSeguimientoFiscal)
-                ->where('estado', 'EXITO')
-                ->latest('id')
-                ->first()
-            : null;
-        if ($successfulNotification) {
-            $successfulDetail = $this->decode((string) ($successfulNotification->detalle ?? ''));
-            $successfulCuf = trim((string) (
-                data_get($successfulDetail, 'cuf')
-                ?: data_get($successfulDetail, 'factura.cuf')
-                ?: data_get($successfulDetail, 'detalle.cuf')
-                ?: ''
-            ));
-            if ($successfulCuf !== '') {
-                $cuf = $successfulCuf;
-            }
-            $linkedVentaStatus = 'PROCESADA';
-        }
         $isLinkedVentaAnnulled = in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
         $isLinkedVentaAnnulmentPending = $linkedVentaStatus === 'ANULACION_SOLICITADA';
         $isLinkedVentaAnnulmentObserved = $linkedVentaStatus === 'ANULACION_OBSERVADA';
-        $canAnnul = ($estadoEmision === 'FACTURADA' || $linkedVentaStatus === 'PROCESADA')
+        $canAnnul = $estadoEmision === 'FACTURADA'
             && $cuf !== ''
             && !$isLinkedVentaAnnulled
             && !$isLinkedVentaAnnulmentPending;
@@ -2320,15 +2291,6 @@ class FacturacionCartIntegrationController extends Controller
             return $this->makeFacturacionCartStatusPayload('DESCARTADA', [
                 'can_consult' => false,
                 'cuf' => $cuf !== '' ? $cuf : null,
-            ]);
-        }
-
-        // La venta vinculada es la fuente de verdad cuando ya fue admitida.
-        // El carrito puede quedar RECHAZADA por un intento posterior.
-        if ($linkedVentaStatus === 'PROCESADA' && $cuf !== '') {
-            return $this->makeFacturacionCartStatusPayload('FACTURADA', [
-                'can_annul' => $canAnnul,
-                'cuf' => $cuf,
             ]);
         }
 
