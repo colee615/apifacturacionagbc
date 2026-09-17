@@ -1240,6 +1240,7 @@ class FacturacionCartIntegrationController extends Controller
             && Notificacione::query()
                 ->where('codigo_seguimiento', $codigoSeguimientoFiscal)
                 ->where('estado', 'EXITO')
+                ->whereRaw("upper(coalesce(detalle->>'tipoEmision', 'EMISION')) <> 'ANULACION'")
                 ->exists();
         $preserveProcessedVenta = ($latestLinkedVentaStatus === 'PROCESADA' || $hasSuccessfulFiscalNotification)
             && !in_array(strtoupper((string) ($body['estado'] ?? '')), ['ANULADA', 'ANULACION_SOLICITADA'], true);
@@ -2287,6 +2288,7 @@ class FacturacionCartIntegrationController extends Controller
             ? Notificacione::query()
                 ->where('codigo_seguimiento', $codigoSeguimientoFiscal)
                 ->where('estado', 'EXITO')
+                ->whereRaw("upper(coalesce(detalle->>'tipoEmision', 'EMISION')) <> 'ANULACION'")
                 ->latest('id')
                 ->first()
             : null;
