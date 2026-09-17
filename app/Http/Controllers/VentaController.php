@@ -3522,13 +3522,6 @@ class VentaController extends Controller
                 from notificaciones as nf_success
                 where nf_success.codigo_seguimiento = ventas.\"codigoSeguimiento\"
                     and upper(coalesce(nf_success.estado, '')) = 'EXITO'
-                    and upper(coalesce(nf_success.detalle->>'tipoEmision', 'EMISION')) <> 'ANULACION'
-            ) and not exists (
-                select 1
-                from notificaciones as nf_annul_success
-                where nf_annul_success.codigo_seguimiento = ventas.\"codigoSeguimiento\"
-                    and upper(coalesce(nf_annul_success.estado, '')) = 'EXITO'
-                    and upper(coalesce(nf_annul_success.detalle->>'tipoEmision', '')) = 'ANULACION'
             )"
             : 'false';
         $reviewedDiscardedLinkedVentaExpr = "({$reviewedDiscardedLinkedVentaExpr} or {$successfulFiscalNotificationExpr})";
@@ -4339,7 +4332,6 @@ class VentaController extends Controller
             ? Notificacione::query()
                 ->where('codigo_seguimiento', $codigoSeguimientoFiscal)
                 ->where('estado', 'EXITO')
-                ->whereRaw("upper(coalesce(detalle->>'tipoEmision', 'EMISION')) <> 'ANULACION'")
                 ->latest('id')
                 ->first()
             : null;
