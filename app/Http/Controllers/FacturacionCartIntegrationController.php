@@ -2299,6 +2299,15 @@ class FacturacionCartIntegrationController extends Controller
             || trim((string) ($cart->qr_transaction_id ?? '')) !== '';
 
         if ($isQrTrackedSale) {
+            // Una notificacion posterior OBSERVADA/CONTINGENCIA no puede
+            // ocultar una venta que ya fue confirmada como PROCESADA.
+            if ($linkedVentaStatus === 'PROCESADA' && $cuf !== '') {
+                return $this->makeFacturacionCartStatusPayload('FACTURADA', [
+                    'can_annul' => $canAnnul || !$isLinkedVentaAnnulled,
+                    'cuf' => $cuf,
+                ]);
+            }
+
             $hasActiveFiscalAttempt = $canal !== 'qr'
                 && in_array($estadoEmision, ['PENDIENTE', 'RECHAZADA', 'ERROR', 'FACTURADA'], true)
                 && ($codigoSeguimientoFiscal !== '' || $cuf !== '');
