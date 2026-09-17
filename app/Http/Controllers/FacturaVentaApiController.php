@@ -824,6 +824,12 @@ class FacturaVentaApiController extends Controller
                 };
             }
 
+            // Una notificacion OBSERVADO/CREADO tardia no puede reemplazar
+            // una emision que ya fue confirmada como PROCESADA.
+            if ($currentStatus === 'PROCESADA' && $notificacion->estado !== 'EXITO') {
+                return 'PROCESADA';
+            }
+
             return match ($notificacion->estado) {
                 'EXITO' => 'PROCESADA',
                 'OBSERVADO' => 'OBSERVADA',
