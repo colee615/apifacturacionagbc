@@ -4314,10 +4314,31 @@ class VentaController extends Controller
         ));
         $codigoSeguimientoFiscal = trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')));
         $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
+        $successfulNotification = $codigoSeguimientoFiscal !== ''
+            ? Notificacione::query()
+                ->where('codigo_seguimiento', $codigoSeguimientoFiscal)
+                ->where('estado', 'EXITO')
+                ->latest('id')
+                ->first()
+            : null;
+        if ($successfulNotification) {
+            $successfulDetail = json_decode((string) ($successfulNotification->detalle ?? ''), true);
+            $successfulDetail = is_array($successfulDetail) ? $successfulDetail : [];
+            $successfulCuf = trim((string) (
+                data_get($successfulDetail, 'cuf')
+                ?: data_get($successfulDetail, 'factura.cuf')
+                ?: data_get($successfulDetail, 'detalle.cuf')
+                ?: ''
+            ));
+            if ($successfulCuf !== '') {
+                $cuf = $successfulCuf;
+            }
+            $linkedVentaStatus = 'PROCESADA';
+        }
         $isLinkedVentaAnnulled = in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
         $isLinkedVentaAnnulmentPending = $linkedVentaStatus === 'ANULACION_SOLICITADA';
         $isLinkedVentaAnnulmentObserved = $linkedVentaStatus === 'ANULACION_OBSERVADA';
-        $canAnnul = $estadoEmision === 'FACTURADA'
+        $canAnnul = ($estadoEmision === 'FACTURADA' || $linkedVentaStatus === 'PROCESADA')
             && $cuf !== ''
             && !$isLinkedVentaAnnulled
             && !$isLinkedVentaAnnulmentPending;
@@ -4340,6 +4361,15 @@ class VentaController extends Controller
             return $this->makeStatusPayload('cart', 'DESCARTADA', [
                 'can_consult' => false,
                 'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
+        }
+
+        // La venta vinculada es la fuente de verdad cuando ya fue admitida.
+        // El carrito puede quedar RECHAZADA por un intento posterior.
+        if ($linkedVentaStatus === 'PROCESADA' && $cuf !== '') {
+            return $this->makeFacturacionCartStatusPayload('FACTURADA', [
+                'can_annul' => $canAnnul,
+                'cuf' => $cuf,
             ]);
         }
 
