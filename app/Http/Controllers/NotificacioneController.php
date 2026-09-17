@@ -161,6 +161,19 @@ class NotificacioneController extends Controller
       $observacion = $validated['observacion'] ?? data_get($validated, 'detalle.observacion');
       $tipoEmision = (string) data_get($validated, 'detalle.tipoEmision', '');
       $estadoSufe = $this->resolveVentaEstadoSufe($validated);
+      $currentVenta = Venta::query()
+         ->where('codigoSeguimiento', $codigoSeguimiento)
+         ->first(['id', 'estado_sufe', 'cuf', 'url_pdf', 'url_xml']);
+      $preserveProcessed = $currentVenta
+         && strtoupper(trim((string) $currentVenta->estado_sufe)) === 'PROCESADA'
+         && strtoupper(trim($tipoEmision)) !== 'ANULACION'
+         && $estadoSufe !== 'PROCESADA';
+
+      if ($preserveProcessed) {
+         // Una observacion/contingencia tardia no puede degradar una emision
+         // que ya fue confirmada por SEFE para este seguimiento.
+         $estadoSufe = 'PROCESADA';
+      }
       $updates = [
          'estado_sufe' => $estadoSufe,
          'tipo_emision_sufe' => $tipoEmision,
@@ -173,9 +186,15 @@ class NotificacioneController extends Controller
          $updates['cuf'] = data_get($validated, 'detalle.cuf');
       }
 
-      if ($tipoEmision !== 'ANULACION') {
+      if ($tipoEmision !== 'ANULACION' && !$preserveProcessed) {
          $updates['url_pdf'] = data_get($validated, 'detalle.urlPdf');
          $updates['url_xml'] = data_get($validated, 'detalle.urlXml');
+      }
+
+      if ($preserveProcessed) {
+         $updates['cuf'] = $currentVenta->cuf;
+         $updates['url_pdf'] = $currentVenta->url_pdf;
+         $updates['url_xml'] = $currentVenta->url_xml;
       }
 
       Venta::query()
@@ -263,11 +282,38 @@ class NotificacioneController extends Controller
          )),
      ]);
       $notificacion->save();
+      $this->syncEmissionAttemptFromNotification($codigoSeguimiento, $validated);
       $this->syncVentaFromNotification($codigoSeguimiento, $validated);
 
       return response()->json([
          'message' => 'Notificación recibida',
          'codigoSeguimiento' => $codigoSeguimiento,
       ], 200);
+   }
+
+   private function syncEmissionAttemptFromNotification(string $codigoSeguimiento, array $validated): void
+   {
+      if (!Schema::hasTable('facturacion_cart_emisiones')) {
+         return;
+      }
+
+      $tipoEmision = strtoupper(trim((string) data_get($validated, 'detalle.tipoEmision', '')));
+      $estado = strtoupper(trim((string) ($validated['estado'] ?? '')));
+      $attemptState = match (true) {
+         $tipoEmision === 'ANULACION' && $estado === 'EXITO' => 'ANULADA',
+         $tipoEmision === 'ANULACION' && $estado === 'OBSERVADO' => 'ANULACION_OBSERVADA',
+         $estado === 'EXITO' => 'FACTURADA',
+         $estado === 'OBSERVADO' => 'RECHAZADA',
+         default => 'PENDIENTE',
+      };
+
+      DB::table('facturacion_cart_emisiones')
+         ->where('codigo_seguimiento', $codigoSeguimiento)
+         ->update([
+            'numero_factura' => data_get($validated, 'detalle.nroFactura'),
+            'cuf' => data_get($validated, 'detalle.cuf'),
+            'estado' => $attemptState,
+            'updated_at' => now(),
+         ]);
    }
 }
