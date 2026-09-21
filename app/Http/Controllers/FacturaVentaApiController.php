@@ -433,12 +433,59 @@ class FacturaVentaApiController extends Controller
         $baseData = array_merge($baseData, $this->optionalContractVentaData($payload));
 
         $ventaId = null;
+        $ventaExistente = null;
         if (trim((string) $origenVentaId) !== '' && trim((string) $origenVentaTipo) !== '') {
-            $ventaId = DB::table('ventas')
+            $ventaExistente = DB::table('ventas')
                 ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [(string) $origenVentaId])
                 ->where('origen_venta_tipo', (string) $origenVentaTipo)
                 ->orderByDesc('id')
-                ->value('id');
+                ->first([
+                    'id',
+                    'codigoOrden',
+                    'codigoSeguimiento',
+                    'estado_sufe',
+                    'numero_factura',
+                    'cuf',
+                ]);
+
+            if ($ventaExistente) {
+                $existingStatus = strtoupper(trim((string) ($ventaExistente->estado_sufe ?? '')));
+                $existingOrder = trim((string) ($ventaExistente->codigoOrden ?? ''));
+                $existingTracking = trim((string) ($ventaExistente->codigoSeguimiento ?? ''));
+                $incomingOrder = trim((string) $codigoOrden);
+                $incomingTracking = trim((string) $codigoSeguimiento);
+                $hasFiscalIdentity = trim((string) ($ventaExistente->numero_factura ?? '')) !== ''
+                    || trim((string) ($ventaExistente->cuf ?? '')) !== '';
+                $isFinalFiscalEmission = in_array($existingStatus, [
+                    'PROCESADA',
+                    'ANULADA',
+                    'ANULADO',
+                ], true) && $hasFiscalIdentity;
+                $sameFiscalAttempt = ($incomingTracking !== '' && $existingTracking === $incomingTracking)
+                    || ($incomingTracking === '' && $incomingOrder !== '' && $existingOrder === $incomingOrder);
+
+                // Un carrito puede reutilizarse para corregir/reemitir una venta. Nunca
+                // debemos sobrescribir una emisión que ya tiene identidad fiscal: debe
+                // quedar una fila independiente para conservar la trazabilidad SAFE.
+                if (!$isFinalFiscalEmission && $sameFiscalAttempt) {
+                    $ventaId = (int) $ventaExistente->id;
+                }
+
+                Log::info('FacturaVentaApiController createVenta: resolucion de historial.', [
+                    'venta_existente_id' => $ventaExistente->id,
+                    'origen_venta_id' => $origenVentaId,
+                    'origen_venta_tipo' => $origenVentaTipo,
+                    'estado_existente' => $existingStatus,
+                    'codigo_orden_existente' => $existingOrder,
+                    'codigo_seguimiento_existente' => $existingTracking,
+                    'codigo_orden_entrante' => $incomingOrder,
+                    'codigo_seguimiento_entrante' => $incomingTracking,
+                    'identidad_fiscal_existente' => $hasFiscalIdentity,
+                    'emision_final_existente' => $isFinalFiscalEmission,
+                    'mismo_intento' => $sameFiscalAttempt,
+                    'accion' => $ventaId ? 'actualizar_intento_pendiente' : 'crear_historial_independiente',
+                ]);
+            }
         }
 
         if ($ventaId) {

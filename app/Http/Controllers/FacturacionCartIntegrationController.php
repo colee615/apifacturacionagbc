@@ -2913,16 +2913,6 @@ class FacturacionCartIntegrationController extends Controller
 
     private function syncLinkedVentaFiscalData(object $cart, array $response): void
     {
-        $linkedVenta = Venta::query()
-            ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [$cart->id])
-            ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
-            ->latest('id')
-            ->first();
-
-        if (!$linkedVenta) {
-            return;
-        }
-
         $numeroFactura = trim((string) (
             data_get($response, 'factura.nroFactura')
             ?: data_get($response, 'nroFactura')
@@ -2949,6 +2939,32 @@ class FacturacionCartIntegrationController extends Controller
             ?: $cart->codigo_seguimiento
             ?: ''
         ));
+        $codigoOrden = trim((string) (
+            data_get($response, 'codigoOrden')
+            ?: $cart->codigo_orden
+            ?: ''
+        ));
+
+        $linkedVentaQuery = Venta::query()
+            ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [$cart->id])
+            ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote']);
+
+        // Puede haber varias emisiones para un mismo carrito. El seguimiento o
+        // el codigo de orden identifican el intento correcto; usar siempre la
+        // ultima fila podia completar fiscalmente una emision distinta.
+        if ($codigoSeguimiento !== '') {
+            $linkedVentaQuery->where('codigoSeguimiento', $codigoSeguimiento);
+        } elseif ($codigoOrden !== '') {
+            $linkedVentaQuery->where('codigoOrden', $codigoOrden);
+        } else {
+            $linkedVentaQuery->latest('id');
+        }
+
+        $linkedVenta = $linkedVentaQuery->latest('id')->first();
+
+        if (!$linkedVenta) {
+            return;
+        }
 
         $updates = [];
 
