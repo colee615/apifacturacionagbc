@@ -2014,7 +2014,7 @@ class VentaController extends Controller
             ->all();
 
         $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters)
-            ->whereRaw("upper(coalesce(estado_sufe, '')) not in ('ANULADA', 'ANULADO')");
+            ->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')");
         if ($cartIds !== []) {
             $ventasQuery->where(function ($query) use ($cartIds) {
                 $query->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
@@ -2173,8 +2173,17 @@ class VentaController extends Controller
         $linkedStatus = strtoupper(trim((string) data_get($cartFiscalBackfillMap, "{$cartId}.estado_sufe", '')));
         $paymentStatus = strtolower(trim((string) ($payload['estado_pago'] ?? '')));
         $statusKey = strtoupper(trim((string) data_get($payload, 'status.key', '')));
+        $paymentMethod = strtolower(trim((string) ($payload['metodo_pago'] ?? '')));
+        $emissionChannel = strtolower(trim((string) ($payload['canal_emision'] ?? '')));
+        $isQr = $paymentMethod === 'qr' || $emissionChannel === 'qr';
+        $isCash = ! $isQr && in_array($paymentMethod, ['', 'efectivo', 'cash'], true);
+        $isInvoiced = in_array($linkedStatus, ['PROCESADA', 'REGISTRADA_OFICIAL'], true)
+            || in_array($statusKey, ['FACTURADA', 'PROCESADO', 'REGISTRADA_OFICIAL'], true);
 
-        return in_array($linkedStatus, ['ANULADA', 'ANULADO'], true)
+        return ! $isInvoiced
+            || (! $isQr && ! $isCash)
+            || ($isQr && $paymentStatus !== 'pagado')
+            || in_array($linkedStatus, ['ANULADA', 'ANULADO'], true)
             || in_array($paymentStatus, ['cancelado', 'fallido'], true)
             || $statusKey === 'QR_ANULADO';
     }
