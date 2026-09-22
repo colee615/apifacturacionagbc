@@ -1998,6 +1998,7 @@ class VentaController extends Controller
     {
         $cartRows = Schema::hasTable('facturacion_carts')
             ? $this->buildFacturacionCartReportQuery($filters)
+                ->whereRaw("upper(coalesce(estado_emision, '')) not in ('ANULADA', 'ANULADO')")
                 ->orderByDesc('emitido_en')
                 ->orderByDesc('created_at')
                 ->orderByDesc('id')
@@ -2012,7 +2013,8 @@ class VentaController extends Controller
             ->values()
             ->all();
 
-        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
+        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters)
+            ->whereRaw("upper(coalesce(estado_sufe, '')) not in ('ANULADA', 'ANULADO')");
         if ($cartIds !== []) {
             $ventasQuery->where(function ($query) use ($cartIds) {
                 $query->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
@@ -2132,6 +2134,7 @@ class VentaController extends Controller
                 $cartFiscalBackfillMap[(int) $cart->id] ?? null,
                 $cartNotificationBackfillMap[(string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''))] ?? null
             ))
+            ->reject(fn (array $payload) => $this->shouldExcludeCartFromServiceReport($payload, $cartFiscalBackfillMap))
             ->values();
 
         $merged = $list
@@ -2162,6 +2165,18 @@ class VentaController extends Controller
 
             return $row;
         })->values();
+    }
+
+    private function shouldExcludeCartFromServiceReport(array $payload, array $cartFiscalBackfillMap): bool
+    {
+        $cartId = (int) ($payload['cartId'] ?? 0);
+        $linkedStatus = strtoupper(trim((string) data_get($cartFiscalBackfillMap, "{$cartId}.estado_sufe", '')));
+        $paymentStatus = strtolower(trim((string) ($payload['estado_pago'] ?? '')));
+        $statusKey = strtoupper(trim((string) data_get($payload, 'status.key', '')));
+
+        return in_array($linkedStatus, ['ANULADA', 'ANULADO'], true)
+            || in_array($paymentStatus, ['cancelado', 'fallido'], true)
+            || $statusKey === 'QR_ANULADO';
     }
 
     private function buildServiceReportFromVentas(Collection $ventas): array
