@@ -2,47 +2,57 @@
 
 namespace App\Http\Controllers;
 
-use Carbon\Carbon;
-use App\Models\Venta;
 use App\Models\DetalleVenta;
 use App\Models\Notificacione;
+use App\Models\Venta;
 use App\Support\SufeSectorUnoValidator;
+use Carbon\Carbon;
 use Dompdf\Dompdf;
 use Dompdf\Options;
-use Illuminate\Http\Response as HttpResponse;
-use Illuminate\Http\Request;
-use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response as HttpResponse;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class VentaController extends Controller
 {
     private static ?bool $hasOrigenUsuarioAliasColumn = null;
+
     private static ?bool $hasOrigenUsuarioCarnetColumn = null;
+
     private static ?bool $hasOrigenUsuarioEmailColumn = null;
+
     private static ?bool $hasOrigenSucursalCodigoColumn = null;
+
     private static ?bool $hasVentaContratoPdfColumns = null;
+
     private static ?bool $hasCartOrigenUsuarioEmailColumn = null;
+
     private static ?bool $hasCartOrigenUsuarioAliasColumn = null;
+
     private static ?bool $hasCartOrigenUsuarioCarnetColumn = null;
+
     private static ?bool $hasCartOrigenSucursalCodigoColumn = null;
+
     private static ?bool $hasCartOrigenSucursalIdColumn = null;
+
     private static ?bool $hasFacturacionCartItemsTable = null;
+
     private static array $packageReferenceColumnCache = [];
 
     public function __construct(
         private readonly SufeSectorUnoValidator $sufeValidator
-    ) {
-    }
+    ) {}
 
     private function reportLogContext(Request $request, array $extra = []): array
     {
@@ -135,7 +145,7 @@ class VentaController extends Controller
         ];
 
         foreach ($origins as $origin) {
-            if (!Str::endsWith($origenTipo, $origin['match'])) {
+            if (! Str::endsWith($origenTipo, $origin['match'])) {
                 continue;
             }
 
@@ -147,12 +157,12 @@ class VentaController extends Controller
 
     private function findPackageReferenceInTable(string $table, int $id, array $columns): string
     {
-        if (!Schema::hasTable($table)) {
+        if (! Schema::hasTable($table)) {
             return '';
         }
 
-        $cacheKey = $table . '|' . implode(',', $columns);
-        if (!array_key_exists($cacheKey, self::$packageReferenceColumnCache)) {
+        $cacheKey = $table.'|'.implode(',', $columns);
+        if (! array_key_exists($cacheKey, self::$packageReferenceColumnCache)) {
             self::$packageReferenceColumnCache[$cacheKey] = array_values(array_filter(
                 $columns,
                 fn ($column) => Schema::hasColumn($table, $column)
@@ -165,7 +175,7 @@ class VentaController extends Controller
         }
 
         $row = DB::table($table)->where('id', $id)->first($availableColumns);
-        if (!$row) {
+        if (! $row) {
             return '';
         }
 
@@ -189,7 +199,6 @@ class VentaController extends Controller
                 || Str::startsWith($reference, 'SERVICIO-'));
     }
 
-  
     private function ageticBaseUrl(): string
     {
         return rtrim(config('services.agetic.base_url', 'https://sefe.demo.agetic.gob.bo'), '/');
@@ -200,10 +209,10 @@ class VentaController extends Controller
         $token = config('services.agetic.token');
 
         return Http::withHeaders([
-                'Authorization' => 'Bearer ' . $token,
-                'Content-Type'  => 'application/json',
-                'Accept'        => 'application/json',
-            ])
+            'Authorization' => 'Bearer '.$token,
+            'Content-Type' => 'application/json',
+            'Accept' => 'application/json',
+        ])
             ->withOptions([
                 'force_ip_resolve' => 'v4',
             ])
@@ -321,7 +330,7 @@ class VentaController extends Controller
             ]);
         }
 
-        if (!$notification) {
+        if (! $notification) {
             if ($estadoSufe === 'ANULADA') {
                 return $this->makeStatusPayload('fiscal', 'ANULADA', [
                     'can_consult' => true,
@@ -342,10 +351,10 @@ class VentaController extends Controller
                 return $this->makeStatusPayload('fiscal', 'REGISTRADA_OFICIAL');
             }
 
-            if ($estadoSufe === 'PROCESADA' || !blank($venta->cuf)) {
+            if ($estadoSufe === 'PROCESADA' || ! blank($venta->cuf)) {
                 return $this->makeStatusPayload('fiscal', 'PROCESADO', [
                     'can_consult' => true,
-                    'can_annul' => !blank($venta->cuf),
+                    'can_annul' => ! blank($venta->cuf),
                     'tipoEmision' => $venta->tipo_emision_sufe,
                     'cuf' => $venta->cuf,
                 ]);
@@ -392,7 +401,7 @@ class VentaController extends Controller
         if ($estado === 'EXITO') {
             return $this->makeStatusPayload('fiscal', 'PROCESADO', [
                 'can_consult' => true,
-                'can_annul' => !blank($cuf),
+                'can_annul' => ! blank($cuf),
                 'notification_state' => $estado,
                 'tipoEmision' => $tipoEmision,
                 'cuf' => $cuf,
@@ -456,7 +465,7 @@ class VentaController extends Controller
             'anulada_por_nombre' => trim((string) data_get($currentUser, 'nombre', data_get($currentUser, 'name', data_get($currentUser, 'email', '')))) ?: null,
             'anulada_por_email' => trim((string) ($currentUser->email ?? '')) ?: null,
             'anulacion_motivo' => trim((string) ($requestData['motivo'] ?? '')) ?: null,
-            'anulacion_tipo' => isset($requestData['tipoAnulacion']) ? ('TIPO ' . (string) $requestData['tipoAnulacion']) : null,
+            'anulacion_tipo' => isset($requestData['tipoAnulacion']) ? ('TIPO '.(string) $requestData['tipoAnulacion']) : null,
             'anulacion_autorizada_por_user_id' => $authorizedUserId,
             'anulacion_autorizada_por_email' => $authorizedEmail,
         ];
@@ -504,7 +513,7 @@ class VentaController extends Controller
 
     private function contratoPdfPayloadForVenta(Venta $venta): ?array
     {
-        if (!$this->hasVentaContratoPdfColumns()) {
+        if (! $this->hasVentaContratoPdfColumns()) {
             return null;
         }
 
@@ -585,7 +594,7 @@ class VentaController extends Controller
 
     private function persistAnulacionAuditForVenta(?Venta $venta, array $auditData, ?string $message = null): void
     {
-        if (!$venta) {
+        if (! $venta) {
             return;
         }
 
@@ -604,8 +613,8 @@ class VentaController extends Controller
             ->update($ventaUpdates);
 
         if (
-            !Schema::hasTable('facturacion_carts')
-            || !in_array((string) ($venta->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true)
+            ! Schema::hasTable('facturacion_carts')
+            || ! in_array((string) ($venta->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true)
             || (int) ($venta->origen_venta_id ?? 0) <= 0
         ) {
             return;
@@ -676,7 +685,7 @@ class VentaController extends Controller
             return $value !== null;
         }, ARRAY_FILTER_USE_BOTH);
 
-        if (!empty($update)) {
+        if (! empty($update)) {
             Venta::query()
                 ->where('codigoSeguimiento', $codigoSeguimiento)
                 ->update($update);
@@ -704,7 +713,7 @@ class VentaController extends Controller
         }
 
         $canalEmision = strtolower(trim((string) ($cart->canal_emision ?? 'factura_electronica')));
-        if (!in_array($canalEmision, ['factura_electronica', 'qr'], true)) {
+        if (! in_array($canalEmision, ['factura_electronica', 'qr'], true)) {
             $canalEmision = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr' ? 'qr' : 'factura_electronica';
         }
 
@@ -803,6 +812,7 @@ class VentaController extends Controller
     private function canOperateVenta(Venta $venta): bool
     {
         $status = $this->protocolStatusForVenta($venta);
+
         return $status['can_emit'] || $status['can_massive'] || $status['can_cafc'];
     }
 
@@ -881,10 +891,11 @@ class VentaController extends Controller
             $filters['origen_usuario_email'] = strtolower(trim((string) ($filters['origen_usuario_email'] ?? ''))) ?: null;
             $filters['origen_usuario_alias'] = strtolower(trim((string) ($filters['origen_usuario_alias'] ?? ''))) ?: null;
             $filters['origen_usuario_carnet'] = $this->normalizeCarnet($filters['origen_usuario_carnet'] ?? null);
+
             return $filters;
         }
 
-        if (!$usuario) {
+        if (! $usuario) {
             return $filters;
         }
 
@@ -897,7 +908,7 @@ class VentaController extends Controller
 
     private function normalizeVentaReportPeriodFilters(array $filters): array
     {
-        $hasExplicitDates = !empty($filters['fechaInicio']) || !empty($filters['fechaFin']);
+        $hasExplicitDates = ! empty($filters['fechaInicio']) || ! empty($filters['fechaFin']);
         $month = isset($filters['mes']) ? (int) $filters['mes'] : 0;
         $year = isset($filters['anio']) ? (int) $filters['anio'] : 0;
 
@@ -912,6 +923,7 @@ class VentaController extends Controller
             $filters['anio'] = $resolvedYear;
             $filters['fechaInicio'] = $start->format('Y-m-d');
             $filters['fechaFin'] = $end->format('Y-m-d');
+
             return $filters;
         }
 
@@ -983,35 +995,35 @@ class VentaController extends Controller
                     ->orWhereNotExists(function ($draftCart) {
                         $draftCart->select(DB::raw('1'))
                             ->from('facturacion_carts as fc')
-                            ->whereRaw("cast(fc.id as varchar) = cast(ventas.origen_venta_id as varchar)")
+                            ->whereRaw('cast(fc.id as varchar) = cast(ventas.origen_venta_id as varchar)')
                             ->whereRaw("lower(coalesce(fc.estado, '')) = 'borrador'");
                     });
             });
         }
 
-        if (!empty($filters['fechaInicio'])) {
+        if (! empty($filters['fechaInicio'])) {
             $query->whereDate('created_at', '>=', $filters['fechaInicio']);
         }
 
-        if (!empty($filters['fechaFin'])) {
+        if (! empty($filters['fechaFin'])) {
             $query->whereDate('created_at', '<=', $filters['fechaFin']);
         }
 
         foreach (['origen_usuario_id', 'origen_sucursal_id', 'origen_venta_id', 'origen_venta_tipo'] as $field) {
-            if (!empty($filters[$field])) {
+            if (! empty($filters[$field])) {
                 $query->where($field, (string) $filters[$field]);
             }
         }
 
-        if (!empty($filters['origen_usuario_email']) && $this->hasOrigenUsuarioEmailColumn()) {
+        if (! empty($filters['origen_usuario_email']) && $this->hasOrigenUsuarioEmailColumn()) {
             $query->whereRaw('lower(coalesce(origen_usuario_email, ?)) = ?', ['', strtolower((string) $filters['origen_usuario_email'])]);
         }
 
-        if (!empty($filters['origen_usuario_alias']) && $this->hasOrigenUsuarioAliasColumn()) {
+        if (! empty($filters['origen_usuario_alias']) && $this->hasOrigenUsuarioAliasColumn()) {
             $query->whereRaw('lower(coalesce(origen_usuario_alias, ?)) = ?', ['', strtolower((string) $filters['origen_usuario_alias'])]);
         }
 
-        if (!empty($filters['origen_usuario_carnet']) && $this->hasOrigenUsuarioCarnetColumn()) {
+        if (! empty($filters['origen_usuario_carnet']) && $this->hasOrigenUsuarioCarnetColumn()) {
             $query->whereRaw("upper(replace(coalesce(origen_usuario_carnet, ''), ' ', '')) = ?", [(string) $filters['origen_usuario_carnet']]);
         }
 
@@ -1023,12 +1035,12 @@ class VentaController extends Controller
             $query->where('puntoVenta', (int) $filters['puntoVenta']);
         }
 
-        if (!empty($filters['estado_sufe'])) {
+        if (! empty($filters['estado_sufe'])) {
             $query->whereRaw('upper(coalesce(estado_sufe, ?)) = ?', ['', strtoupper((string) $filters['estado_sufe'])]);
         }
 
-        if (!empty($filters['q'])) {
-            $term = '%' . trim((string) $filters['q']) . '%';
+        if (! empty($filters['q'])) {
+            $term = '%'.trim((string) $filters['q']).'%';
             $query->where(function ($search) use ($term) {
                 $search->where('codigoOrden', 'like', $term)
                     ->orWhere('codigoSeguimiento', 'like', $term)
@@ -1159,12 +1171,12 @@ class VentaController extends Controller
 
     private function extractNumeroFacturaFromDetalle(?string $detalle): ?string
     {
-        if (!$detalle) {
+        if (! $detalle) {
             return null;
         }
 
         $decoded = json_decode($detalle, true);
-        if (!is_array($decoded)) {
+        if (! is_array($decoded)) {
             return null;
         }
 
@@ -1421,7 +1433,7 @@ class VentaController extends Controller
                 ->map(function ($items) {
                     return collect($items)->map(function ($item) {
                         $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
-                        if (!is_array($resumen)) {
+                        if (! is_array($resumen)) {
                             $resumen = [];
                         }
 
@@ -1438,7 +1450,7 @@ class VentaController extends Controller
 
                         return $this->enrichCartItemPayload([
                             'id' => (int) ($item->id ?? 0),
-                            'codigo' => (string) (($item->codigo ?? '') !== '' ? $item->codigo : ('ITEM-' . (int) $item->id)),
+                            'codigo' => (string) (($item->codigo ?? '') !== '' ? $item->codigo : ('ITEM-'.(int) $item->id)),
                             'descripcion' => $descripcion,
                             'titulo' => $descripcion,
                             'nombre_servicio' => (string) ($servicio !== '' ? $servicio : $titulo),
@@ -1486,10 +1498,10 @@ class VentaController extends Controller
 
         $detalle = collect();
         if (
-            !empty($filters['origen_usuario_id'])
-            || !empty($filters['origen_usuario_email'])
-            || !empty($filters['origen_usuario_alias'])
-            || !empty($filters['origen_usuario_carnet'])
+            ! empty($filters['origen_usuario_id'])
+            || ! empty($filters['origen_usuario_email'])
+            || ! empty($filters['origen_usuario_alias'])
+            || ! empty($filters['origen_usuario_carnet'])
         ) {
             $detalleColumns = [
                 'id',
@@ -1529,49 +1541,50 @@ class VentaController extends Controller
             $detalleMaps = $this->detalleMapsFromRows($detalleRows);
 
             $detalle = $detalleRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $itemsCountMaps, $detalleMaps) {
-                    $codigoSeguimiento = trim((string) $venta->codigoSeguimiento);
-                    $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
-                    $bridgeCart = $bridgeCartMetaMap[$origenVentaId] ?? null;
-                    $ventaId = (int) $venta->id;
-                    $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
-                    if ($itemsCount === 0 && $origenVentaId > 0) {
-                        $itemsCount = (int) ($itemsCountMaps['cart'][$origenVentaId] ?? 0);
-                    }
-                    $cartItems = collect($detalleMaps['cart'][$origenVentaId] ?? []);
-                    $detalleItems = collect($detalleMaps['detalle'][$ventaId] ?? []);
-                    $items = $cartItems->isNotEmpty() ? $cartItems : $detalleItems;
-                    if ($itemsCount === 0) {
-                        $itemsCount = $items->count();
-                    }
-                    return [
-                        'id' => $venta->id,
-                        'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
-                        'codigoOrden' => $venta->codigoOrden,
-                        'codigoSeguimiento' => $venta->codigoSeguimiento,
-                        'numeroFactura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
-                        'origenVentaId' => $venta->origen_venta_id,
-                        'origenVentaTipo' => $venta->origen_venta_tipo,
-                        'origenUsuarioEmail' => $venta->origen_usuario_email,
-                        'origenUsuarioAlias' => $venta->origen_usuario_alias,
-                        'origenUsuarioCarnet' => $venta->origen_usuario_carnet,
-                        'codigoSucursal' => (int) $venta->codigoSucursal,
-                        'puntoVenta' => (int) $venta->puntoVenta,
-                        'razonSocial' => $venta->razonSocial,
-                        'documentoIdentidad' => strtoupper((string) ($venta->estado_sufe ?? '')) === 'REGISTRADA_OFICIAL' ? null : $venta->documentoIdentidad,
-                        'codigoCliente' => $venta->codigoCliente,
-                        'total' => (float) $venta->total,
-                        'canal_emision' => $bridgeCart->canal_emision ?? null,
-                        'metodo_pago' => $bridgeCart->metodo_pago ?? null,
-                        'estado_pago' => $bridgeCart->estado_pago ?? null,
-                        'estado_emision' => $bridgeCart->estado_emision ?? null,
-                        'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
-                        'itemsCount' => $itemsCount,
-                        'detalle' => $items->values()->all(),
-                        'estadoSufe' => $venta->estado_sufe,
-                        'cuf' => $venta->cuf,
-                    ];
-                })
-                ->reject(fn ($item) => ($item['type'] ?? '') === 'qr_anulado' && !empty($item['reviewedAt']))
+                $codigoSeguimiento = trim((string) $venta->codigoSeguimiento);
+                $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
+                $bridgeCart = $bridgeCartMetaMap[$origenVentaId] ?? null;
+                $ventaId = (int) $venta->id;
+                $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
+                if ($itemsCount === 0 && $origenVentaId > 0) {
+                    $itemsCount = (int) ($itemsCountMaps['cart'][$origenVentaId] ?? 0);
+                }
+                $cartItems = collect($detalleMaps['cart'][$origenVentaId] ?? []);
+                $detalleItems = collect($detalleMaps['detalle'][$ventaId] ?? []);
+                $items = $cartItems->isNotEmpty() ? $cartItems : $detalleItems;
+                if ($itemsCount === 0) {
+                    $itemsCount = $items->count();
+                }
+
+                return [
+                    'id' => $venta->id,
+                    'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
+                    'codigoOrden' => $venta->codigoOrden,
+                    'codigoSeguimiento' => $venta->codigoSeguimiento,
+                    'numeroFactura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
+                    'origenVentaId' => $venta->origen_venta_id,
+                    'origenVentaTipo' => $venta->origen_venta_tipo,
+                    'origenUsuarioEmail' => $venta->origen_usuario_email,
+                    'origenUsuarioAlias' => $venta->origen_usuario_alias,
+                    'origenUsuarioCarnet' => $venta->origen_usuario_carnet,
+                    'codigoSucursal' => (int) $venta->codigoSucursal,
+                    'puntoVenta' => (int) $venta->puntoVenta,
+                    'razonSocial' => $venta->razonSocial,
+                    'documentoIdentidad' => strtoupper((string) ($venta->estado_sufe ?? '')) === 'REGISTRADA_OFICIAL' ? null : $venta->documentoIdentidad,
+                    'codigoCliente' => $venta->codigoCliente,
+                    'total' => (float) $venta->total,
+                    'canal_emision' => $bridgeCart->canal_emision ?? null,
+                    'metodo_pago' => $bridgeCart->metodo_pago ?? null,
+                    'estado_pago' => $bridgeCart->estado_pago ?? null,
+                    'estado_emision' => $bridgeCart->estado_emision ?? null,
+                    'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
+                    'itemsCount' => $itemsCount,
+                    'detalle' => $items->values()->all(),
+                    'estadoSufe' => $venta->estado_sufe,
+                    'cuf' => $venta->cuf,
+                ];
+            })
+                ->reject(fn ($item) => ($item['type'] ?? '') === 'qr_anulado' && ! empty($item['reviewedAt']))
                 ->values();
         }
 
@@ -1710,6 +1723,7 @@ class VentaController extends Controller
         $servicios = collect($report['servicios'] ?? [])
             ->map(function (array $item) {
                 unset($item['rows']);
+
                 return $item;
             })
             ->slice(0, $limite)
@@ -1750,7 +1764,7 @@ class VentaController extends Controller
         $detalle = collect($report['servicios'] ?? [])
             ->first(fn ($item) => mb_strtoupper((string) ($item['servicio'] ?? '')) === $serviceKey);
 
-        if (!$detalle) {
+        if (! $detalle) {
             return response()->json([
                 'message' => 'No se encontro el servicio solicitado para los filtros enviados.',
                 'servicio' => $servicio,
@@ -1777,9 +1791,10 @@ class VentaController extends Controller
         $report = $this->buildContractCustomerReportFromVentas($ventas);
         $clientes = collect($report['clientes'] ?? [])
             ->map(function (array $item) use ($includeRows) {
-                if (!$includeRows) {
+                if (! $includeRows) {
                     unset($item['rows']);
                 }
+
                 return $item;
             })
             ->slice(0, $limite)
@@ -1837,7 +1852,7 @@ class VentaController extends Controller
                 return true;
             });
 
-        if (!$detalle) {
+        if (! $detalle) {
             return response()->json([
                 'message' => 'No se encontro el cliente solicitado para los filtros enviados.',
                 'nit' => $nit,
@@ -1971,11 +1986,11 @@ class VentaController extends Controller
         $dompdf->setPaper('A4', 'portrait');
         $dompdf->render();
 
-        $filename = 'kardex-facturacion-' . now()->format('Ymd-His') . '.pdf';
+        $filename = 'kardex-facturacion-'.now()->format('Ymd-His').'.pdf';
 
         return response($dompdf->output(), 200, [
             'Content-Type' => 'application/pdf',
-            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+            'Content-Disposition' => 'attachment; filename="'.$filename.'"',
         ]);
     }
 
@@ -2013,6 +2028,7 @@ class VentaController extends Controller
                 'created_at',
                 'codigoOrden',
                 'codigoSeguimiento',
+                'numero_factura',
                 'origen_venta_id',
                 'origen_venta_tipo',
                 'origen_usuario_id',
@@ -2022,6 +2038,7 @@ class VentaController extends Controller
                 $this->hasOrigenUsuarioCarnetColumn() ? 'origen_usuario_carnet' : null,
                 'origen_sucursal_id',
                 'origen_sucursal_nombre',
+                $this->hasOrigenSucursalCodigoColumn() ? 'origen_sucursal_codigo' : null,
                 'codigoSucursal',
                 'puntoVenta',
                 'razonSocial',
@@ -2077,6 +2094,20 @@ class VentaController extends Controller
                 'numeroFactura' => $numeroFactura !== '' ? $numeroFactura : null,
                 'origenVentaId' => $venta->origen_venta_id,
                 'origenVentaTipo' => $venta->origen_venta_tipo,
+                'usuario' => [
+                    'id' => $venta->origen_usuario_id,
+                    'nombre' => $venta->origen_usuario_nombre,
+                    'email' => $venta->origen_usuario_email,
+                    'alias' => $venta->origen_usuario_alias,
+                    'carnet' => $venta->origen_usuario_carnet,
+                ],
+                'sucursal' => [
+                    'id' => $venta->origen_sucursal_id,
+                    'nombre' => $venta->origen_sucursal_nombre,
+                    'codigoSucursal' => $venta->origen_sucursal_codigo ?: (int) $venta->codigoSucursal,
+                    'puntoVenta' => (int) $venta->puntoVenta,
+                    'departamento' => $venta->departamento,
+                ],
                 'detalle' => $detalle,
                 'itemsCount' => $itemsCount,
                 'cantidad' => max(1, $itemsCount ?: count($detalle)),
@@ -2103,12 +2134,34 @@ class VentaController extends Controller
             ))
             ->values();
 
-        return $list
+        $merged = $list
             ->concat($cartPayloads)
             ->sortByDesc(function ($row) {
                 return strtotime((string) ($row['fecha'] ?? '1970-01-01 00:00:00')) ?: 0;
             })
             ->values();
+
+        $regionalLookupRows = $merged->map(fn ($row) => [
+            'origen_sucursal_codigo' => data_get($row, 'sucursal.codigoSucursal'),
+            'codigoSucursal' => data_get($row, 'sucursal.codigoSucursal'),
+        ]);
+        $regionalMap = $this->kardexRegionalMap($regionalLookupRows);
+
+        return $merged->map(function (array $row) use ($regionalMap) {
+            $codigoSucursal = trim((string) data_get($row, 'sucursal.codigoSucursal', ''));
+            $regional = $regionalMap->get($codigoSucursal);
+            $regionalNombre = $this->resolveKardexRegionalName([
+                'origen_sucursal_departamento' => data_get($row, 'sucursal.departamento'),
+                'origen_sucursal_nombre' => data_get($row, 'sucursal.nombre'),
+            ], $regional);
+
+            $row['regional'] = [
+                'nombre' => $regionalNombre !== '-' ? $regionalNombre : 'SIN REGIONAL',
+                'codigoSucursal' => data_get($row, 'sucursal.codigoSucursal'),
+            ];
+
+            return $row;
+        })->values();
     }
 
     private function buildServiceReportFromVentas(Collection $ventas): array
@@ -2132,7 +2185,7 @@ class VentaController extends Controller
                 $precio = (float) ($item['precio'] ?? ($item['monto_base'] ?? 0));
                 $totalLinea = (float) ($item['total_linea'] ?? ($cantidad * $precio));
 
-                if (!isset($grouped[$groupKey])) {
+                if (! isset($grouped[$groupKey])) {
                     $grouped[$groupKey] = [
                         'servicio' => $servicio,
                         'cantidadDetalles' => 0,
@@ -2150,7 +2203,7 @@ class VentaController extends Controller
                 $grouped[$groupKey]['totalMonto'] += $totalLinea;
                 $grouped[$groupKey]['ventaIds'][$ventaKey] = true;
 
-                if ($descripcion !== '' && !in_array($descripcion, $grouped[$groupKey]['descripciones'], true)) {
+                if ($descripcion !== '' && ! in_array($descripcion, $grouped[$groupKey]['descripciones'], true)) {
                     $grouped[$groupKey]['descripciones'][] = $descripcion;
                 }
 
@@ -2162,11 +2215,17 @@ class VentaController extends Controller
                 $grouped[$groupKey]['rows'][] = [
                     'ventaId' => $venta['id'] ?? null,
                     'detalleId' => $item['id'] ?? ($item['detalle_id'] ?? null),
+                    'numeroFactura' => $venta['numeroFactura'] ?? null,
                     'descripcion' => $descripcion,
                     'codigoOrden' => $venta['codigoOrden'] ?? '',
                     'codigoSeguimiento' => $venta['codigoSeguimiento'] ?? '',
                     'fecha' => $venta['fecha'] ?? '',
+                    'cantidad' => round($cantidad, 2),
+                    'precioUnitario' => round($precio, 2),
                     'totalLinea' => round($totalLinea, 2),
+                    'usuario' => $venta['usuario'] ?? null,
+                    'regional' => $venta['regional'] ?? null,
+                    'sucursal' => $venta['sucursal'] ?? null,
                 ];
 
                 $ventaKeys[$ventaKey] = true;
@@ -2175,6 +2234,8 @@ class VentaController extends Controller
 
         $servicios = collect(array_values($grouped))
             ->map(function (array $group) {
+                $rows = array_values($group['rows']);
+
                 return [
                     'servicio' => $group['servicio'],
                     'cantidadVentas' => count($group['ventaIds']),
@@ -2184,7 +2245,9 @@ class VentaController extends Controller
                     'ultimaFecha' => $group['ultimaFecha'],
                     'descripciones' => array_values($group['descripciones']),
                     'descripcionMuestra' => implode(' | ', array_slice($group['descripciones'], 0, 3)),
-                    'rows' => array_values($group['rows']),
+                    'porRegionales' => $this->buildServiceReportDimension($rows, 'regional'),
+                    'porPersonas' => $this->buildServiceReportDimension($rows, 'persona'),
+                    'rows' => $rows,
                 ];
             })
             ->sortByDesc('totalMonto')
@@ -2201,6 +2264,90 @@ class VentaController extends Controller
             ],
             'servicios' => $servicios,
         ];
+    }
+
+    private function buildServiceReportDimension(array $rows, string $dimension): array
+    {
+        $grouped = [];
+
+        foreach ($rows as $row) {
+            $isRegional = $dimension === 'regional';
+            $usuario = is_array($row['usuario'] ?? null) ? $row['usuario'] : [];
+            $regional = is_array($row['regional'] ?? null) ? $row['regional'] : [];
+            $sucursal = is_array($row['sucursal'] ?? null) ? $row['sucursal'] : [];
+
+            if ($isRegional) {
+                $label = trim((string) ($regional['nombre'] ?? '')) ?: 'SIN REGIONAL';
+                $key = mb_strtoupper($label);
+            } else {
+                $label = trim((string) ($usuario['nombre'] ?? '')) ?: 'SIN USUARIO';
+                $identity = collect([
+                    $usuario['id'] ?? null,
+                    $usuario['email'] ?? null,
+                    $usuario['alias'] ?? null,
+                    $usuario['carnet'] ?? null,
+                    $label,
+                ])->first(fn ($value) => trim((string) $value) !== '');
+                $key = mb_strtoupper(trim((string) $identity));
+            }
+
+            if (! isset($grouped[$key])) {
+                $grouped[$key] = array_merge(
+                    $isRegional
+                        ? [
+                            'regional' => $label,
+                            'codigosSucursal' => [],
+                        ]
+                        : [
+                            'usuarioId' => $usuario['id'] ?? null,
+                            'usuarioNombre' => $label,
+                            'usuarioEmail' => $usuario['email'] ?? null,
+                            'usuarioAlias' => $usuario['alias'] ?? null,
+                            'usuarioCarnet' => $usuario['carnet'] ?? null,
+                        ],
+                    [
+                        'cantidadDetalles' => 0,
+                        'totalCantidad' => 0.0,
+                        'totalMonto' => 0.0,
+                        'ventaIds' => [],
+                    ]
+                );
+            }
+
+            if ($isRegional) {
+                $codigoSucursal = trim((string) ($regional['codigoSucursal'] ?? ($sucursal['codigoSucursal'] ?? '')));
+                if ($codigoSucursal !== '' && ! in_array($codigoSucursal, $grouped[$key]['codigosSucursal'], true)) {
+                    $grouped[$key]['codigosSucursal'][] = $codigoSucursal;
+                }
+            }
+
+            $ventaKey = trim((string) (
+                ($row['ventaId'] ?? null)
+                ?: ($row['codigoSeguimiento'] ?? null)
+                ?: ($row['codigoOrden'] ?? '')
+            ));
+            if ($ventaKey !== '') {
+                $grouped[$key]['ventaIds'][$ventaKey] = true;
+            }
+
+            $grouped[$key]['cantidadDetalles']++;
+            $grouped[$key]['totalCantidad'] += (float) ($row['cantidad'] ?? 0);
+            $grouped[$key]['totalMonto'] += (float) ($row['totalLinea'] ?? 0);
+        }
+
+        return collect(array_values($grouped))
+            ->map(function (array $group) {
+                $group['cantidadVentas'] = count($group['ventaIds']);
+                $group['cantidadDetalles'] = (int) $group['cantidadDetalles'];
+                $group['totalCantidad'] = round((float) $group['totalCantidad'], 2);
+                $group['totalMonto'] = round((float) $group['totalMonto'], 2);
+                unset($group['ventaIds']);
+
+                return $group;
+            })
+            ->sortByDesc('totalMonto')
+            ->values()
+            ->all();
     }
 
     private function buildContractCustomerReportFromVentas(Collection $ventas): array
@@ -2221,7 +2368,7 @@ class VentaController extends Controller
                     $item['descripcion'] ?? $item['nombre_servicio'] ?? $item['titulo'] ?? 'SIN DETALLE'
                 );
 
-                if (!$this->isContractServiceDescription($descripcion)) {
+                if (! $this->isContractServiceDescription($descripcion)) {
                     continue;
                 }
 
@@ -2230,9 +2377,9 @@ class VentaController extends Controller
                 $totalLinea = (float) ($item['total_linea'] ?? ($cantidad * $precio));
                 $nitKey = $nit !== '' ? $nit : 'SIN-NIT';
                 $razonSocialKey = $razonSocial !== '' ? $razonSocial : 'SIN RAZON SOCIAL';
-                $groupKey = mb_strtoupper($nitKey . '|' . $razonSocialKey);
+                $groupKey = mb_strtoupper($nitKey.'|'.$razonSocialKey);
 
-                if (!isset($grouped[$groupKey])) {
+                if (! isset($grouped[$groupKey])) {
                     $grouped[$groupKey] = [
                         'nit' => $nitKey,
                         'razonSocial' => $razonSocialKey,
@@ -2254,7 +2401,7 @@ class VentaController extends Controller
                 $grouped[$groupKey]['totalMonto'] += $totalLinea;
                 $grouped[$groupKey]['ventaIds'][$ventaKey] = true;
 
-                if ($servicio !== '' && !in_array($servicio, $grouped[$groupKey]['servicios'], true)) {
+                if ($servicio !== '' && ! in_array($servicio, $grouped[$groupKey]['servicios'], true)) {
                     $grouped[$groupKey]['servicios'][] = $servicio;
                 }
 
@@ -2390,8 +2537,8 @@ class VentaController extends Controller
             $packageItemsCount = $codigosPaquete->count();
             $serviceItemsCount = max(0, $cantidadTotal - $packageItemsCount);
             $detalleResumen = collect([
-                $packageItemsCount > 0 ? $packageItemsCount . ' paquete' . ($packageItemsCount === 1 ? '' : 's') : null,
-                $serviceItemsCount > 0 ? $serviceItemsCount . ' servicio' . ($serviceItemsCount === 1 ? '' : 's') : null,
+                $packageItemsCount > 0 ? $packageItemsCount.' paquete'.($packageItemsCount === 1 ? '' : 's') : null,
+                $serviceItemsCount > 0 ? $serviceItemsCount.' servicio'.($serviceItemsCount === 1 ? '' : 's') : null,
             ])->filter()->implode(' + ');
             $canalEmision = strtolower(trim((string) ($bridgeCart->canal_emision ?? 'factura_electronica')));
             $metodoPago = strtolower(trim((string) ($bridgeCart->metodo_pago ?? 'efectivo')));
@@ -2441,7 +2588,7 @@ class VentaController extends Controller
                     ->values()
                     ->all(),
                 'codigo_referencia' => $codigosPaquete->isNotEmpty()
-                    ? $codigoOrden . "\nPaquetes: " . $codigosPaquete->implode(', ')
+                    ? $codigoOrden."\nPaquetes: ".$codigosPaquete->implode(', ')
                     : $codigoOrden,
                 'peso' => Schema::hasColumn('ventas', 'peso_total')
                     ? $this->normalizeKardexWeight($venta->peso_total ?? null)
@@ -2474,7 +2621,7 @@ class VentaController extends Controller
                     'qr_pendiente' => 'Pendiente de pago QR.',
                     default => 'Cobro registrado en caja.',
                 },
-                'contabiliza_en_caja' => !in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true)
+                'contabiliza_en_caja' => ! in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true)
                     && $estadoEmision !== 'ANULADA',
                 'cobrada' => true,
                 'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
@@ -2487,7 +2634,7 @@ class VentaController extends Controller
             }
 
             return $items
-                ->map(function ($item) use ($baseRow, $codigoOrden) {
+                ->map(function ($item) use ($baseRow) {
                     $codigoPaquete = $this->cleanKardexPackageReference((string) (
                         data_get($item, 'codigo_paquete')
                         ?: data_get($item, 'resumen_origen.codigo_paquete')
@@ -2508,7 +2655,7 @@ class VentaController extends Controller
                             'source' => $item,
                         ]] : [],
                         'codigo_referencia' => $codigoReferencia,
-                    'peso' => $this->normalizeKardexWeight($peso),
+                        'peso' => $this->normalizeKardexWeight($peso),
                         'cantidad' => max(1, (int) data_get($item, 'cantidad', 1)),
                         'importe_parcial' => round((float) data_get($item, 'total_linea', 0), 2),
                         'importe_general' => round((float) data_get($item, 'total_linea', 0), 2),
@@ -2563,6 +2710,7 @@ class VentaController extends Controller
                     $item = is_array($item) ? (object) $item : $item;
                     $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
                     $item->resumen_origen = is_array($resumen) ? $resumen : [];
+
                     return (object) $this->enrichCartItemPayload(
                         (array) $item,
                         (string) ($item->origen_tipo ?? ''),
@@ -2583,7 +2731,7 @@ class VentaController extends Controller
                 'estado_emision' => $cart->estado_emision,
                 'qr_transaction_id' => $cart->qr_transaction_id,
             ]);
-            $contabilizaEnCaja = !in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true)
+            $contabilizaEnCaja = ! in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true)
                 && strtoupper(trim((string) ($cart->estado_emision ?? 'NO_APLICA'))) !== 'ANULADA';
             $emisionLabel = match ($sectionKey) {
                 'qr_facturado' => 'QR pagado + facturado',
@@ -2623,8 +2771,8 @@ class VentaController extends Controller
             $packageItemsCount = $codigosPaquete->count();
             $serviceItemsCount = max(0, $cantidadTotal - $packageItemsCount);
             $detalleResumen = collect([
-                $packageItemsCount > 0 ? $packageItemsCount . ' paquete' . ($packageItemsCount === 1 ? '' : 's') : null,
-                $serviceItemsCount > 0 ? $serviceItemsCount . ' servicio' . ($serviceItemsCount === 1 ? '' : 's') : null,
+                $packageItemsCount > 0 ? $packageItemsCount.' paquete'.($packageItemsCount === 1 ? '' : 's') : null,
+                $serviceItemsCount > 0 ? $serviceItemsCount.' servicio'.($serviceItemsCount === 1 ? '' : 's') : null,
             ])->filter()->implode(' + ');
             $clienteLabel = trim((string) ($cart->razon_social ?? ''));
             if ($clienteLabel === '') {
@@ -2649,7 +2797,7 @@ class VentaController extends Controller
                 'codigo_item' => $codigoOrden,
                 'codigo_paquetes' => $codigosPaquete,
                 'codigo_referencia' => $codigosPaquete->isNotEmpty()
-                    ? $codigoOrden . "\nPaquetes: " . $codigosPaquete->implode(', ')
+                    ? $codigoOrden."\nPaquetes: ".$codigosPaquete->implode(', ')
                     : $codigoOrden,
                 'peso' => $this->normalizeKardexWeight($pesoTotal),
                 'cantidad' => $cantidadTotal,
@@ -2673,7 +2821,7 @@ class VentaController extends Controller
             }
 
             return $items
-                ->map(function ($item) use ($baseRow, $codigoOrden) {
+                ->map(function ($item) use ($baseRow) {
                     $codigoPaquete = $this->cleanKardexPackageReference((string) (
                         data_get($item, 'codigo_paquete')
                         ?: data_get($item, 'resumen_origen.codigo_paquete')
@@ -2710,14 +2858,14 @@ class VentaController extends Controller
 
     private function kardexRegionalMap(Collection $rows): Collection
     {
-        if (!Schema::hasTable('sucursales')) {
+        if (! Schema::hasTable('sucursales')) {
             return collect();
         }
 
         $codeColumn = collect(['codigosucursal', 'codigo_sucursal', 'codigoSucursal'])
             ->first(fn ($column) => Schema::hasColumn('sucursales', $column));
 
-        if (!$codeColumn) {
+        if (! $codeColumn) {
             return collect();
         }
 
@@ -2782,6 +2930,7 @@ class VentaController extends Controller
         $detalleCodigos = collect(data_get($row, 'detalle_codigos', []))
             ->map(function ($entry) {
                 data_set($entry, 'codigo', $this->cleanKardexPackageReference((string) data_get($entry, 'codigo')));
+
                 return $entry;
             })
             ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
@@ -2802,7 +2951,7 @@ class VentaController extends Controller
             if (preg_match('/Paquetes:\s*(.+)$/is', $referencia, $matches)) {
                 $detalleCodigos = collect(explode(',', (string) $matches[1]))
                     ->map(fn ($codigo) => [
-                    'codigo' => $this->cleanKardexPackageReference((string) $codigo),
+                        'codigo' => $this->cleanKardexPackageReference((string) $codigo),
                         'source' => null,
                     ])
                     ->filter(fn ($entry) => trim((string) data_get($entry, 'codigo')) !== '')
@@ -2873,7 +3022,7 @@ class VentaController extends Controller
     private function resolveKardexDestinationName(array $row): string
     {
         $values = collect(data_get($row, 'detalle_codigos', []))
-            ->map(function ($entry) use ($row) {
+            ->map(function ($entry) {
                 $source = data_get($entry, 'source');
                 $city = collect([
                     data_get($source, 'resumen_origen.ciudad_destino'),
@@ -2921,12 +3070,14 @@ class VentaController extends Controller
     private function cleanKardexDestinationValue(string $value): string
     {
         $value = preg_replace('/\s+/', ' ', trim($value)) ?: '';
+
         return $value !== '' ? mb_strtoupper($value) : '';
     }
 
     private function isBoliviaDestinationValue(string $value): bool
     {
         $value = $this->cleanKardexDestinationValue($value);
+
         return in_array($value, ['BO', 'BOLIVIA'], true);
     }
 
@@ -3236,9 +3387,9 @@ class VentaController extends Controller
         $code = strtoupper(trim($code));
 
         return $code !== ''
-            && !preg_match('/^SRVE-\d+\s*-?$/', $code)
-            && !preg_match('/^VFC-\d+$/', $code)
-            && !preg_match('/^VQC-\d+$/', $code);
+            && ! preg_match('/^SRVE-\d+\s*-?$/', $code)
+            && ! preg_match('/^VFC-\d+$/', $code)
+            && ! preg_match('/^VQC-\d+$/', $code);
     }
 
     private function normalizeKardexWeight(mixed $value): ?float
@@ -3367,10 +3518,10 @@ class VentaController extends Controller
 
         $porSucursal = (clone $baseQuery)
             ->select('codigoSucursal', 'puntoVenta')
-            ->selectRaw("
+            ->selectRaw('
                 count(*) as cantidad,
                 coalesce(sum(total), 0) as total
-            ")
+            ')
             ->groupBy('codigoSucursal', 'puntoVenta')
             ->orderByDesc('total')
             ->get();
@@ -3408,51 +3559,52 @@ class VentaController extends Controller
         $itemsCountMaps = $this->itemsCountMapsFromRows($ventasRows);
 
         $ventas = $ventasRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $itemsCountMaps) {
-                $codigoSeguimiento = trim((string) $venta->codigoSeguimiento);
-                $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
-                $bridgeCart = $bridgeCartMetaMap[$origenVentaId] ?? null;
-                $ventaId = (int) $venta->id;
-                $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
-                if ($itemsCount === 0 && $origenVentaId > 0) {
-                    $itemsCount = (int) ($itemsCountMaps['cart'][$origenVentaId] ?? 0);
-                }
-                return [
-                    'id' => $venta->id,
-                    'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
-                    'codigoOrden' => $venta->codigoOrden,
-                    'codigoSeguimiento' => $venta->codigoSeguimiento,
-                    'numeroFactura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
-                    'origenVentaId' => $venta->origen_venta_id,
-                    'origenVentaTipo' => $venta->origen_venta_tipo,
-                    'usuario' => [
-                        'id' => $venta->origen_usuario_id,
-                        'nombre' => $venta->origen_usuario_nombre,
-                        'email' => $venta->origen_usuario_email,
-                        'alias' => $venta->origen_usuario_alias,
-                        'carnet' => $venta->origen_usuario_carnet,
-                    ],
-                    'sucursal' => [
-                        'id' => $venta->origen_sucursal_id,
-                        'nombre' => $venta->origen_sucursal_nombre,
-                        'codigoSucursal' => (int) $venta->codigoSucursal,
-                        'puntoVenta' => (int) $venta->puntoVenta,
-                    ],
-                    'cliente' => [
-                        'razonSocial' => $venta->razonSocial,
-                        'documentoIdentidad' => strtoupper((string) ($venta->estado_sufe ?? '')) === 'REGISTRADA_OFICIAL' ? null : $venta->documentoIdentidad,
-                        'codigoCliente' => $venta->codigoCliente,
-                    ],
-                    'canal_emision' => $bridgeCart->canal_emision ?? null,
-                    'metodo_pago' => $bridgeCart->metodo_pago ?? null,
-                    'estado_pago' => $bridgeCart->estado_pago ?? null,
-                    'estado_emision' => $bridgeCart->estado_emision ?? null,
-                    'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
-                    'itemsCount' => $itemsCount,
-                    'total' => (float) $venta->total,
-                    'estadoSufe' => $venta->estado_sufe,
-                    'cuf' => $venta->cuf,
-                ];
-            });
+            $codigoSeguimiento = trim((string) $venta->codigoSeguimiento);
+            $origenVentaId = (int) ($venta->origen_venta_id ?? 0);
+            $bridgeCart = $bridgeCartMetaMap[$origenVentaId] ?? null;
+            $ventaId = (int) $venta->id;
+            $itemsCount = (int) ($itemsCountMaps['detalle'][$ventaId] ?? 0);
+            if ($itemsCount === 0 && $origenVentaId > 0) {
+                $itemsCount = (int) ($itemsCountMaps['cart'][$origenVentaId] ?? 0);
+            }
+
+            return [
+                'id' => $venta->id,
+                'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
+                'codigoOrden' => $venta->codigoOrden,
+                'codigoSeguimiento' => $venta->codigoSeguimiento,
+                'numeroFactura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
+                'origenVentaId' => $venta->origen_venta_id,
+                'origenVentaTipo' => $venta->origen_venta_tipo,
+                'usuario' => [
+                    'id' => $venta->origen_usuario_id,
+                    'nombre' => $venta->origen_usuario_nombre,
+                    'email' => $venta->origen_usuario_email,
+                    'alias' => $venta->origen_usuario_alias,
+                    'carnet' => $venta->origen_usuario_carnet,
+                ],
+                'sucursal' => [
+                    'id' => $venta->origen_sucursal_id,
+                    'nombre' => $venta->origen_sucursal_nombre,
+                    'codigoSucursal' => (int) $venta->codigoSucursal,
+                    'puntoVenta' => (int) $venta->puntoVenta,
+                ],
+                'cliente' => [
+                    'razonSocial' => $venta->razonSocial,
+                    'documentoIdentidad' => strtoupper((string) ($venta->estado_sufe ?? '')) === 'REGISTRADA_OFICIAL' ? null : $venta->documentoIdentidad,
+                    'codigoCliente' => $venta->codigoCliente,
+                ],
+                'canal_emision' => $bridgeCart->canal_emision ?? null,
+                'metodo_pago' => $bridgeCart->metodo_pago ?? null,
+                'estado_pago' => $bridgeCart->estado_pago ?? null,
+                'estado_emision' => $bridgeCart->estado_emision ?? null,
+                'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
+                'itemsCount' => $itemsCount,
+                'total' => (float) $venta->total,
+                'estadoSufe' => $venta->estado_sufe,
+                'cuf' => $venta->cuf,
+            ];
+        });
 
         return response()->json([
             'filters' => $filters,
@@ -3505,7 +3657,7 @@ class VentaController extends Controller
             : 'false';
         $sucursalCodigoExpr = $this->hasOrigenSucursalCodigoColumn()
             ? "coalesce(nullif(origen_sucursal_codigo, ''), cast(coalesce(\"codigoSucursal\", 0) as varchar))"
-            : "cast(coalesce(\"codigoSucursal\", 0) as varchar)";
+            : 'cast(coalesce("codigoSucursal", 0) as varchar)';
         $puntoVentaExpr = "coalesce(nullif(origen_sucursal_id, ''), cast(coalesce(\"puntoVenta\", 0) as varchar))";
         $sucursalIdExpr = "concat({$sucursalCodigoExpr}, '-', {$puntoVentaExpr})";
         $sucursalNombreExpr = "coalesce(nullif(origen_sucursal_nombre, ''), concat('Sucursal ', \"codigoSucursal\", ' / PV ', \"puntoVenta\"), 'Sin sucursal')";
@@ -3875,9 +4027,9 @@ class VentaController extends Controller
                 '
                     coalesce(nullif(origen_usuario_id, \'\'), \'SIN-USUARIO\') as usuario_id,
                     max(coalesce(nullif(origen_usuario_nombre, \'\'), \'Sin usuario\')) as usuario_nombre,
-                    ' . ($this->hasOrigenUsuarioEmailColumn() ? "max(nullif(origen_usuario_email, '')) as usuario_email," : "null as usuario_email,") . '
-                    ' . ($this->hasOrigenUsuarioAliasColumn() ? "max(nullif(origen_usuario_alias, '')) as usuario_alias," : "null as usuario_alias,") . '
-                    ' . ($this->hasOrigenUsuarioCarnetColumn() ? "max(nullif(origen_usuario_carnet, '')) as usuario_carnet," : "null as usuario_carnet,") . '
+                    '.($this->hasOrigenUsuarioEmailColumn() ? "max(nullif(origen_usuario_email, '')) as usuario_email," : 'null as usuario_email,').'
+                    '.($this->hasOrigenUsuarioAliasColumn() ? "max(nullif(origen_usuario_alias, '')) as usuario_alias," : 'null as usuario_alias,').'
+                    '.($this->hasOrigenUsuarioCarnetColumn() ? "max(nullif(origen_usuario_carnet, '')) as usuario_carnet," : 'null as usuario_carnet,').'
                     max(coalesce(nullif(origen_sucursal_nombre, \'\'), concat(\'Sucursal \', "codigoSucursal", \' / PV \', "puntoVenta"), \'Sin sucursal\')) as sucursal_nombre,
                     count(*) as cantidad_ventas,
                     coalesce(sum(total), 0) as total_vendido,
@@ -3952,7 +4104,7 @@ class VentaController extends Controller
                 $query->whereNotExists(function ($reviewedDiscarded) {
                     $reviewedDiscarded->select(DB::raw('1'))
                         ->from('facturacion_carts as fc_review')
-                        ->whereRaw("cast(fc_review.id as varchar) = cast(ventas.origen_venta_id as varchar)")
+                        ->whereRaw('cast(fc_review.id as varchar) = cast(ventas.origen_venta_id as varchar)')
                         ->whereRaw("lower(coalesce(fc_review.estado, '')) = 'descartado'")
                         ->whereRaw("upper(coalesce(fc_review.estado_emision, 'NO_APLICA')) = 'RECHAZADA'")
                         ->whereNotNull('fc_review.incidencia_revisada_at');
@@ -3989,7 +4141,7 @@ class VentaController extends Controller
                 };
 
                 return [
-                    'key' => 'venta-' . $venta->id,
+                    'key' => 'venta-'.$venta->id,
                     'type' => $type,
                     'title' => match ($type) {
                         'observada' => 'Factura observada',
@@ -3998,7 +4150,7 @@ class VentaController extends Controller
                         default => 'Factura con otro estado',
                     },
                     'status' => $estado !== '' ? $estado : 'SIN_ESTADO',
-                    'code' => trim((string) ($venta->codigoOrden ?? '')) ?: ('#' . $venta->id),
+                    'code' => trim((string) ($venta->codigoOrden ?? '')) ?: ('#'.$venta->id),
                     'tracking' => trim((string) ($venta->codigoSeguimiento ?? '')),
                     'customer' => trim((string) ($venta->razonSocial ?? '')) ?: 'Sin cliente',
                     'amount' => (float) ($venta->total ?? 0),
@@ -4066,7 +4218,7 @@ class VentaController extends Controller
                     }
 
                     return [
-                        'key' => 'cart-' . $cart->id,
+                        'key' => 'cart-'.$cart->id,
                         'type' => $type,
                         'title' => match ($type) {
                             'qr_pagado_sin_factura' => 'QR pagado sin factura',
@@ -4074,7 +4226,7 @@ class VentaController extends Controller
                             default => 'QR pendiente',
                         },
                         'status' => strtoupper($estadoPago !== '' ? $estadoPago : 'PENDIENTE'),
-                        'code' => trim((string) ($cart->codigo_orden ?? '')) ?: ('QR-' . $cart->id),
+                        'code' => trim((string) ($cart->codigo_orden ?? '')) ?: ('QR-'.$cart->id),
                         'tracking' => trim((string) ($cart->codigo_seguimiento ?? '')),
                         'customer' => trim((string) ($cart->razon_social ?? '')) ?: 'Sin cliente',
                         'amount' => (float) ($cart->total ?? 0),
@@ -4114,11 +4266,11 @@ class VentaController extends Controller
                 ])
                 ->map(function ($cart) {
                     return [
-                        'key' => 'cart-rejected-' . $cart->id,
+                        'key' => 'cart-rejected-'.$cart->id,
                         'type' => 'factura_descartada',
                         'title' => 'Factura rechazada descartada',
                         'status' => 'DESCARTADA',
-                        'code' => trim((string) ($cart->codigo_orden ?? '')) ?: ('FC-' . $cart->id),
+                        'code' => trim((string) ($cart->codigo_orden ?? '')) ?: ('FC-'.$cart->id),
                         'tracking' => trim((string) ($cart->codigo_seguimiento ?? '')),
                         'customer' => trim((string) ($cart->razon_social ?? '')) ?: 'Sin cliente',
                         'amount' => (float) ($cart->total ?? 0),
@@ -4175,11 +4327,11 @@ class VentaController extends Controller
             ? 'coalesce(emitido_en, created_at)'
             : 'created_at';
 
-        if (!empty($filters['fechaInicio'])) {
+        if (! empty($filters['fechaInicio'])) {
             $query->whereRaw("DATE({$reportDateExpression}) >= ?", [$filters['fechaInicio']]);
         }
 
-        if (!empty($filters['fechaFin'])) {
+        if (! empty($filters['fechaFin'])) {
             $query->whereRaw("DATE({$reportDateExpression}) <= ?", [$filters['fechaFin']]);
         }
 
@@ -4187,20 +4339,20 @@ class VentaController extends Controller
             $fieldExists = $field === 'origen_sucursal_id'
                 ? $this->hasCartOrigenSucursalIdColumn()
                 : Schema::hasColumn('facturacion_carts', $field);
-            if (!empty($filters[$field]) && $fieldExists) {
+            if (! empty($filters[$field]) && $fieldExists) {
                 $query->where($field, (string) $filters[$field]);
             }
         }
 
-        if (!empty($filters['origen_usuario_email']) && $this->hasCartOrigenUsuarioEmailColumn()) {
+        if (! empty($filters['origen_usuario_email']) && $this->hasCartOrigenUsuarioEmailColumn()) {
             $query->whereRaw('lower(coalesce(origen_usuario_email, ?)) = ?', ['', strtolower((string) $filters['origen_usuario_email'])]);
         }
 
-        if (!empty($filters['origen_usuario_alias']) && $this->hasCartOrigenUsuarioAliasColumn()) {
+        if (! empty($filters['origen_usuario_alias']) && $this->hasCartOrigenUsuarioAliasColumn()) {
             $query->whereRaw('lower(coalesce(origen_usuario_alias, ?)) = ?', ['', strtolower((string) $filters['origen_usuario_alias'])]);
         }
 
-        if (!empty($filters['origen_usuario_carnet']) && $this->hasCartOrigenUsuarioCarnetColumn()) {
+        if (! empty($filters['origen_usuario_carnet']) && $this->hasCartOrigenUsuarioCarnetColumn()) {
             $query->whereRaw("upper(replace(coalesce(origen_usuario_carnet, ''), ' ', '')) = ?", [(string) $filters['origen_usuario_carnet']]);
         }
 
@@ -4212,8 +4364,8 @@ class VentaController extends Controller
             $query->where('origen_sucursal_id', (string) $filters['puntoVenta']);
         }
 
-        if (!empty($filters['q'])) {
-            $term = '%' . trim((string) $filters['q']) . '%';
+        if (! empty($filters['q'])) {
+            $term = '%'.trim((string) $filters['q']).'%';
             $query->where(function ($search) use ($term) {
                 $search->where('codigo_orden', 'like', $term)
                     ->orWhere('codigo_seguimiento', 'like', $term)
@@ -4290,7 +4442,7 @@ class VentaController extends Controller
         $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
         $canConsult = $this->canConsultFacturacionCart($cart);
         $respuestaEmision = json_decode((string) ($cart->respuesta_emision ?? ''), true);
-        if (!is_array($respuestaEmision)) {
+        if (! is_array($respuestaEmision)) {
             $respuestaEmision = [];
         }
 
@@ -4309,13 +4461,13 @@ class VentaController extends Controller
         $isLinkedVentaAnnulmentObserved = $linkedVentaStatus === 'ANULACION_OBSERVADA';
         $canAnnul = $estadoEmision === 'FACTURADA'
             && $cuf !== ''
-            && !$isLinkedVentaAnnulled
-            && !$isLinkedVentaAnnulmentPending;
-        $hasLinkedFiscalBilling = !$isLinkedVentaAnnulled
-            && !$isLinkedVentaAnnulmentPending
+            && ! $isLinkedVentaAnnulled
+            && ! $isLinkedVentaAnnulmentPending;
+        $hasLinkedFiscalBilling = ! $isLinkedVentaAnnulled
+            && ! $isLinkedVentaAnnulmentPending
             && ($estadoEmision === 'FACTURADA'
                 || $linkedVentaStatus === 'PROCESADA'
-                || !blank($linkedVenta->cuf ?? null));
+                || ! blank($linkedVenta->cuf ?? null));
 
         if ($estado === 'descartado') {
             return $this->makeStatusPayload('cart', 'DESCARTADA', [
@@ -4414,6 +4566,7 @@ class VentaController extends Controller
                     'cuf' => $cuf !== '' ? $cuf : null,
                 ]);
             }
+
             return $this->makeStatusPayload('cart', 'QR_PENDIENTE', [
                 'can_cancel' => true,
                 'can_consult' => $canConsult,
@@ -4461,7 +4614,7 @@ class VentaController extends Controller
             && trim((string) ($cart->qr_transaction_id ?? '')) !== ''
             && in_array(strtoupper(trim((string) ($cart->estado_emision ?? 'NO_APLICA'))), ['NO_APLICA', 'ANULADA'], true);
 
-        if (!$isLinkedVentaAnnulled && !$isPaidQrWithoutFiscalInvoice) {
+        if (! $isLinkedVentaAnnulled && ! $isPaidQrWithoutFiscalInvoice) {
             return $response;
         }
 
@@ -4497,7 +4650,7 @@ class VentaController extends Controller
             ->values()
             ->all();
 
-        if ($cartIds === [] || !$this->hasFacturacionCartItemsTable()) {
+        if ($cartIds === [] || ! $this->hasFacturacionCartItemsTable()) {
             return [];
         }
 
@@ -4513,7 +4666,7 @@ class VentaController extends Controller
                     $extras = (float) ($item->monto_extras ?? 0);
                     $totalLinea = (float) ($item->total_linea ?? round(($base + $extras) * max(1, $cantidad), 2));
                     $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
-                    if (!is_array($resumen)) {
+                    if (! is_array($resumen)) {
                         $resumen = [];
                     }
                     $descripcionServicio = trim((string) ($resumen['descripcion_servicio'] ?? ''));
@@ -4524,7 +4677,7 @@ class VentaController extends Controller
                         : ($titulo !== '' ? $titulo : ($nombreServicio !== '' ? $nombreServicio : 'Sin detalle'));
 
                     return [
-                        'codigo' => (string) (($item->codigo ?? '') !== '' ? $item->codigo : ('ITEM-' . $item->id)),
+                        'codigo' => (string) (($item->codigo ?? '') !== '' ? $item->codigo : ('ITEM-'.$item->id)),
                         'descripcion' => $descripcion,
                         'cantidad' => $cantidad,
                         'precio' => $base,
@@ -4547,17 +4700,16 @@ class VentaController extends Controller
         array $preloadedItems = [],
         object|array|null $linkedVenta = null,
         ?Notificacione $notification = null
-    ): array
-    {
+    ): array {
         $respuestaEmision = json_decode((string) ($cart->respuesta_emision ?? ''), true);
-        if (!is_array($respuestaEmision)) {
+        if (! is_array($respuestaEmision)) {
             $respuestaEmision = [];
         }
         if (is_array($linkedVenta)) {
             $linkedVenta = (object) $linkedVenta;
         }
         $detalleNotificacion = $notification ? json_decode((string) $notification->detalle, true) : [];
-        if (!is_array($detalleNotificacion)) {
+        if (! is_array($detalleNotificacion)) {
             $detalleNotificacion = [];
         }
 
@@ -4570,8 +4722,8 @@ class VentaController extends Controller
         $resolvedRazonSocial = $cart->razon_social ?? ($linkedVenta->razonSocial ?? null);
         $fecha = $cart->emitido_en ?: $cart->created_at;
         $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
-        $allowLinkedFiscalFallback = !in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
-        $isLinkedVentaAnnulled = !$allowLinkedFiscalFallback;
+        $allowLinkedFiscalFallback = ! in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
+        $isLinkedVentaAnnulled = ! $allowLinkedFiscalFallback;
         $annulledFacturaNumero = trim((string) ($linkedVenta->numero_factura ?? ''));
         $annulledFacturaCuf = trim((string) ($linkedVenta->cuf ?? ''));
         $annulledFacturaCodigoSeguimiento = trim((string) ($linkedVenta->codigoSeguimiento ?? ''));
@@ -4582,16 +4734,16 @@ class VentaController extends Controller
         if ($codigoSeguimiento === '' && $allowLinkedFiscalFallback) {
             $codigoSeguimiento = (string) ($linkedVenta->codigoSeguimiento ?? '');
         }
-        if ($allowLinkedFiscalFallback && !data_get($respuestaEmision, 'factura.cuf') && !data_get($respuestaEmision, 'cuf') && !blank($linkedVenta->cuf ?? null)) {
+        if ($allowLinkedFiscalFallback && ! data_get($respuestaEmision, 'factura.cuf') && ! data_get($respuestaEmision, 'cuf') && ! blank($linkedVenta->cuf ?? null)) {
             data_set($respuestaEmision, 'factura.cuf', $linkedVenta->cuf);
         }
-        if ($allowLinkedFiscalFallback && !data_get($respuestaEmision, 'factura.nroFactura') && !blank($linkedVenta->numero_factura ?? null)) {
+        if ($allowLinkedFiscalFallback && ! data_get($respuestaEmision, 'factura.nroFactura') && ! blank($linkedVenta->numero_factura ?? null)) {
             data_set($respuestaEmision, 'factura.nroFactura', $linkedVenta->numero_factura);
         }
-        if (!data_get($respuestaEmision, 'factura.pdfUrl') && !empty($detalleNotificacion['urlPdf'])) {
+        if (! data_get($respuestaEmision, 'factura.pdfUrl') && ! empty($detalleNotificacion['urlPdf'])) {
             data_set($respuestaEmision, 'factura.pdfUrl', $this->normalizeNotificationAssetUrl((string) $detalleNotificacion['urlPdf']));
         }
-        if (!data_get($respuestaEmision, 'factura.xmlUrl') && !empty($detalleNotificacion['urlXml'])) {
+        if (! data_get($respuestaEmision, 'factura.xmlUrl') && ! empty($detalleNotificacion['urlXml'])) {
             data_set($respuestaEmision, 'factura.xmlUrl', $this->normalizeNotificationAssetUrl((string) $detalleNotificacion['urlXml']));
         }
 
@@ -4642,7 +4794,7 @@ class VentaController extends Controller
                 'codigoSeguimiento' => $annulledFacturaCodigoSeguimiento !== '' ? $annulledFacturaCodigoSeguimiento : null,
                 'numeroFactura' => $annulledFacturaNumero !== '' ? $annulledFacturaNumero : null,
                 'cuf' => $annulledFacturaCuf !== '' ? $annulledFacturaCuf : null,
-                'fecha' => !blank($linkedVenta->created_at ?? null) ? Carbon::parse($linkedVenta->created_at)->format('Y-m-d H:i:s') : null,
+                'fecha' => ! blank($linkedVenta->created_at ?? null) ? Carbon::parse($linkedVenta->created_at)->format('Y-m-d H:i:s') : null,
                 'total' => isset($linkedVenta->total) ? (float) $linkedVenta->total : (float) ($cart->total ?? 0),
                 'qr_transaction_id' => $cart->qr_transaction_id ?? null,
                 'estadoSufe' => $linkedVentaStatus !== '' ? $linkedVentaStatus : null,
@@ -4666,7 +4818,7 @@ class VentaController extends Controller
         }
 
         return [
-            'id' => 'cart-' . (int) $cart->id,
+            'id' => 'cart-'.(int) $cart->id,
             'cartId' => (int) $cart->id,
             'fecha' => $fecha ? date('Y-m-d H:i:s', strtotime((string) $fecha)) : null,
             'codigoOrden' => $this->normalizeFacturacionCartCodigoOrden($cart),
@@ -5001,6 +5153,7 @@ class VentaController extends Controller
         $detalle = $venta->detalleVentas->map(function ($detalleVenta) {
             $cantidad = (float) $detalleVenta->cantidad;
             $base = (float) $detalleVenta->precio;
+
             return [
                 'codigo' => $detalleVenta->codigo,
                 'descripcion' => $detalleVenta->descripcion,
@@ -5030,7 +5183,7 @@ class VentaController extends Controller
                         $servicio = trim((string) ($item->nombre_servicio ?? ''));
                         $destinatario = trim((string) ($item->nombre_destinatario ?? ''));
                         $resumen = json_decode((string) ($item->resumen_origen ?? ''), true);
-                        if (!is_array($resumen)) {
+                        if (! is_array($resumen)) {
                             $resumen = [];
                         }
                         $descripcionServicio = trim((string) ($resumen['descripcion_servicio'] ?? ''));
@@ -5039,7 +5192,7 @@ class VentaController extends Controller
                             : ($titulo !== '' ? $titulo : ($servicio !== '' ? $servicio : 'Sin detalle'));
 
                         return $this->enrichCartItemPayload([
-                            'codigo' => (string) ($item->codigo ?: ('ITEM-' . $item->id)),
+                            'codigo' => (string) ($item->codigo ?: ('ITEM-'.$item->id)),
                             // El modal debe mostrar el mismo detalle fiscal que kardex/factura
                             // cuando el carrito ya trae una descripcion de servicio consolidada.
                             'descripcion' => $descripcion,
@@ -5058,7 +5211,7 @@ class VentaController extends Controller
                     ->values()
                     ->all();
 
-                if (!empty($detalleCart)) {
+                if (! empty($detalleCart)) {
                     $detalle = $detalleCart;
                 }
             }
@@ -5107,7 +5260,7 @@ class VentaController extends Controller
 
     public function uploadContratoPdf(Request $request, Venta $venta)
     {
-        if (!$this->hasVentaContratoPdfColumns()) {
+        if (! $this->hasVentaContratoPdfColumns()) {
             return response()->json([
                 'ok' => false,
                 'message' => 'La base de datos aun no tiene habilitado el PDF de contrato.',
@@ -5120,7 +5273,7 @@ class VentaController extends Controller
             $filters
         )->firstOrFail();
 
-        if (!$this->isContractVenta($venta)) {
+        if (! $this->isContractVenta($venta)) {
             return response()->json([
                 'ok' => false,
                 'message' => 'Solo las ventas de contrato permiten adjuntar un PDF.',
@@ -5132,9 +5285,9 @@ class VentaController extends Controller
         ]);
 
         $file = $validated['archivo'];
-        $folderRelative = 'uploads/ventas/contratos/' . now()->format('Y/m');
+        $folderRelative = 'uploads/ventas/contratos/'.now()->format('Y/m');
         $folder = public_path($folderRelative);
-        if (!is_dir($folder)) {
+        if (! is_dir($folder)) {
             mkdir($folder, 0755, true);
         }
 
@@ -5142,10 +5295,10 @@ class VentaController extends Controller
         $originalName = $file->getClientOriginalName();
         $originalMime = $file->getClientMimeType() ?: 'application/pdf';
         $originalSize = (int) ($file->getSize() ?: 0);
-        $filename = 'contrato-' . $venta->id . '-' . now()->format('Ymd-His') . '-' . Str::random(8) . '.' . $extension;
+        $filename = 'contrato-'.$venta->id.'-'.now()->format('Ymd-His').'-'.Str::random(8).'.'.$extension;
         $file->move($folder, $filename);
 
-        $storedPath = $folder . DIRECTORY_SEPARATOR . $filename;
+        $storedPath = $folder.DIRECTORY_SEPARATOR.$filename;
         $storedSize = is_file($storedPath) ? (int) filesize($storedPath) : $originalSize;
 
         $previousPath = trim((string) ($venta->contrato_pdf_path ?? ''));
@@ -5159,7 +5312,7 @@ class VentaController extends Controller
         $currentUser = Auth::guard('api')->user() ?? $request->user();
 
         $venta->forceFill([
-            'contrato_pdf_path' => $folderRelative . '/' . $filename,
+            'contrato_pdf_path' => $folderRelative.'/'.$filename,
             'contrato_pdf_nombre' => $originalName,
             'contrato_pdf_mime' => $originalMime,
             'contrato_pdf_size' => $storedSize,
@@ -5183,31 +5336,31 @@ class VentaController extends Controller
     // =========================
     public function emitirFactura(array $data): array
     {
-        $url = $this->ageticBaseUrl() . '/facturacion/emision/individual';
+        $url = $this->ageticBaseUrl().'/facturacion/emision/individual';
 
         $requestData = [
-            'codigoOrden'            => $data['codigoOrden'],
-            'codigoSucursal'         => $data['codigoSucursal'],
-            'puntoVenta'             => $data['puntoVenta'],
-            'documentoSector'        => $data['documentoSector'],
-            'municipio'              => $data['municipio'],
-            'departamento'           => $data['departamento'],
-            'telefono'               => $data['telefono'],
-            'razonSocial'            => $data['razonSocial'],
-            'documentoIdentidad'     => $data['documentoIdentidad'],
+            'codigoOrden' => $data['codigoOrden'],
+            'codigoSucursal' => $data['codigoSucursal'],
+            'puntoVenta' => $data['puntoVenta'],
+            'documentoSector' => $data['documentoSector'],
+            'municipio' => $data['municipio'],
+            'departamento' => $data['departamento'],
+            'telefono' => $data['telefono'],
+            'razonSocial' => $data['razonSocial'],
+            'documentoIdentidad' => $data['documentoIdentidad'],
             'tipoDocumentoIdentidad' => $data['tipoDocumentoIdentidad'],
-            'correo'                 => $data['correo'],
-            'codigoCliente'          => $data['codigoCliente'],
-            'metodoPago'             => $data['metodoPago'],
-            'montoTotal'             => $data['montoTotal'],
-            'formatoFactura'         => $data['formatoFactura'],
-            'detalle'                => $data['detalle'],
+            'correo' => $data['correo'],
+            'codigoCliente' => $data['codigoCliente'],
+            'metodoPago' => $data['metodoPago'],
+            'montoTotal' => $data['montoTotal'],
+            'formatoFactura' => $data['formatoFactura'],
+            'detalle' => $data['detalle'],
         ];
 
         if (($data['formatoFactura'] ?? null) === 'rollo') {
             $requestData['anchoFactura'] = 90;
         }
-        if (!empty($data['complemento'])) {
+        if (! empty($data['complemento'])) {
             $requestData['complemento'] = $data['complemento'];
         }
 
@@ -5221,34 +5374,37 @@ class VentaController extends Controller
             Log::info('AGETIC emitirFactura response', $json ?? []);
 
             return [
-                'ok'     => true,
+                'ok' => true,
                 'status' => $resp->status(),
-                'body'   => $json,
-                'error'  => null,
+                'body' => $json,
+                'error' => null,
             ];
         } catch (RequestException $e) {
             $resp = $e->response;
+
             return [
-                'ok'     => false,
+                'ok' => false,
                 'status' => optional($resp)->status() ?? 0,
-                'body'   => optional($resp)->json(),
-                'error'  => $e->getMessage(),
+                'body' => optional($resp)->json(),
+                'error' => $e->getMessage(),
             ];
         } catch (ConnectionException $e) {
             Log::error('AGETIC emitirFactura connection error', ['msg' => $e->getMessage()]);
+
             return [
-                'ok'     => false,
+                'ok' => false,
                 'status' => 0,
-                'body'   => null,
-                'error'  => $e->getMessage(),
+                'body' => null,
+                'error' => $e->getMessage(),
             ];
         } catch (\Throwable $e) {
             Log::error('AGETIC emitirFactura unexpected error', ['msg' => $e->getMessage()]);
+
             return [
-                'ok'     => false,
+                'ok' => false,
                 'status' => 0,
-                'body'   => null,
-                'error'  => $e->getMessage(),
+                'body' => null,
+                'error' => $e->getMessage(),
             ];
         }
     }
@@ -5262,7 +5418,7 @@ class VentaController extends Controller
 
             $result = $this->emitirFactura($validated);
 
-            if (!($result['ok'] ?? false)) {
+            if (! ($result['ok'] ?? false)) {
                 $body = $result['body'] ?? null;
 
                 if (is_array($body)) {
@@ -5293,6 +5449,7 @@ class VentaController extends Controller
             ], 422);
         } catch (\Throwable $e) {
             Log::error('AGETIC emitirFacturaIndividual unexpected error', ['msg' => $e->getMessage()]);
+
             return response()->json([
                 'message' => 'Error inesperado al emitir factura individual.',
                 'details' => $e->getMessage(),
@@ -5305,7 +5462,7 @@ class VentaController extends Controller
         try {
             $validated = $this->sufeValidator->validateDocumentoAjustePayload($request->all());
 
-            $url = $this->ageticBaseUrl() . '/documentoAjuste/' . $cufFactura;
+            $url = $this->ageticBaseUrl().'/documentoAjuste/'.$cufFactura;
             Log::info('AGETIC emitirDocumentoAjuste request', [
                 'cufFactura' => $cufFactura,
                 'payload' => $validated,
@@ -5347,6 +5504,7 @@ class VentaController extends Controller
             ], 504);
         } catch (\Throwable $e) {
             Log::error('AGETIC emitirDocumentoAjuste unexpected error', ['msg' => $e->getMessage()]);
+
             return response()->json([
                 'message' => 'Error inesperado al emitir documento de ajuste.',
                 'details' => $e->getMessage(),
@@ -5359,7 +5517,7 @@ class VentaController extends Controller
         try {
             $validated = $this->sufeValidator->validateMassivePayload($request->all());
 
-            $url = $this->ageticBaseUrl() . '/facturacion/emision/masiva';
+            $url = $this->ageticBaseUrl().'/facturacion/emision/masiva';
             Log::info('AGETIC emitirFacturasMasivas request', $validated);
 
             $response = $this->ageticClient()->post($url, $validated);
@@ -5389,6 +5547,7 @@ class VentaController extends Controller
             ], 504);
         } catch (\Throwable $e) {
             Log::error('AGETIC emitirFacturasMasivas unexpected error', ['msg' => $e->getMessage()]);
+
             return response()->json([
                 'message' => 'Error inesperado al emitir facturas masivas.',
                 'details' => $e->getMessage(),
@@ -5408,7 +5567,7 @@ class VentaController extends Controller
         $ventas = $this->ventasFromIds($validated['venta_ids']);
 
         foreach ($ventas as $venta) {
-            if (!$this->canOperateVenta($venta)) {
+            if (! $this->canOperateVenta($venta)) {
                 throw ValidationException::withMessages([
                     'venta_ids' => ["La venta {$venta->id} no estÃƒÆ’Ã‚Â¡ disponible para reenvÃƒÆ’Ã‚Â­o automÃƒÆ’Ã‚Â¡tico."],
                 ]);
@@ -5419,11 +5578,11 @@ class VentaController extends Controller
             $results = [];
 
             foreach ($ventas as $venta) {
-                $payload = $this->individualPayloadFromVenta($venta, $this->codigoOrdenFromId($venta->id) . '-R' . now()->format('His'));
+                $payload = $this->individualPayloadFromVenta($venta, $this->codigoOrdenFromId($venta->id).'-R'.now()->format('His'));
                 $this->sufeValidator->validateIndividualPayload($payload);
                 $result = $this->emitirFactura($payload);
 
-                if (!($result['ok'] ?? false)) {
+                if (! ($result['ok'] ?? false)) {
                     return response()->json([
                         'message' => 'No se pudo emitir una de las ventas seleccionadas.',
                         'venta_id' => $venta->id,
@@ -5457,17 +5616,17 @@ class VentaController extends Controller
             'puntoVenta' => (int) $ventas->first()->puntoVenta,
             'documentoSector' => (int) $ventas->first()->documentoSector,
             'facturas' => $ventas->map(function ($venta) {
-                return $this->massiveItemFromVenta($venta, $this->codigoOrdenFromId($venta->id) . '-M' . now()->format('His'));
+                return $this->massiveItemFromVenta($venta, $this->codigoOrdenFromId($venta->id).'-M'.now()->format('His'));
             })->values()->all(),
         ];
 
         $this->sufeValidator->validateMassivePayload($payload);
 
-        $url = $this->ageticBaseUrl() . '/facturacion/emision/masiva';
+        $url = $this->ageticBaseUrl().'/facturacion/emision/masiva';
         $response = $this->ageticClient()->post($url, $payload);
         $body = $response->json();
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             return response()->json([
                 'message' => 'No se pudo emitir el lote masivo.',
                 'details' => $body,
@@ -5497,7 +5656,7 @@ class VentaController extends Controller
         try {
             $validated = $this->sufeValidator->validateContingenciaCafcPayload($request->all());
 
-            $url = $this->ageticBaseUrl() . '/facturacion/contingencia';
+            $url = $this->ageticBaseUrl().'/facturacion/contingencia';
             Log::info('AGETIC emitirContingenciaCafc request', $validated);
 
             $response = $this->ageticClient()->post($url, $validated);
@@ -5527,6 +5686,7 @@ class VentaController extends Controller
             ], 504);
         } catch (\Throwable $e) {
             Log::error('AGETIC emitirContingenciaCafc unexpected error', ['msg' => $e->getMessage()]);
+
             return response()->json([
                 'message' => 'Error inesperado al procesar contingencia CAFC.',
                 'details' => $e->getMessage(),
@@ -5549,12 +5709,12 @@ class VentaController extends Controller
         $this->assertSameOperationalContext($ventas);
 
         foreach ($ventas as $venta) {
-            if (!$this->canOperateVenta($venta)) {
+            if (! $this->canOperateVenta($venta)) {
                 throw ValidationException::withMessages([
                     'venta_ids' => ["La venta {$venta->id} no estÃƒÆ’Ã‚Â¡ disponible para contingencia CAFC."],
                 ]);
             }
-            if (!isset($validated['nro_facturas'][$venta->id]) || (int) $validated['nro_facturas'][$venta->id] <= 0) {
+            if (! isset($validated['nro_facturas'][$venta->id]) || (int) $validated['nro_facturas'][$venta->id] <= 0) {
                 throw ValidationException::withMessages([
                     'nro_facturas' => ["Debe proporcionar un nroFactura manual vÃƒÆ’Ã‚Â¡lido para la venta {$venta->id}."],
                 ]);
@@ -5570,17 +5730,18 @@ class VentaController extends Controller
             'codigoSucursal' => (int) $ventas->first()->codigoSucursal,
             'facturas' => $ventas->map(function ($venta) use ($validated) {
                 $manualNumber = (int) $validated['nro_facturas'][$venta->id];
-                return $this->cafcItemFromVenta($venta, $manualNumber, $this->codigoOrdenFromId($venta->id) . '-C' . now()->format('His'));
+
+                return $this->cafcItemFromVenta($venta, $manualNumber, $this->codigoOrdenFromId($venta->id).'-C'.now()->format('His'));
             })->values()->all(),
         ];
 
         $this->sufeValidator->validateContingenciaCafcPayload($payload);
 
-        $url = $this->ageticBaseUrl() . '/facturacion/contingencia';
+        $url = $this->ageticBaseUrl().'/facturacion/contingencia';
         $response = $this->ageticClient()->post($url, $payload);
         $body = $response->json();
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             return response()->json([
                 'message' => 'No se pudo procesar la contingencia CAFC para las ventas seleccionadas.',
                 'details' => $body,
@@ -5607,8 +5768,6 @@ class VentaController extends Controller
         ]);
     }
 
-   
-
     // =========================
     //  PDF desde Notificacione
     // =========================
@@ -5619,18 +5778,18 @@ class VentaController extends Controller
         if ($notificacion) {
             $detalle = json_decode($notificacion->detalle, true);
             $urlPdf = $detalle['urlPdf'] ?? null;
-            $cuf    = $detalle['cuf'] ?? null;
+            $cuf = $detalle['cuf'] ?? null;
 
             if ($urlPdf) {
                 return response()->json([
                     'pdf_url' => $urlPdf,
-                    'cuf'     => $cuf,
+                    'cuf' => $cuf,
                 ], 200, [
                     'Content-Disposition' => 'inline; filename="factura.pdf"',
                 ]);
             } elseif ($cuf) {
                 return response()->json([
-                    'cuf'     => $cuf,
+                    'cuf' => $cuf,
                     'message' => 'PDF URL not yet available',
                 ], 200);
             } else {
@@ -5652,17 +5811,17 @@ class VentaController extends Controller
             $filters
         )->exists();
 
-        if (!$ventaVisible) {
+        if (! $ventaVisible) {
             return response()->json([
                 'error' => 'Venta no encontrada',
             ], 404);
         }
 
         $tipo = request()->query('tipo');
-        $url = $this->ageticBaseUrl() . "/consulta/{$codigoSeguimiento}";
+        $url = $this->ageticBaseUrl()."/consulta/{$codigoSeguimiento}";
 
         if (in_array($tipo, ['CO', 'CUF'], true)) {
-            $url .= '?tipo=' . $tipo;
+            $url .= '?tipo='.$tipo;
         }
         Log::info("CÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³digo de Seguimiento: {$codigoSeguimiento}");
         Log::info("URL de Consulta: {$url}");
@@ -5676,18 +5835,21 @@ class VentaController extends Controller
                 $this->syncVentaFromConsulta($codigoSeguimiento, $payload);
 
                 Log::info('Respuesta de la API:', $payload);
+
                 return response()->json($payload, 200);
             } else {
-                Log::error("Error al consultar venta: " . $response->body());
+                Log::error('Error al consultar venta: '.$response->body());
+
                 return response()->json([
-                    'error'   => 'Error al consultar la venta',
+                    'error' => 'Error al consultar la venta',
                     'details' => $response->body(),
                 ], $response->status());
             }
         } catch (\Throwable $e) {
-            Log::error("ExcepciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n al consultar venta: " . $e->getMessage());
+            Log::error('ExcepciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n al consultar venta: '.$e->getMessage());
+
             return response()->json([
-                'error'     => 'Error al consultar la venta',
+                'error' => 'Error al consultar la venta',
                 'exception' => $e->getMessage(),
             ], 500);
         }
@@ -5700,7 +5862,7 @@ class VentaController extends Controller
             'limite' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
-        $url = $this->ageticBaseUrl() . '/validacion/productos';
+        $url = $this->ageticBaseUrl().'/validacion/productos';
 
         try {
             $response = $this->ageticClient()->get($url, array_filter([
@@ -5711,6 +5873,7 @@ class VentaController extends Controller
             return response()->json($response->json(), $response->status());
         } catch (\Throwable $e) {
             Log::error('AGETIC homologarProductos error', ['msg' => $e->getMessage()]);
+
             return response()->json([
                 'message' => 'Error al consultar homologaciÃƒÆ’Ã‚Â³n de productos.',
                 'details' => $e->getMessage(),
@@ -5732,7 +5895,7 @@ class VentaController extends Controller
             'unidadMedida',
         ];
 
-        if (!in_array($tipoParametro, $allowed, true)) {
+        if (! in_array($tipoParametro, $allowed, true)) {
             throw ValidationException::withMessages([
                 'tipoParametro' => ['El tipoParametro solicitado no estÃƒÆ’Ã‚Â¡ soportado por el protocolo SEFE.'],
             ]);
@@ -5743,7 +5906,7 @@ class VentaController extends Controller
             'limite' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
-        $url = $this->ageticBaseUrl() . '/validacion/parametricas/' . $tipoParametro;
+        $url = $this->ageticBaseUrl().'/validacion/parametricas/'.$tipoParametro;
 
         try {
             $response = $this->ageticClient()->get($url, array_filter([
@@ -5757,6 +5920,7 @@ class VentaController extends Controller
                 'tipoParametro' => $tipoParametro,
                 'msg' => $e->getMessage(),
             ]);
+
             return response()->json([
                 'message' => 'Error al consultar las paramÃƒÆ’Ã‚Â©tricas.',
                 'details' => $e->getMessage(),
@@ -5766,7 +5930,7 @@ class VentaController extends Controller
 
     public function consultarPaquete($codigoSeguimientoPaquete)
     {
-        $url = $this->ageticBaseUrl() . "/consulta/paquete/{$codigoSeguimientoPaquete}";
+        $url = $this->ageticBaseUrl()."/consulta/paquete/{$codigoSeguimientoPaquete}";
         Log::info("CÃƒÆ’Ã‚Â³digo de Seguimiento Paquete: {$codigoSeguimientoPaquete}");
         Log::info("URL de Consulta Paquete: {$url}");
 
@@ -5778,18 +5942,21 @@ class VentaController extends Controller
                 $this->sufeValidator->validateConsultaPaqueteResponse($payload);
 
                 Log::info('Respuesta de la API de paquete:', $payload);
+
                 return response()->json($payload, 200);
             }
 
-            Log::error("Error al consultar paquete: " . $response->body());
+            Log::error('Error al consultar paquete: '.$response->body());
+
             return response()->json([
-                'error'   => 'Error al consultar el paquete',
+                'error' => 'Error al consultar el paquete',
                 'details' => $response->body(),
             ], $response->status());
         } catch (\Throwable $e) {
-            Log::error("ExcepciÃƒÆ’Ã‚Â³n al consultar paquete: " . $e->getMessage());
+            Log::error('ExcepciÃƒÆ’Ã‚Â³n al consultar paquete: '.$e->getMessage());
+
             return response()->json([
-                'error'     => 'Error al consultar el paquete',
+                'error' => 'Error al consultar el paquete',
                 'exception' => $e->getMessage(),
             ], 500);
         }
@@ -5813,10 +5980,11 @@ class VentaController extends Controller
                     'status' => 'SIN_ENVIO',
                     'response' => null,
                 ];
+
                 continue;
             }
 
-            $url = $this->ageticBaseUrl() . "/consulta/{$venta->codigoSeguimiento}";
+            $url = $this->ageticBaseUrl()."/consulta/{$venta->codigoSeguimiento}";
             $response = $this->ageticClient()->get($url);
             $body = $response->json();
 
@@ -5862,7 +6030,7 @@ class VentaController extends Controller
             'current_user_email' => $currentUser->email ?? null,
             'payload' => $request->except(['supervisor_password']),
         ]);
-        if (!$currentUser) {
+        if (! $currentUser) {
             return response()->json([
                 'message' => 'No se pudo identificar al usuario autenticado.',
             ], 401);
@@ -5887,19 +6055,20 @@ class VentaController extends Controller
             'supervisor_permissions' => $supervisor && method_exists($supervisor, 'permissions') ? $supervisor->permissions() : [],
         ]);
 
-        if (!$supervisor || !Hash::check((string) $validated['supervisor_password'], (string) $supervisor->password)) {
+        if (! $supervisor || ! Hash::check((string) $validated['supervisor_password'], (string) $supervisor->password)) {
             Log::warning('VentaController autorizarAnulacion invalid supervisor credentials', [
                 'current_user_id' => $currentUser->id ?? null,
                 'supervisor_email' => $validated['supervisor_email'] ?? null,
                 'supervisor_found' => (bool) $supervisor,
             ]);
+
             return response()->json([
                 'message' => 'Credenciales de supervisor invÃƒÆ’Ã‚Â¡lidas.',
                 'code' => 'ANULACION_SUPERVISOR_INVALIDO',
             ], 422);
         }
 
-        if (!$this->isAnulacionSupervisor($supervisor)) {
+        if (! $this->isAnulacionSupervisor($supervisor)) {
             Log::warning('VentaController autorizarAnulacion supervisor without permission', [
                 'current_user_id' => $currentUser->id ?? null,
                 'supervisor_id' => $supervisor->id ?? null,
@@ -5907,6 +6076,7 @@ class VentaController extends Controller
                 'supervisor_roles' => method_exists($supervisor, 'roleSlugs') ? $supervisor->roleSlugs() : [],
                 'supervisor_permissions' => method_exists($supervisor, 'permissions') ? $supervisor->permissions() : [],
             ]);
+
             return response()->json([
                 'message' => 'El usuario supervisor no tiene permisos para autorizar anulaciones.',
                 'code' => 'ANULACION_SUPERVISOR_SIN_PERMISO',
@@ -5942,7 +6112,7 @@ class VentaController extends Controller
     public function revocarAutorizacionAnulacion(Request $request)
     {
         $user = Auth::guard('api')->user() ?? $request->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json([
                 'message' => 'No se pudo identificar al usuario autenticado.',
             ], 401);
@@ -5960,13 +6130,13 @@ class VentaController extends Controller
     public function toggleAnulacionGuard(Request $request)
     {
         $user = Auth::guard('api')->user() ?? $request->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json([
                 'message' => 'No se pudo identificar al usuario autenticado.',
             ], 401);
         }
 
-        if (!$this->isAnulacionSupervisor($user)) {
+        if (! $this->isAnulacionSupervisor($user)) {
             return response()->json([
                 'message' => 'Solo un rol superior puede habilitar o deshabilitar anulaciones globales.',
                 'code' => 'ANULACION_TOGGLE_SIN_PERMISO',
@@ -5979,7 +6149,7 @@ class VentaController extends Controller
             'motivo' => ['nullable', 'string', 'max:255'],
         ]);
 
-        if (!(bool) $validated['habilitado']) {
+        if (! (bool) $validated['habilitado']) {
             Cache::forget($this->anulacionGlobalToggleCacheKey());
 
             return response()->json([
@@ -6043,6 +6213,7 @@ class VentaController extends Controller
                 'estado_puente' => 'ANULACION_REQUIERE_AUTORIZACION',
                 'razon' => 'Anulacion bloqueada. Requiere autorizacion de rol superior o habilitacion global de administrador.',
             ]);
+
             return response()->json([
                 'message' => 'Anulacion bloqueada. Requiere autorizacion de rol superior o habilitacion global de administrador.',
                 'code' => 'ANULACION_REQUIERE_AUTORIZACION',
@@ -6059,7 +6230,7 @@ class VentaController extends Controller
         Log::info('VentaController anularFactura delegating to FacturaVentaApiController', [
             'cuf' => (string) $cuf,
             'payload' => $requestData,
-            'has_respaldo' => !empty($respaldoData),
+            'has_respaldo' => ! empty($respaldoData),
             'respaldo_nombre' => $respaldoData['anulacion_respaldo_nombre'] ?? null,
             'guard' => $guard,
         ]);
@@ -6186,6 +6357,7 @@ class VentaController extends Controller
     private function globalAnulacionToggleData(): ?array
     {
         $data = Cache::get($this->anulacionGlobalToggleCacheKey());
+
         return is_array($data) ? $data : null;
     }
 
@@ -6201,7 +6373,7 @@ class VentaController extends Controller
 
     private function isAnulacionSupervisor($user): bool
     {
-        if (!$user) {
+        if (! $user) {
             Log::info('VentaController isAnulacionSupervisor evaluated', [
                 'user_id' => null,
                 'user_email' => null,
@@ -6211,6 +6383,7 @@ class VentaController extends Controller
                 'has_higher_permission' => false,
                 'result' => false,
             ]);
+
             return false;
         }
 
@@ -6236,7 +6409,4 @@ class VentaController extends Controller
 
         return $result;
     }
-
 }
-
-
