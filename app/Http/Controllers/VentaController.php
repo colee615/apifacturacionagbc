@@ -1719,7 +1719,7 @@ class VentaController extends Controller
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
         $limite = max(1, min((int) ($filters['limite'] ?? 200), 1000));
         $ventas = $this->mergedVentasForServiceReport($filters, true);
-        $report = $this->buildServiceReportFromVentas($ventas);
+        $report = $this->buildServiceReportFromVentas($ventas, false);
         $servicios = collect($report['servicios'] ?? [])
             ->map(function (array $item) {
                 unset($item['rows']);
@@ -1765,9 +1765,9 @@ class VentaController extends Controller
             ], 422);
         }
 
-        $ventas = $this->mergedVentasForServiceReport($filters, true);
-        $report = $this->buildServiceReportFromVentas($ventas);
         $serviceKey = mb_strtoupper($servicio);
+        $ventas = $this->mergedVentasForServiceReport($filters, true);
+        $report = $this->buildServiceReportFromVentas($ventas, true, $serviceKey);
         $detalle = collect($report['servicios'] ?? [])
             ->first(fn ($item) => mb_strtoupper((string) ($item['servicio'] ?? '')) === $serviceKey);
 
@@ -2335,11 +2335,12 @@ class VentaController extends Controller
         return null;
     }
 
-    private function buildServiceReportFromVentas(Collection $ventas): array
+    private function buildServiceReportFromVentas(Collection $ventas, bool $includeRows = true, ?string $onlyService = null): array
     {
         $grouped = [];
         $ventaKeys = [];
         $anulledVentaKeys = [];
+        $onlyServiceKey = $onlyService !== null ? mb_strtoupper($onlyService) : null;
 
         foreach ($ventas as $venta) {
             $venta = is_array($venta) ? $venta : (array) $venta;
@@ -2355,6 +2356,9 @@ class VentaController extends Controller
                 );
                 $servicio = $this->serviceGroupLabel($descripcion);
                 $groupKey = mb_strtoupper($servicio);
+                if ($onlyServiceKey !== null && $groupKey !== $onlyServiceKey) {
+                    continue;
+                }
                 $cantidad = (float) ($item['cantidad'] ?? 0);
                 $precio = (float) ($item['precio'] ?? ($item['monto_base'] ?? 0));
                 $totalLinea = (float) ($item['total_linea'] ?? ($cantidad * $precio));
@@ -2373,7 +2377,8 @@ class VentaController extends Controller
                         'rows' => [],
                         'ventaIds' => [],
                         'ventaIdsAnuladas' => [],
-                        'rowsValidas' => [],
+                        'dimensionesRegional' => [],
+                        'dimensionesPersona' => [],
                     ];
                 }
 
@@ -2388,7 +2393,7 @@ class VentaController extends Controller
                     $grouped[$groupKey]['totalCantidad'] += $cantidad;
                     $grouped[$groupKey]['totalMonto'] += $totalLinea;
                     $grouped[$groupKey]['ventaIds'][$ventaKey] = true;
-                    $grouped[$groupKey]['rowsValidas'][] = [
+                    $dimensionRow = [
                         'ventaId' => $venta['id'] ?? null,
                         'codigoSeguimiento' => $venta['codigoSeguimiento'] ?? null,
                         'codigoOrden' => $venta['codigoOrden'] ?? null,
@@ -2399,6 +2404,8 @@ class VentaController extends Controller
                         'cantidad' => $cantidad,
                         'totalLinea' => $totalLinea,
                     ];
+                    $this->addServiceReportDimensionRow($grouped[$groupKey]['dimensionesRegional'], $dimensionRow, 'regional');
+                    $this->addServiceReportDimensionRow($grouped[$groupKey]['dimensionesPersona'], $dimensionRow, 'persona');
                     $ventaKeys[$ventaKey] = true;
                 }
 
@@ -2411,26 +2418,28 @@ class VentaController extends Controller
                     $grouped[$groupKey]['ultimaFecha'] = $fecha;
                 }
 
-                $grouped[$groupKey]['rows'][] = [
-                    'ventaId' => $venta['id'] ?? null,
-                    'detalleId' => $item['id'] ?? ($item['detalle_id'] ?? null),
-                    'numeroFactura' => $venta['numeroFactura'] ?? null,
-                    'descripcion' => $descripcion,
-                    'codigoOrden' => $venta['codigoOrden'] ?? '',
-                    'codigoSeguimiento' => $venta['codigoSeguimiento'] ?? '',
-                    'fecha' => $venta['fecha'] ?? '',
-                    'cantidad' => round($cantidad, 2),
-                    'precioUnitario' => round($precio, 2),
-                    'totalLinea' => round($totalLinea, 2),
-                    'medioPago' => $medioPago,
-                    'estadoFiscal' => $venta['estadoFiscal'] ?? $this->serviceReportFiscalStatus($venta),
-                    'estadoPago' => $venta['estadoPago'] ?? ($venta['estado_pago'] ?? null),
-                    'anulada' => $isAnnulled,
-                    'incluidaEnTotales' => ! $isAnnulled,
-                    'usuario' => $venta['usuario'] ?? null,
-                    'regional' => $venta['regional'] ?? null,
-                    'sucursal' => $venta['sucursal'] ?? null,
-                ];
+                if ($includeRows) {
+                    $grouped[$groupKey]['rows'][] = [
+                        'ventaId' => $venta['id'] ?? null,
+                        'detalleId' => $item['id'] ?? ($item['detalle_id'] ?? null),
+                        'numeroFactura' => $venta['numeroFactura'] ?? null,
+                        'descripcion' => $descripcion,
+                        'codigoOrden' => $venta['codigoOrden'] ?? '',
+                        'codigoSeguimiento' => $venta['codigoSeguimiento'] ?? '',
+                        'fecha' => $venta['fecha'] ?? '',
+                        'cantidad' => round($cantidad, 2),
+                        'precioUnitario' => round($precio, 2),
+                        'totalLinea' => round($totalLinea, 2),
+                        'medioPago' => $medioPago,
+                        'estadoFiscal' => $venta['estadoFiscal'] ?? $this->serviceReportFiscalStatus($venta),
+                        'estadoPago' => $venta['estadoPago'] ?? ($venta['estado_pago'] ?? null),
+                        'anulada' => $isAnnulled,
+                        'incluidaEnTotales' => ! $isAnnulled,
+                        'usuario' => $venta['usuario'] ?? null,
+                        'regional' => $venta['regional'] ?? null,
+                        'sucursal' => $venta['sucursal'] ?? null,
+                    ];
+                }
             }
         }
 
@@ -2452,8 +2461,8 @@ class VentaController extends Controller
                     'ultimaFecha' => $group['ultimaFecha'],
                     'descripciones' => array_values($group['descripciones']),
                     'descripcionMuestra' => implode(' | ', array_slice($group['descripciones'], 0, 3)),
-                    'porRegionales' => $this->buildServiceReportDimension($group['rowsValidas'], 'regional'),
-                    'porPersonas' => $this->buildServiceReportDimension($group['rowsValidas'], 'persona'),
+                    'porRegionales' => $this->finishServiceReportDimension($group['dimensionesRegional']),
+                    'porPersonas' => $this->finishServiceReportDimension($group['dimensionesPersona']),
                     'rows' => $rows,
                 ];
             })
@@ -2483,70 +2492,80 @@ class VentaController extends Controller
         $grouped = [];
 
         foreach ($rows as $row) {
-            $isRegional = $dimension === 'regional';
-            $usuario = is_array($row['usuario'] ?? null) ? $row['usuario'] : [];
-            $regional = is_array($row['regional'] ?? null) ? $row['regional'] : [];
-            $sucursal = is_array($row['sucursal'] ?? null) ? $row['sucursal'] : [];
-
-            if ($isRegional) {
-                $label = trim((string) ($regional['nombre'] ?? '')) ?: 'SIN REGIONAL';
-                $key = mb_strtoupper($label);
-            } else {
-                $label = trim((string) ($usuario['nombre'] ?? '')) ?: 'SIN USUARIO';
-                $identity = collect([
-                    $usuario['id'] ?? null,
-                    $usuario['email'] ?? null,
-                    $usuario['alias'] ?? null,
-                    $usuario['carnet'] ?? null,
-                    $label,
-                ])->first(fn ($value) => trim((string) $value) !== '');
-                $key = mb_strtoupper(trim((string) $identity));
-            }
-
-            if (! isset($grouped[$key])) {
-                $grouped[$key] = array_merge(
-                    $isRegional
-                        ? [
-                            'regional' => $label,
-                            'codigosSucursal' => [],
-                        ]
-                        : [
-                            'usuarioId' => $usuario['id'] ?? null,
-                            'usuarioNombre' => $label,
-                            'usuarioEmail' => $usuario['email'] ?? null,
-                            'usuarioAlias' => $usuario['alias'] ?? null,
-                            'usuarioCarnet' => $usuario['carnet'] ?? null,
-                        ],
-                    [
-                        'cantidadDetalles' => 0,
-                        'totalCantidad' => 0.0,
-                        'totalMonto' => 0.0,
-                        'ventaIds' => [],
-                    ]
-                );
-            }
-
-            if ($isRegional) {
-                $codigoSucursal = trim((string) ($regional['codigoSucursal'] ?? ($sucursal['codigoSucursal'] ?? '')));
-                if ($codigoSucursal !== '' && ! in_array($codigoSucursal, $grouped[$key]['codigosSucursal'], true)) {
-                    $grouped[$key]['codigosSucursal'][] = $codigoSucursal;
-                }
-            }
-
-            $ventaKey = trim((string) (
-                ($row['ventaId'] ?? null)
-                ?: ($row['codigoSeguimiento'] ?? null)
-                ?: ($row['codigoOrden'] ?? '')
-            ));
-            if ($ventaKey !== '') {
-                $grouped[$key]['ventaIds'][$ventaKey] = true;
-            }
-
-            $grouped[$key]['cantidadDetalles']++;
-            $grouped[$key]['totalCantidad'] += (float) ($row['cantidad'] ?? 0);
-            $grouped[$key]['totalMonto'] += (float) ($row['totalLinea'] ?? 0);
+            $this->addServiceReportDimensionRow($grouped, $row, $dimension);
         }
 
+        return $this->finishServiceReportDimension($grouped);
+    }
+
+    private function addServiceReportDimensionRow(array &$grouped, array $row, string $dimension): void
+    {
+        $isRegional = $dimension === 'regional';
+        $usuario = is_array($row['usuario'] ?? null) ? $row['usuario'] : [];
+        $regional = is_array($row['regional'] ?? null) ? $row['regional'] : [];
+        $sucursal = is_array($row['sucursal'] ?? null) ? $row['sucursal'] : [];
+
+        if ($isRegional) {
+            $label = trim((string) ($regional['nombre'] ?? '')) ?: 'SIN REGIONAL';
+            $key = mb_strtoupper($label);
+        } else {
+            $label = trim((string) ($usuario['nombre'] ?? '')) ?: 'SIN USUARIO';
+            $identity = collect([
+                $usuario['id'] ?? null,
+                $usuario['email'] ?? null,
+                $usuario['alias'] ?? null,
+                $usuario['carnet'] ?? null,
+                $label,
+            ])->first(fn ($value) => trim((string) $value) !== '');
+            $key = mb_strtoupper(trim((string) $identity));
+        }
+
+        if (! isset($grouped[$key])) {
+            $grouped[$key] = array_merge(
+                $isRegional
+                    ? [
+                        'regional' => $label,
+                        'codigosSucursal' => [],
+                    ]
+                    : [
+                        'usuarioId' => $usuario['id'] ?? null,
+                        'usuarioNombre' => $label,
+                        'usuarioEmail' => $usuario['email'] ?? null,
+                        'usuarioAlias' => $usuario['alias'] ?? null,
+                        'usuarioCarnet' => $usuario['carnet'] ?? null,
+                    ],
+                [
+                    'cantidadDetalles' => 0,
+                    'totalCantidad' => 0.0,
+                    'totalMonto' => 0.0,
+                    'ventaIds' => [],
+                ]
+            );
+        }
+
+        if ($isRegional) {
+            $codigoSucursal = trim((string) ($regional['codigoSucursal'] ?? ($sucursal['codigoSucursal'] ?? '')));
+            if ($codigoSucursal !== '' && ! in_array($codigoSucursal, $grouped[$key]['codigosSucursal'], true)) {
+                $grouped[$key]['codigosSucursal'][] = $codigoSucursal;
+            }
+        }
+
+        $ventaKey = trim((string) (
+            ($row['ventaId'] ?? null)
+            ?: ($row['codigoSeguimiento'] ?? null)
+            ?: ($row['codigoOrden'] ?? '')
+        ));
+        if ($ventaKey !== '') {
+            $grouped[$key]['ventaIds'][$ventaKey] = true;
+        }
+
+        $grouped[$key]['cantidadDetalles']++;
+        $grouped[$key]['totalCantidad'] += (float) ($row['cantidad'] ?? 0);
+        $grouped[$key]['totalMonto'] += (float) ($row['totalLinea'] ?? 0);
+    }
+
+    private function finishServiceReportDimension(array $grouped): array
+    {
         return collect(array_values($grouped))
             ->map(function (array $group) {
                 $group['cantidadVentas'] = count($group['ventaIds']);
