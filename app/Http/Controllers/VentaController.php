@@ -1718,7 +1718,7 @@ class VentaController extends Controller
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
         $limite = max(1, min((int) ($filters['limite'] ?? 200), 1000));
-        $ventas = $this->mergedVentasForServiceReport($filters);
+        $ventas = $this->mergedVentasForServiceReport($filters, true);
         $report = $this->buildServiceReportFromVentas($ventas);
         $servicios = collect($report['servicios'] ?? [])
             ->map(function (array $item) {
@@ -1731,9 +1731,14 @@ class VentaController extends Controller
         $resumen = $report['resumen'] ?? [
             'cantidadServicios' => 0,
             'cantidadVentas' => 0,
+            'cantidadVentasAnuladas' => 0,
+            'cantidadVentasConAnuladas' => 0,
             'cantidadDetalles' => 0,
+            'cantidadDetallesAnuladas' => 0,
             'totalCantidad' => 0,
+            'totalCantidadAnulada' => 0,
             'totalMonto' => 0,
+            'totalMontoAnulado' => 0,
         ];
 
         return response()->json([
@@ -1743,7 +1748,9 @@ class VentaController extends Controller
             'meta' => [
                 'totalServiciosSinLimite' => (int) count($report['servicios'] ?? []),
                 'totalVentasSinLimite' => (int) ($report['resumen']['cantidadVentas'] ?? 0),
+                'totalVentasAnuladasSinLimite' => (int) ($report['resumen']['cantidadVentasAnuladas'] ?? 0),
                 'cantidadDetallesSinLimite' => (int) ($report['resumen']['cantidadDetalles'] ?? 0),
+                'cantidadDetallesAnuladasSinLimite' => (int) ($report['resumen']['cantidadDetallesAnuladas'] ?? 0),
             ],
         ]);
     }
@@ -1758,7 +1765,7 @@ class VentaController extends Controller
             ], 422);
         }
 
-        $ventas = $this->mergedVentasForServiceReport($filters);
+        $ventas = $this->mergedVentasForServiceReport($filters, true);
         $report = $this->buildServiceReportFromVentas($ventas);
         $serviceKey = mb_strtoupper($servicio);
         $detalle = collect($report['servicios'] ?? [])
@@ -1994,11 +2001,18 @@ class VentaController extends Controller
         ]);
     }
 
-    private function mergedVentasForServiceReport(array $filters): Collection
+    private function mergedVentasForServiceReport(array $filters, bool $includeAnnulled = false): Collection
     {
-        $cartRows = Schema::hasTable('facturacion_carts')
+        $cartQuery = Schema::hasTable('facturacion_carts')
             ? $this->buildFacturacionCartReportQuery($filters)
-                ->whereRaw("upper(coalesce(estado_emision, '')) not in ('ANULADA', 'ANULADO')")
+            : null;
+
+        if ($cartQuery && ! $includeAnnulled) {
+            $cartQuery->whereRaw("upper(coalesce(estado_emision, '')) not in ('ANULADA', 'ANULADO')");
+        }
+
+        $cartRows = $cartQuery
+            ? $cartQuery
                 ->orderByDesc('emitido_en')
                 ->orderByDesc('created_at')
                 ->orderByDesc('id')
@@ -2013,8 +2027,18 @@ class VentaController extends Controller
             ->values()
             ->all();
 
-        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters)
-            ->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')");
+        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
+        if ($includeAnnulled) {
+            $ventasQuery->where(function ($statusQuery) {
+                $statusQuery->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL', 'ANULADA', 'ANULADO', 'ANULACION_SOLICITADA')");
+
+                if (Schema::hasColumn('ventas', 'anulada_at')) {
+                    $statusQuery->orWhereNotNull('anulada_at');
+                }
+            });
+        } else {
+            $ventasQuery->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')");
+        }
         if ($cartIds !== []) {
             $ventasQuery->where(function ($query) use ($cartIds) {
                 $query->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
@@ -2056,6 +2080,12 @@ class VentaController extends Controller
                 'fecha_notificacion_sufe',
                 'departamento',
                 Schema::hasColumn('ventas', 'canal_operativo') ? 'canal_operativo' : null,
+                Schema::hasColumn('ventas', 'metodo_pago') ? 'metodo_pago' : null,
+                Schema::hasColumn('ventas', 'canal_emision') ? 'canal_emision' : null,
+                Schema::hasColumn('ventas', 'estado_pago') ? 'estado_pago' : null,
+                Schema::hasColumn('ventas', 'estado_emision') ? 'estado_emision' : null,
+                Schema::hasColumn('ventas', 'qr_transaction_id') ? 'qr_transaction_id' : null,
+                Schema::hasColumn('ventas', 'anulada_at') ? 'anulada_at' : null,
                 Schema::hasColumn('ventas', 'es_cuenta_por_cobrar') ? 'es_cuenta_por_cobrar' : null,
                 Schema::hasColumn('ventas', 'empresa_nombre') ? 'empresa_nombre' : null,
                 Schema::hasColumn('ventas', 'empresa_sigla') ? 'empresa_sigla' : null,
@@ -2067,7 +2097,7 @@ class VentaController extends Controller
         $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
         $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventas);
 
-        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap) {
+        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $includeAnnulled) {
             $ventaId = (int) $venta->id;
             $cartId = (int) ($venta->origen_venta_id ?? 0);
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
@@ -2088,7 +2118,7 @@ class VentaController extends Controller
                 $itemsCount = (int) ($itemsCountMaps['cart'][$cartId] ?? 0);
             }
 
-            return [
+            $payload = [
                 'id' => $venta->id,
                 'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
                 'codigoOrden' => $venta->codigoOrden,
@@ -2116,6 +2146,23 @@ class VentaController extends Controller
                 'total' => (float) $venta->total,
                 'status' => $status,
             ];
+
+            if ($includeAnnulled) {
+                $payload['estado_sufe'] = strtoupper(trim((string) ($venta->estado_sufe ?? '')));
+                $payload['estado_pago'] = strtolower(trim((string) ($venta->estado_pago ?? '')));
+                $payload['estado_emision'] = strtoupper(trim((string) ($venta->estado_emision ?? '')));
+                $payload['metodo_pago'] = strtolower(trim((string) ($venta->metodo_pago ?? '')));
+                $payload['canal_emision'] = strtolower(trim((string) ($venta->canal_emision ?? '')));
+                $payload['qr_transaction_id'] = $venta->qr_transaction_id ?? null;
+                $payload['anulada_at'] = $venta->anulada_at ?? null;
+                $payload['anulada'] = $this->isServiceReportAnnulled($payload);
+                $payload['estadoFiscal'] = $this->serviceReportFiscalStatus($payload);
+                $payload['estadoPago'] = $payload['estado_pago'] !== '' ? $payload['estado_pago'] : null;
+                $payload['medioPago'] = $this->isQrPaymentRow($payload) ? 'QR' : 'EFECTIVO';
+                $payload['incluidaEnTotales'] = ! $payload['anulada'];
+            }
+
+            return $payload;
         })->values();
 
         $cartItemsMap = $this->facturacionCartItemsMapFromRows($cartRows);
@@ -2134,11 +2181,38 @@ class VentaController extends Controller
                 $cartFiscalBackfillMap[(int) $cart->id] ?? null,
                 $cartNotificationBackfillMap[(string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''))] ?? null
             ))
-            ->reject(fn (array $payload) => $this->shouldExcludeCartFromServiceReport($payload, $cartFiscalBackfillMap))
+            ->map(function (array $payload) use ($cartFiscalBackfillMap, $includeAnnulled) {
+                if (! $includeAnnulled) {
+                    return $payload;
+                }
+
+                $cartId = (string) ($payload['cartId'] ?? 0);
+                $linkedVenta = (array) data_get($cartFiscalBackfillMap, $cartId, []);
+                $payload['estado_sufe'] = strtoupper(trim((string) ($linkedVenta['estado_sufe'] ?? '')));
+                $payload['anulada_at'] = $linkedVenta['anulada_at'] ?? data_get($payload, 'anulacion.anuladaAt');
+
+                return $payload;
+            })
+            ->reject(fn (array $payload) => $this->shouldExcludeCartFromServiceReport($payload, $cartFiscalBackfillMap, $includeAnnulled))
             ->values();
 
         $merged = $list
             ->concat($cartPayloads)
+            ->map(function (array $row) use ($includeAnnulled) {
+                if (! $includeAnnulled) {
+                    return $row;
+                }
+
+                $row['anulada'] = $this->isServiceReportAnnulled($row);
+                $row['estadoFiscal'] = $this->serviceReportFiscalStatus($row);
+                $row['estadoPago'] = trim((string) ($row['estado_pago'] ?? '')) !== ''
+                    ? strtolower(trim((string) $row['estado_pago']))
+                    : null;
+                $row['medioPago'] = $this->isQrPaymentRow($row) ? 'QR' : 'EFECTIVO';
+                $row['incluidaEnTotales'] = ! $row['anulada'];
+
+                return $row;
+            })
             ->sortByDesc(function ($row) {
                 return strtotime((string) ($row['fecha'] ?? '1970-01-01 00:00:00')) ?: 0;
             })
@@ -2167,35 +2241,111 @@ class VentaController extends Controller
         })->values();
     }
 
-    private function shouldExcludeCartFromServiceReport(array $payload, array $cartFiscalBackfillMap): bool
+    private function shouldExcludeCartFromServiceReport(array $payload, array $cartFiscalBackfillMap, bool $includeAnnulled = false): bool
     {
         $cartId = (int) ($payload['cartId'] ?? 0);
-        $linkedStatus = strtoupper(trim((string) data_get($cartFiscalBackfillMap, "{$cartId}.estado_sufe", '')));
+        $linkedVenta = (array) data_get($cartFiscalBackfillMap, (string) $cartId, []);
+        $linkedStatus = strtoupper(trim((string) ($linkedVenta['estado_sufe'] ?? '')));
         $paymentStatus = strtolower(trim((string) ($payload['estado_pago'] ?? '')));
         $statusKey = strtoupper(trim((string) data_get($payload, 'status.key', '')));
         $paymentMethod = strtolower(trim((string) ($payload['metodo_pago'] ?? '')));
-        $emissionChannel = strtolower(trim((string) ($payload['canal_emision'] ?? '')));
-        $isQr = $paymentMethod === 'qr' || $emissionChannel === 'qr';
+
+        if (! $includeAnnulled) {
+            $emissionChannel = strtolower(trim((string) ($payload['canal_emision'] ?? '')));
+            $isQr = $paymentMethod === 'qr' || $emissionChannel === 'qr';
+            $isCash = ! $isQr && in_array($paymentMethod, ['', 'efectivo', 'cash'], true);
+            $isInvoiced = in_array($linkedStatus, ['PROCESADA', 'REGISTRADA_OFICIAL'], true)
+                || in_array($statusKey, ['FACTURADA', 'PROCESADO', 'REGISTRADA_OFICIAL'], true);
+
+            return ! $isInvoiced
+                || (! $isQr && ! $isCash)
+                || ($isQr && $paymentStatus !== 'pagado')
+                || in_array($linkedStatus, ['ANULADA', 'ANULADO'], true)
+                || in_array($paymentStatus, ['cancelado', 'fallido'], true)
+                || $statusKey === 'QR_ANULADO';
+        }
+
+        $isQr = $this->isQrPaymentRow($payload);
         $isCash = ! $isQr && in_array($paymentMethod, ['', 'efectivo', 'cash'], true);
         $isInvoiced = in_array($linkedStatus, ['PROCESADA', 'REGISTRADA_OFICIAL'], true)
             || in_array($statusKey, ['FACTURADA', 'PROCESADO', 'REGISTRADA_OFICIAL'], true);
+        $isAnnulled = $this->isServiceReportAnnulled($payload)
+            || in_array($linkedStatus, ['ANULADA', 'ANULADO', 'ANULACION_SOLICITADA'], true)
+            || ! empty($linkedVenta['anulada_at']);
 
-        return ! $isInvoiced
-            || (! $isQr && ! $isCash)
-            || ($isQr && $paymentStatus !== 'pagado')
-            || in_array($linkedStatus, ['ANULADA', 'ANULADO'], true)
-            || in_array($paymentStatus, ['cancelado', 'fallido'], true)
-            || $statusKey === 'QR_ANULADO';
+        if (! $isQr && ! $isCash) {
+            return true;
+        }
+
+        if (! $isAnnulled && (in_array($paymentStatus, ['cancelado', 'fallido'], true) || $statusKey === 'QR_ANULADO')) {
+            return true;
+        }
+
+        if ($isAnnulled) {
+            return false;
+        }
+
+        return ! $isInvoiced || ($isQr && $paymentStatus !== 'pagado');
+    }
+
+    private function isServiceReportAnnulled(array $payload): bool
+    {
+        $statuses = [
+            strtoupper(trim((string) ($payload['estado_sufe'] ?? ''))),
+            strtoupper(trim((string) ($payload['estado_emision'] ?? ''))),
+            strtoupper(trim((string) ($payload['estadoFiscal'] ?? ''))),
+            strtoupper(trim((string) data_get($payload, 'anulacion.estadoSufe', ''))),
+            strtoupper(trim((string) data_get($payload, 'status.key', ''))),
+        ];
+
+        return collect($statuses)->contains(fn ($status) => in_array($status, ['ANULADA', 'ANULADO', 'ANULACION_SOLICITADA'], true))
+            || ! empty($payload['anulada_at'])
+            || ! empty(data_get($payload, 'anulacion.anuladaAt'));
+    }
+
+    private function serviceReportFiscalStatus(array $payload): ?string
+    {
+        foreach ([
+            $payload['estado_sufe'] ?? null,
+            $payload['estado_emision'] ?? null,
+            data_get($payload, 'anulacion.estadoSufe'),
+            data_get($payload, 'status.key'),
+        ] as $status) {
+            $status = strtoupper(trim((string) $status));
+            if (in_array($status, ['ANULADA', 'ANULADO', 'ANULACION_SOLICITADA'], true)) {
+                return $status;
+            }
+        }
+
+        if (! empty($payload['anulada_at']) || ! empty(data_get($payload, 'anulacion.anuladaAt'))) {
+            return 'ANULADA';
+        }
+
+        foreach ([
+            $payload['estado_sufe'] ?? null,
+            $payload['estado_emision'] ?? null,
+            data_get($payload, 'status.key'),
+        ] as $status) {
+            $status = strtoupper(trim((string) $status));
+            if ($status !== '') {
+                return $status;
+            }
+        }
+
+        return null;
     }
 
     private function buildServiceReportFromVentas(Collection $ventas): array
     {
         $grouped = [];
         $ventaKeys = [];
+        $anulledVentaKeys = [];
 
         foreach ($ventas as $venta) {
             $venta = is_array($venta) ? $venta : (array) $venta;
             $ventaKey = (string) ($venta['id'] ?? $venta['codigoSeguimiento'] ?? $venta['codigoOrden'] ?? uniqid('venta_', true));
+            $isAnnulled = (bool) ($venta['anulada'] ?? $this->isServiceReportAnnulled($venta));
+            $medioPago = (string) ($venta['medioPago'] ?? ($this->isQrPaymentRow($venta) ? 'QR' : 'EFECTIVO'));
             $detalle = collect($venta['detalle'] ?? []);
 
             foreach ($detalle as $item) {
@@ -2213,26 +2363,51 @@ class VentaController extends Controller
                     $grouped[$groupKey] = [
                         'servicio' => $servicio,
                         'cantidadDetalles' => 0,
+                        'cantidadDetallesAnuladas' => 0,
                         'totalCantidad' => 0.0,
+                        'totalCantidadAnulada' => 0.0,
                         'totalMonto' => 0.0,
+                        'totalMontoAnulado' => 0.0,
                         'ultimaFecha' => '',
                         'descripciones' => [],
                         'rows' => [],
                         'ventaIds' => [],
+                        'ventaIdsAnuladas' => [],
+                        'rowsValidas' => [],
                     ];
                 }
 
-                $grouped[$groupKey]['cantidadDetalles'] += 1;
-                $grouped[$groupKey]['totalCantidad'] += $cantidad;
-                $grouped[$groupKey]['totalMonto'] += $totalLinea;
-                $grouped[$groupKey]['ventaIds'][$ventaKey] = true;
+                if ($isAnnulled) {
+                    $grouped[$groupKey]['cantidadDetallesAnuladas'] += 1;
+                    $grouped[$groupKey]['totalCantidadAnulada'] += $cantidad;
+                    $grouped[$groupKey]['totalMontoAnulado'] += $totalLinea;
+                    $grouped[$groupKey]['ventaIdsAnuladas'][$ventaKey] = true;
+                    $anulledVentaKeys[$ventaKey] = true;
+                } else {
+                    $grouped[$groupKey]['cantidadDetalles'] += 1;
+                    $grouped[$groupKey]['totalCantidad'] += $cantidad;
+                    $grouped[$groupKey]['totalMonto'] += $totalLinea;
+                    $grouped[$groupKey]['ventaIds'][$ventaKey] = true;
+                    $grouped[$groupKey]['rowsValidas'][] = [
+                        'ventaId' => $venta['id'] ?? null,
+                        'codigoSeguimiento' => $venta['codigoSeguimiento'] ?? null,
+                        'codigoOrden' => $venta['codigoOrden'] ?? null,
+                        'regional' => $venta['regional'] ?? null,
+                        'usuario' => $venta['usuario'] ?? null,
+                        'sucursal' => $venta['sucursal'] ?? null,
+                        'medioPago' => $medioPago,
+                        'cantidad' => $cantidad,
+                        'totalLinea' => $totalLinea,
+                    ];
+                    $ventaKeys[$ventaKey] = true;
+                }
 
-                if ($descripcion !== '' && ! in_array($descripcion, $grouped[$groupKey]['descripciones'], true)) {
+                if (! $isAnnulled && $descripcion !== '' && ! in_array($descripcion, $grouped[$groupKey]['descripciones'], true)) {
                     $grouped[$groupKey]['descripciones'][] = $descripcion;
                 }
 
                 $fecha = (string) ($venta['fecha'] ?? '');
-                if ($fecha !== '' && ($grouped[$groupKey]['ultimaFecha'] === '' || $fecha > $grouped[$groupKey]['ultimaFecha'])) {
+                if (! $isAnnulled && $fecha !== '' && ($grouped[$groupKey]['ultimaFecha'] === '' || $fecha > $grouped[$groupKey]['ultimaFecha'])) {
                     $grouped[$groupKey]['ultimaFecha'] = $fecha;
                 }
 
@@ -2247,12 +2422,15 @@ class VentaController extends Controller
                     'cantidad' => round($cantidad, 2),
                     'precioUnitario' => round($precio, 2),
                     'totalLinea' => round($totalLinea, 2),
+                    'medioPago' => $medioPago,
+                    'estadoFiscal' => $venta['estadoFiscal'] ?? $this->serviceReportFiscalStatus($venta),
+                    'estadoPago' => $venta['estadoPago'] ?? ($venta['estado_pago'] ?? null),
+                    'anulada' => $isAnnulled,
+                    'incluidaEnTotales' => ! $isAnnulled,
                     'usuario' => $venta['usuario'] ?? null,
                     'regional' => $venta['regional'] ?? null,
                     'sucursal' => $venta['sucursal'] ?? null,
                 ];
-
-                $ventaKeys[$ventaKey] = true;
             }
         }
 
@@ -2263,14 +2441,19 @@ class VentaController extends Controller
                 return [
                     'servicio' => $group['servicio'],
                     'cantidadVentas' => count($group['ventaIds']),
+                    'cantidadVentasAnuladas' => count($group['ventaIdsAnuladas']),
+                    'cantidadVentasConAnuladas' => count($group['ventaIds']) + count($group['ventaIdsAnuladas']),
                     'cantidadDetalles' => (int) $group['cantidadDetalles'],
+                    'cantidadDetallesAnuladas' => (int) $group['cantidadDetallesAnuladas'],
                     'totalCantidad' => round((float) $group['totalCantidad'], 2),
+                    'totalCantidadAnulada' => round((float) $group['totalCantidadAnulada'], 2),
                     'totalMonto' => round((float) $group['totalMonto'], 2),
+                    'totalMontoAnulado' => round((float) $group['totalMontoAnulado'], 2),
                     'ultimaFecha' => $group['ultimaFecha'],
                     'descripciones' => array_values($group['descripciones']),
                     'descripcionMuestra' => implode(' | ', array_slice($group['descripciones'], 0, 3)),
-                    'porRegionales' => $this->buildServiceReportDimension($rows, 'regional'),
-                    'porPersonas' => $this->buildServiceReportDimension($rows, 'persona'),
+                    'porRegionales' => $this->buildServiceReportDimension($group['rowsValidas'], 'regional'),
+                    'porPersonas' => $this->buildServiceReportDimension($group['rowsValidas'], 'persona'),
                     'rows' => $rows,
                 ];
             })
@@ -2282,9 +2465,14 @@ class VentaController extends Controller
             'resumen' => [
                 'cantidadServicios' => count($servicios),
                 'cantidadVentas' => count($ventaKeys),
+                'cantidadVentasAnuladas' => count($anulledVentaKeys),
+                'cantidadVentasConAnuladas' => count($ventaKeys + $anulledVentaKeys),
                 'cantidadDetalles' => (int) collect($servicios)->sum('cantidadDetalles'),
+                'cantidadDetallesAnuladas' => (int) collect($servicios)->sum('cantidadDetallesAnuladas'),
                 'totalCantidad' => round((float) collect($servicios)->sum('totalCantidad'), 2),
+                'totalCantidadAnulada' => round((float) collect($servicios)->sum('totalCantidadAnulada'), 2),
                 'totalMonto' => round((float) collect($servicios)->sum('totalMonto'), 2),
+                'totalMontoAnulado' => round((float) collect($servicios)->sum('totalMontoAnulado'), 2),
             ],
             'servicios' => $servicios,
         ];
@@ -4443,11 +4631,34 @@ class VentaController extends Controller
             return [];
         }
 
+        $columns = [
+            'id',
+            'origen_venta_id',
+            'estado_sufe',
+            'codigoSeguimiento',
+            'numero_factura',
+            'cuf',
+            'url_pdf',
+            'url_xml',
+        ];
+        foreach ([
+            'anulada_at',
+            'anulada_por_user_id',
+            'anulada_por_nombre',
+            'anulada_por_email',
+            'anulacion_motivo',
+            'anulacion_tipo',
+        ] as $column) {
+            if (Schema::hasColumn('ventas', $column)) {
+                $columns[] = $column;
+            }
+        }
+
         return Venta::query()
             ->whereIn(DB::raw('cast(origen_venta_id as varchar)'), $cartIds)
             ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
             ->orderByDesc('id')
-            ->get(['id', 'origen_venta_id', 'estado_sufe', 'codigoSeguimiento', 'numero_factura', 'cuf', 'url_pdf', 'url_xml'])
+            ->get($columns)
             ->groupBy(fn ($venta) => trim((string) ($venta->origen_venta_id ?? '')))
             ->map(fn ($rows) => $rows->first())
             ->toArray();
