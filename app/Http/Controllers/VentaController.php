@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\StreamsServiceReports;
 use App\Models\DetalleVenta;
 use App\Models\Notificacione;
 use App\Models\Venta;
@@ -26,6 +27,8 @@ use Illuminate\Validation\ValidationException;
 
 class VentaController extends Controller
 {
+    use StreamsServiceReports;
+
     private static ?bool $hasOrigenUsuarioAliasColumn = null;
 
     private static ?bool $hasOrigenUsuarioCarnetColumn = null;
@@ -1718,8 +1721,10 @@ class VentaController extends Controller
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
         $limite = max(1, min((int) ($filters['limite'] ?? 200), 1000));
-        $ventas = $this->mergedVentasForServiceReport($filters, true);
-        $report = $this->buildServiceReportFromVentas($ventas, false);
+        $report = $this->buildServiceReportFromVentas(
+            $this->mergedServiceReportVentaStream($filters, true),
+            false
+        );
         $servicios = collect($report['servicios'] ?? [])
             ->map(function (array $item) {
                 unset($item['rows']);
@@ -1766,27 +1771,34 @@ class VentaController extends Controller
         }
 
         $serviceKey = mb_strtoupper($servicio);
-        $ventas = $this->mergedVentasForServiceReport($filters, true);
-        $report = $this->buildServiceReportFromVentas($ventas, true, $serviceKey);
+        $spool = $this->newServiceReportRowSpool();
+        try {
+            $report = $this->buildServiceReportFromVentas(
+                $this->mergedServiceReportVentaStream($filters, true),
+                false,
+                $serviceKey,
+                function (array $row) use (&$spool) {
+                    $this->appendServiceReportSpoolRow($spool, $row);
+                }
+            );
+            $this->flushServiceReportSpool($spool);
+        } catch (\Throwable $exception) {
+            $this->deleteServiceReportSpool($spool);
+            throw $exception;
+        }
         $detalle = collect($report['servicios'] ?? [])
             ->first(fn ($item) => mb_strtoupper((string) ($item['servicio'] ?? '')) === $serviceKey);
 
         if (! $detalle) {
+            $this->deleteServiceReportSpool($spool);
+
             return response()->json([
                 'message' => 'No se encontro el servicio solicitado para los filtros enviados.',
                 'servicio' => $servicio,
             ], 404);
         }
 
-        $detalle['rows'] = collect($detalle['rows'] ?? [])
-            ->sortByDesc(fn ($row) => strtotime((string) ($row['fecha'] ?? '1970-01-01 00:00:00')) ?: 0)
-            ->values()
-            ->all();
-
-        return response()->json([
-            'filters' => $filters,
-            'servicio' => $detalle,
-        ]);
+        return $this->serviceReportDetailStreamResponse($filters, $detalle, $spool);
     }
 
     public function reporteServiciosContrato(Request $request)
@@ -2399,23 +2411,28 @@ class VentaController extends Controller
         return null;
     }
 
-    private function buildServiceReportFromVentas(Collection $ventas, bool $includeRows = true, ?string $onlyService = null): array
+    private function buildServiceReportFromVentas(iterable $ventas, bool $includeRows = true, ?string $onlyService = null, ?callable $rowWriter = null): array
     {
         $grouped = [];
-        $ventaKeys = [];
-        $anulledVentaKeys = [];
-        $includedTotalVentaKeys = [];
-        $nonIncludedTotalVentaKeys = [];
+        $cantidadVentas = 0;
+        $cantidadVentasIncluidas = 0;
+        $cantidadVentasNoIncluidas = 0;
+        $cantidadVentasAnuladas = 0;
         $onlyServiceKey = $onlyService !== null ? mb_strtoupper($onlyService) : null;
 
         foreach ($ventas as $venta) {
             $venta = is_array($venta) ? $venta : (array) $venta;
-            $ventaKey = (string) ($venta['id'] ?? $venta['codigoSeguimiento'] ?? $venta['codigoOrden'] ?? uniqid('venta_', true));
             $isAnnulled = (bool) ($venta['anulada'] ?? $this->isServiceReportAnnulled($venta));
             $medioPago = (string) ($venta['medioPago'] ?? ($this->isQrPaymentRow($venta) ? 'QR' : 'EFECTIVO'));
-            $detalle = collect($venta['detalle'] ?? []);
+            $detalle = $venta['detalle'] ?? [];
             $exclusionReason = $isAnnulled ? 'ANULADA' : $this->serviceReportTotalExclusionReason($venta);
             $includedInSoldTotal = ! $isAnnulled && $exclusionReason === null;
+            $saleMatched = false;
+            $saleIncluded = false;
+            $saleNotIncluded = false;
+            $seenSaleGroups = [];
+            $seenRegionalGroups = [];
+            $seenPersonGroups = [];
 
             foreach ($detalle as $item) {
                 $item = is_array($item) ? $item : (array) $item;
@@ -2427,13 +2444,19 @@ class VentaController extends Controller
                 if ($onlyServiceKey !== null && $groupKey !== $onlyServiceKey) {
                     continue;
                 }
+                $saleMatched = true;
                 $cantidad = (float) ($item['cantidad'] ?? 0);
                 $precio = (float) ($item['precio'] ?? ($item['monto_base'] ?? 0));
                 $totalLinea = (float) ($item['total_linea'] ?? ($cantidad * $precio));
+                $fecha = (string) ($venta['fecha'] ?? '');
 
                 if (! isset($grouped[$groupKey])) {
                     $grouped[$groupKey] = [
                         'servicio' => $servicio,
+                        'cantidadVentas' => 0,
+                        'cantidadVentasAnuladas' => 0,
+                        'cantidadVentasIncluidasEnTotalVendido' => 0,
+                        'cantidadVentasNoIncluidasEnTotalVendido' => 0,
                         'cantidadDetalles' => 0,
                         'cantidadDetallesAnuladas' => 0,
                         'totalCantidad' => 0.0,
@@ -2445,33 +2468,41 @@ class VentaController extends Controller
                         'ultimaFecha' => '',
                         'descripciones' => [],
                         'rows' => [],
-                        'ventaIds' => [],
-                        'ventaIdsAnuladas' => [],
                         'dimensionesRegional' => [],
                         'dimensionesPersona' => [],
                     ];
                 }
 
+                if (! isset($seenSaleGroups[$groupKey])) {
+                    $seenSaleGroups[$groupKey] = true;
+                    if ($isAnnulled) {
+                        $grouped[$groupKey]['cantidadVentasAnuladas']++;
+                    } else {
+                        $grouped[$groupKey]['cantidadVentas']++;
+                        if ($includedInSoldTotal) {
+                            $grouped[$groupKey]['cantidadVentasIncluidasEnTotalVendido']++;
+                        } else {
+                            $grouped[$groupKey]['cantidadVentasNoIncluidasEnTotalVendido']++;
+                        }
+                    }
+                }
+
                 if ($isAnnulled) {
-                    $grouped[$groupKey]['cantidadDetallesAnuladas'] += 1;
+                    $grouped[$groupKey]['cantidadDetallesAnuladas']++;
                     $grouped[$groupKey]['totalCantidadAnulada'] += $cantidad;
                     $grouped[$groupKey]['totalMontoAnulado'] += $totalLinea;
-                    $grouped[$groupKey]['ventaIdsAnuladas'][$ventaKey] = true;
-                    $anulledVentaKeys[$ventaKey] = true;
                 } else {
-                    $grouped[$groupKey]['cantidadDetalles'] += 1;
+                    $grouped[$groupKey]['cantidadDetalles']++;
                     $grouped[$groupKey]['totalCantidad'] += $cantidad;
                     $grouped[$groupKey]['totalMonto'] += $totalLinea;
-                    $grouped[$groupKey]['ventaIds'][$ventaKey] = true;
                     if ($includedInSoldTotal) {
                         $grouped[$groupKey]['totalMontoVendido'] += $totalLinea;
-                        $grouped[$groupKey]['ventaIdsTotalVendido'][$ventaKey] = true;
-                        $includedTotalVentaKeys[$ventaKey] = true;
+                        $saleIncluded = true;
                     } else {
                         $grouped[$groupKey]['totalMontoNoIncluidoEnTotalVendido'] += $totalLinea;
-                        $grouped[$groupKey]['ventaIdsNoIncluidasEnTotalVendido'][$ventaKey] = true;
-                        $nonIncludedTotalVentaKeys[$ventaKey] = true;
+                        $saleNotIncluded = true;
                     }
+
                     $dimensionRow = [
                         'ventaId' => $venta['id'] ?? null,
                         'codigoSeguimiento' => $venta['codigoSeguimiento'] ?? null,
@@ -2484,22 +2515,37 @@ class VentaController extends Controller
                         'totalLinea' => $totalLinea,
                         'incluidaEnTotalVendido' => $includedInSoldTotal,
                     ];
-                    $this->addServiceReportDimensionRow($grouped[$groupKey]['dimensionesRegional'], $dimensionRow, 'regional');
-                    $this->addServiceReportDimensionRow($grouped[$groupKey]['dimensionesPersona'], $dimensionRow, 'persona');
-                    $ventaKeys[$ventaKey] = true;
+                    $regionalKey = $this->serviceReportDimensionKey($dimensionRow, 'regional');
+                    $personKey = $this->serviceReportDimensionKey($dimensionRow, 'persona');
+                    $this->addServiceReportDimensionRow(
+                        $grouped[$groupKey]['dimensionesRegional'],
+                        $dimensionRow,
+                        'regional',
+                        ! isset($seenRegionalGroups[$regionalKey])
+                    );
+                    $this->addServiceReportDimensionRow(
+                        $grouped[$groupKey]['dimensionesPersona'],
+                        $dimensionRow,
+                        'persona',
+                        ! isset($seenPersonGroups[$personKey])
+                    );
+                    $seenRegionalGroups[$regionalKey] = true;
+                    $seenPersonGroups[$personKey] = true;
                 }
 
-                if (! $isAnnulled && $descripcion !== '' && ! in_array($descripcion, $grouped[$groupKey]['descripciones'], true)) {
-                    $grouped[$groupKey]['descripciones'][] = $descripcion;
+                if (! $isAnnulled && $descripcion !== '') {
+                    if (! isset($grouped[$groupKey]['descripciones'][$descripcion])
+                        || ($fecha !== '' && $fecha > $grouped[$groupKey]['descripciones'][$descripcion])) {
+                        $grouped[$groupKey]['descripciones'][$descripcion] = $fecha;
+                    }
                 }
 
-                $fecha = (string) ($venta['fecha'] ?? '');
                 if (! $isAnnulled && $fecha !== '' && ($grouped[$groupKey]['ultimaFecha'] === '' || $fecha > $grouped[$groupKey]['ultimaFecha'])) {
                     $grouped[$groupKey]['ultimaFecha'] = $fecha;
                 }
 
-                if ($includeRows) {
-                    $grouped[$groupKey]['rows'][] = [
+                if ($includeRows || $rowWriter !== null) {
+                    $row = [
                         'ventaId' => $venta['id'] ?? null,
                         'detalleId' => $item['id'] ?? ($item['detalle_id'] ?? null),
                         'numeroFactura' => $venta['numeroFactura'] ?? null,
@@ -2521,35 +2567,56 @@ class VentaController extends Controller
                         'regional' => $venta['regional'] ?? null,
                         'sucursal' => $venta['sucursal'] ?? null,
                     ];
+                    if ($rowWriter !== null) {
+                        $rowWriter($row);
+                    } elseif ($includeRows) {
+                        $grouped[$groupKey]['rows'][] = $row;
+                    }
+                }
+            }
+
+            if ($saleMatched) {
+                if ($isAnnulled) {
+                    $cantidadVentasAnuladas++;
+                } else {
+                    $cantidadVentas++;
+                    if ($saleIncluded) {
+                        $cantidadVentasIncluidas++;
+                    }
+                    if ($saleNotIncluded) {
+                        $cantidadVentasNoIncluidas++;
+                    }
                 }
             }
         }
 
         $servicios = collect(array_values($grouped))
             ->map(function (array $group) {
-                $rows = array_values($group['rows']);
+                $descripcionesPorFecha = $group['descripciones'];
+                arsort($descripcionesPorFecha, SORT_STRING);
+                $descripciones = array_keys($descripcionesPorFecha);
 
                 return [
                     'servicio' => $group['servicio'],
-                    'cantidadVentas' => count($group['ventaIds']),
-                    'cantidadVentasAnuladas' => count($group['ventaIdsAnuladas']),
-                    'cantidadVentasConAnuladas' => count($group['ventaIds']) + count($group['ventaIdsAnuladas']),
+                    'cantidadVentas' => $group['cantidadVentas'],
+                    'cantidadVentasAnuladas' => $group['cantidadVentasAnuladas'],
+                    'cantidadVentasConAnuladas' => $group['cantidadVentas'] + $group['cantidadVentasAnuladas'],
                     'cantidadDetalles' => (int) $group['cantidadDetalles'],
                     'cantidadDetallesAnuladas' => (int) $group['cantidadDetallesAnuladas'],
                     'totalCantidad' => round((float) $group['totalCantidad'], 2),
                     'totalCantidadAnulada' => round((float) $group['totalCantidadAnulada'], 2),
                     'totalMonto' => round((float) $group['totalMonto'], 2),
-                    'cantidadVentasIncluidasEnTotalVendido' => count($group['ventaIdsTotalVendido'] ?? []),
-                    'cantidadVentasNoIncluidasEnTotalVendido' => count($group['ventaIdsNoIncluidasEnTotalVendido'] ?? []),
+                    'cantidadVentasIncluidasEnTotalVendido' => $group['cantidadVentasIncluidasEnTotalVendido'],
+                    'cantidadVentasNoIncluidasEnTotalVendido' => $group['cantidadVentasNoIncluidasEnTotalVendido'],
                     'totalMontoVendido' => round((float) $group['totalMontoVendido'], 2),
                     'totalMontoNoIncluidoEnTotalVendido' => round((float) $group['totalMontoNoIncluidoEnTotalVendido'], 2),
                     'totalMontoAnulado' => round((float) $group['totalMontoAnulado'], 2),
                     'ultimaFecha' => $group['ultimaFecha'],
-                    'descripciones' => array_values($group['descripciones']),
-                    'descripcionMuestra' => implode(' | ', array_slice($group['descripciones'], 0, 3)),
+                    'descripciones' => $descripciones,
+                    'descripcionMuestra' => implode(' | ', array_slice($descripciones, 0, 3)),
                     'porRegionales' => $this->finishServiceReportDimension($group['dimensionesRegional']),
                     'porPersonas' => $this->finishServiceReportDimension($group['dimensionesPersona']),
-                    'rows' => $rows,
+                    'rows' => array_values($group['rows']),
                 ];
             })
             ->sortByDesc('totalMonto')
@@ -2559,11 +2626,11 @@ class VentaController extends Controller
         return [
             'resumen' => [
                 'cantidadServicios' => count($servicios),
-                'cantidadVentas' => count($ventaKeys),
-                'cantidadVentasIncluidasEnTotalVendido' => count($includedTotalVentaKeys),
-                'cantidadVentasNoIncluidasEnTotalVendido' => count($nonIncludedTotalVentaKeys),
-                'cantidadVentasAnuladas' => count($anulledVentaKeys),
-                'cantidadVentasConAnuladas' => count($ventaKeys + $anulledVentaKeys),
+                'cantidadVentas' => $cantidadVentas,
+                'cantidadVentasIncluidasEnTotalVendido' => $cantidadVentasIncluidas,
+                'cantidadVentasNoIncluidasEnTotalVendido' => $cantidadVentasNoIncluidas,
+                'cantidadVentasAnuladas' => $cantidadVentasAnuladas,
+                'cantidadVentasConAnuladas' => $cantidadVentas + $cantidadVentasAnuladas,
                 'cantidadDetalles' => (int) collect($servicios)->sum('cantidadDetalles'),
                 'cantidadDetallesAnuladas' => (int) collect($servicios)->sum('cantidadDetallesAnuladas'),
                 'totalCantidad' => round((float) collect($servicios)->sum('totalCantidad'), 2),
@@ -2588,7 +2655,33 @@ class VentaController extends Controller
         return $this->finishServiceReportDimension($grouped);
     }
 
-    private function addServiceReportDimensionRow(array &$grouped, array $row, string $dimension): void
+    private function serviceReportDimensionKey(array $row, string $dimension): string
+    {
+        if ($dimension === 'regional') {
+            $regional = is_array($row['regional'] ?? null) ? $row['regional'] : [];
+
+            return mb_strtoupper(trim((string) ($regional['nombre'] ?? '')) ?: 'SIN REGIONAL');
+        }
+
+        $usuario = is_array($row['usuario'] ?? null) ? $row['usuario'] : [];
+        $label = trim((string) ($usuario['nombre'] ?? '')) ?: 'SIN USUARIO';
+        foreach ([
+            $usuario['id'] ?? null,
+            $usuario['email'] ?? null,
+            $usuario['alias'] ?? null,
+            $usuario['carnet'] ?? null,
+            $label,
+        ] as $identity) {
+            $identity = trim((string) $identity);
+            if ($identity !== '') {
+                return mb_strtoupper($identity);
+            }
+        }
+
+        return 'SIN USUARIO';
+    }
+
+    private function addServiceReportDimensionRow(array &$grouped, array $row, string $dimension, bool $countSale = true): void
     {
         $isRegional = $dimension === 'regional';
         $usuario = is_array($row['usuario'] ?? null) ? $row['usuario'] : [];
@@ -2597,18 +2690,10 @@ class VentaController extends Controller
 
         if ($isRegional) {
             $label = trim((string) ($regional['nombre'] ?? '')) ?: 'SIN REGIONAL';
-            $key = mb_strtoupper($label);
         } else {
             $label = trim((string) ($usuario['nombre'] ?? '')) ?: 'SIN USUARIO';
-            $identity = collect([
-                $usuario['id'] ?? null,
-                $usuario['email'] ?? null,
-                $usuario['alias'] ?? null,
-                $usuario['carnet'] ?? null,
-                $label,
-            ])->first(fn ($value) => trim((string) $value) !== '');
-            $key = mb_strtoupper(trim((string) $identity));
         }
+        $key = $this->serviceReportDimensionKey($row, $dimension);
 
         if (! isset($grouped[$key])) {
             $grouped[$key] = array_merge(
@@ -2623,13 +2708,13 @@ class VentaController extends Controller
                         'usuarioEmail' => $usuario['email'] ?? null,
                         'usuarioAlias' => $usuario['alias'] ?? null,
                         'usuarioCarnet' => $usuario['carnet'] ?? null,
-                    ],
+                ],
                 [
+                    'cantidadVentas' => 0,
                     'cantidadDetalles' => 0,
                     'totalCantidad' => 0.0,
                     'totalMonto' => 0.0,
                     'totalMontoVendido' => 0.0,
-                    'ventaIds' => [],
                 ]
             );
         }
@@ -2641,13 +2726,8 @@ class VentaController extends Controller
             }
         }
 
-        $ventaKey = trim((string) (
-            ($row['ventaId'] ?? null)
-            ?: ($row['codigoSeguimiento'] ?? null)
-            ?: ($row['codigoOrden'] ?? '')
-        ));
-        if ($ventaKey !== '') {
-            $grouped[$key]['ventaIds'][$ventaKey] = true;
+        if ($countSale) {
+            $grouped[$key]['cantidadVentas']++;
         }
 
         $grouped[$key]['cantidadDetalles']++;
@@ -2662,7 +2742,6 @@ class VentaController extends Controller
     {
         return collect(array_values($grouped))
             ->map(function (array $group) {
-                $group['cantidadVentas'] = count($group['ventaIds']);
                 $group['cantidadDetalles'] = (int) $group['cantidadDetalles'];
                 $group['totalCantidad'] = round((float) $group['totalCantidad'], 2);
                 $group['totalMonto'] = round((float) $group['totalMonto'], 2);
