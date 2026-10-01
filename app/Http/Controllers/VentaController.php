@@ -4206,10 +4206,13 @@ class VentaController extends Controller
     {
         foreach ($sales as $sale) {
             if ($this->isBranchReportContractSale($sale)) {
-                $key = $this->branchReportSaleKey($sale);
-                $totalsByBranch[$key] ??= $this->emptyBranchReportSaleTotals($sale);
-                $totalsByBranch[$key]['totalContratosNoSumados'] += (float) ($sale['total'] ?? 0);
-                $totalsByBranch[$key]['contratosNoSumados']++;
+                if (! $this->isBranchReportAnnulledSale($sale)) {
+                    $key = $this->branchReportSaleKey($sale);
+                    $totalsByBranch[$key] ??= $this->emptyBranchReportSaleTotals($sale);
+                    $totalsByBranch[$key]['totalContratosNoSumados'] += (float) ($sale['total'] ?? 0);
+                    $totalsByBranch[$key]['contratosNoSumados']++;
+                }
+
                 continue;
             }
 
