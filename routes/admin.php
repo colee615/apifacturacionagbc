@@ -25,6 +25,7 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::get('/ventas/reportes/servicios-contrato/detalle', 'VentaController@reporteServiciosContratoDetalle')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/resumen', 'VentaController@reporteVentas')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/sucursales', 'VentaController@reporteSucursales')->middleware('permission:ventas.read');
+   Route::get('/ventas/reportes/sucursales/totales', 'VentaController@reporteSucursalesTotales')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/sucursales/usuarios', 'VentaController@reporteSucursalesUsuarios')->middleware('permission:ventas.read');
    Route::get('/ventas/reportes/sucursales/incidencias', 'VentaController@reporteSucursalesIncidencias')->middleware('permission:ventas.read');
    Route::get('/ventas/operables', 'VentaController@operables')->middleware('permission:ventas.read');

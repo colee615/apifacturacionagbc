@@ -4036,6 +4036,419 @@ class VentaController extends Controller
         ]);
     }
 
+    public function reporteSucursalesTotales(Request $request)
+    {
+        $startedAt = $this->reportStartedAt();
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        $totalsByBranch = [];
+        $cartRowsProcessed = 0;
+        $ventaRowsProcessed = 0;
+        $chunkSize = 1000;
+
+        if (Schema::hasTable('facturacion_carts')) {
+            $this->buildFacturacionCartReportQuery($filters)
+                ->orderBy('id')
+                ->chunkById($chunkSize, function ($cartRows) use (&$totalsByBranch, &$cartRowsProcessed) {
+                    $itemsByCart = $this->facturacionCartItemsMapFromRows($cartRows);
+                    $linkedVentasByCart = $this->facturacionCartFiscalBackfillMap($cartRows);
+                    $seguimientos = $cartRows
+                        ->map(fn ($cart) => (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')))
+                        ->filter()
+                        ->values()
+                        ->all();
+                    $notificationsBySeguimiento = $this->facturacionCartNotificationBackfillMap($seguimientos);
+                    $payloads = [];
+
+                    foreach ($cartRows as $cart) {
+                        $seguimiento = (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''));
+                        $payload = $this->mapFacturacionCartToVentaPayload(
+                            $cart,
+                            $itemsByCart[(int) $cart->id] ?? [],
+                            $linkedVentasByCart[trim((string) $cart->id)] ?? null,
+                            $notificationsBySeguimiento[$seguimiento] ?? null,
+                            false
+                        );
+                        $payloads[] = $payload;
+                        $cartRowsProcessed++;
+                    }
+
+                    $totalsByBranch = $this->aggregateBranchSalesPayloads($payloads, $totalsByBranch);
+                }, 'id');
+        }
+
+        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
+        if (Schema::hasTable('facturacion_carts')) {
+            $filteredCartIds = $this->buildFacturacionCartReportQuery($filters)->select('id');
+            $ventasQuery->where(function ($scope) use ($filteredCartIds) {
+                $scope->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                    ->orWhereNull('origen_venta_tipo')
+                    ->orWhereNotExists(function ($query) use ($filteredCartIds) {
+                        $query->fromSub(clone $filteredCartIds, 'report_carts')
+                            ->selectRaw('1')
+                            ->whereRaw('cast(report_carts.id as varchar) = cast(ventas.origen_venta_id as varchar)');
+                    });
+            });
+        }
+
+        $hasVentaCanalOperativo = Schema::hasColumn('ventas', 'canal_operativo');
+        $hasVentaCuentaPorCobrar = Schema::hasColumn('ventas', 'es_cuenta_por_cobrar');
+        $hasVentaEmpresaNombre = Schema::hasColumn('ventas', 'empresa_nombre');
+        $hasVentaEmpresaSigla = Schema::hasColumn('ventas', 'empresa_sigla');
+        $ventaColumns = array_values(array_filter([
+            'id',
+            'codigoOrden',
+            'codigoSeguimiento',
+            'origen_venta_id',
+            'origen_venta_tipo',
+            'origen_sucursal_id',
+            'codigoSucursal',
+            'puntoVenta',
+            'total',
+            'estado_sufe',
+            'tipo_emision_sufe',
+            'cuf',
+            'url_pdf',
+            $hasVentaCanalOperativo ? 'canal_operativo' : null,
+            $hasVentaCuentaPorCobrar ? 'es_cuenta_por_cobrar' : null,
+            $hasVentaEmpresaNombre ? 'empresa_nombre' : null,
+            $hasVentaEmpresaSigla ? 'empresa_sigla' : null,
+        ]));
+
+        $ventasQuery
+            ->select($ventaColumns)
+            ->orderBy('id')
+            ->chunkById($chunkSize, function ($ventas) use (
+                &$totalsByBranch,
+                &$ventaRowsProcessed,
+                $hasVentaCanalOperativo,
+                $hasVentaCuentaPorCobrar,
+                $hasVentaEmpresaNombre,
+                $hasVentaEmpresaSigla
+            ) {
+                $detailsByVenta = $this->detalleMapsFromRows($ventas);
+                $notificationsBySeguimiento = $this->latestNotificationsMapFromSeguimientos(
+                    $ventas->pluck('codigoSeguimiento')->all()
+                );
+                $payloads = [];
+
+                foreach ($ventas as $venta) {
+                    $ventaId = (int) $venta->id;
+                    $notification = trim((string) ($venta->codigoSeguimiento ?? '')) !== ''
+                        ? ($notificationsBySeguimiento[trim((string) $venta->codigoSeguimiento)] ?? null)
+                        : null;
+                    $details = $detailsByVenta['detalle'][$ventaId] ?? [];
+                    $cartId = (int) ($venta->origen_venta_id ?? 0);
+                    if ($details === [] && $cartId > 0) {
+                        $details = $detailsByVenta['cart'][$cartId] ?? [];
+                    }
+                    $status = $this->protocolStatusFromVentaNotification($venta, $notification);
+
+                    // These are the same sale fields the old /ventas response exposed to
+                    // lista.vue's total classifier; building this small projection avoids
+                    // materializing the full public sales payload in memory.
+                    $payloads[] = [
+                        'codigoOrden' => $venta->codigoOrden,
+                        'codigoSucursal' => (int) $venta->codigoSucursal,
+                        'puntoVenta' => (int) $venta->puntoVenta,
+                        'sucursal' => [
+                            'codigoSucursal' => (int) $venta->codigoSucursal,
+                            'puntoVenta' => (int) $venta->puntoVenta,
+                        ],
+                        'total' => (float) $venta->total,
+                        'estadoSufe' => $venta->estado_sufe,
+                        'canal_operativo' => $hasVentaCanalOperativo ? (string) ($venta->canal_operativo ?? 'normal') : 'normal',
+                        'es_cuenta_por_cobrar' => $hasVentaCuentaPorCobrar ? (bool) ($venta->es_cuenta_por_cobrar ?? false) : false,
+                        'empresa_nombre' => $hasVentaEmpresaNombre ? (string) ($venta->empresa_nombre ?? '') : '',
+                        'empresa_sigla' => $hasVentaEmpresaSigla ? (string) ($venta->empresa_sigla ?? '') : '',
+                        'cuf' => $venta->cuf,
+                        'status' => $status,
+                        'seguimiento' => [
+                            'cuf' => $status['cuf'] ?? $venta->cuf,
+                            'urlPdf' => $venta->url_pdf,
+                        ],
+                        'detalle' => $details,
+                    ];
+                    $ventaRowsProcessed++;
+                }
+
+                $totalsByBranch = $this->aggregateBranchSalesPayloads($payloads, $totalsByBranch);
+            }, 'id');
+
+        Log::info('ventas.reporteSucursalesTotales.ready', $this->reportLogContext($request, [
+            'elapsed_ms' => $this->reportElapsedMs($startedAt),
+            'cart_rows_processed' => $cartRowsProcessed,
+            'venta_rows_processed' => $ventaRowsProcessed,
+            'sucursales_count' => count($totalsByBranch),
+        ]));
+
+        $currencyFields = [
+            'totalVendido',
+            'totalQrFacturado',
+            'totalQrPagadoPendienteFactura',
+            'totalEfectivoFacturado',
+            'totalEcaFacturado',
+            'totalContratosNoSumados',
+        ];
+        foreach ($totalsByBranch as &$branchTotals) {
+            foreach ($currencyFields as $field) {
+                $branchTotals[$field] = round((float) $branchTotals[$field], 2);
+            }
+        }
+        unset($branchTotals);
+        ksort($totalsByBranch);
+
+        return response()->json([
+            'totales' => array_values($totalsByBranch),
+        ]);
+    }
+
+    private function aggregateBranchSalesPayloads(iterable $sales, array $totalsByBranch = []): array
+    {
+        foreach ($sales as $sale) {
+            if ($this->isBranchReportContractSale($sale)) {
+                $key = $this->branchReportSaleKey($sale);
+                $totalsByBranch[$key] ??= $this->emptyBranchReportSaleTotals($sale);
+                $totalsByBranch[$key]['totalContratosNoSumados'] += (float) ($sale['total'] ?? 0);
+                $totalsByBranch[$key]['contratosNoSumados']++;
+                continue;
+            }
+
+            if ($this->isBranchReportEcaSale($sale)) {
+                $key = $this->branchReportSaleKey($sale);
+                $totalsByBranch[$key] ??= $this->emptyBranchReportSaleTotals($sale);
+                $totalsByBranch[$key]['totalEcaFacturado'] += (float) ($sale['total'] ?? 0);
+                $totalsByBranch[$key]['ecaFacturadas']++;
+                continue;
+            }
+
+            $key = $this->branchReportSaleKey($sale);
+            $totalsByBranch[$key] ??= $this->emptyBranchReportSaleTotals($sale);
+            $total = (float) ($sale['total'] ?? 0);
+            $isQr = $this->isBranchReportQrSale($sale);
+            $isAnnulled = $this->isBranchReportAnnulledSale($sale);
+            $isQrInvoiced = $isQr
+                && strtolower(trim((string) ($sale['estado_pago'] ?? ''))) === 'pagado'
+                && ! $isAnnulled
+                && $this->hasBranchReportInvoiceEvidence($sale);
+            $countsAsCash = $this->countsAsBranchReportCash($sale, $isAnnulled, $isQr);
+
+            if (! $isAnnulled && ! $this->isBranchReportExcludedSale($sale)) {
+                if ($isQr) {
+                    if ($isQrInvoiced) {
+                        $totalsByBranch[$key]['totalVendido'] += $total;
+                    }
+                } elseif ($countsAsCash) {
+                    $totalsByBranch[$key]['totalVendido'] += $total;
+                }
+            }
+
+            if ($isQrInvoiced) {
+                $totalsByBranch[$key]['totalQrFacturado'] += $total;
+                $totalsByBranch[$key]['qrFacturadas']++;
+                $totalsByBranch[$key]['facturadas']++;
+            }
+
+            if (
+                $isQr
+                && strtolower(trim((string) ($sale['estado_pago'] ?? ''))) === 'pagado'
+                && ! $isAnnulled
+                && ! $isQrInvoiced
+            ) {
+                $totalsByBranch[$key]['totalQrPagadoPendienteFactura'] += $total;
+            }
+
+            if ($countsAsCash) {
+                $totalsByBranch[$key]['totalEfectivoFacturado'] += $total;
+                $totalsByBranch[$key]['electronicasFacturadas']++;
+                $totalsByBranch[$key]['facturadas']++;
+            }
+        }
+
+        return $totalsByBranch;
+    }
+
+    private function emptyBranchReportSaleTotals(array $sale): array
+    {
+        return [
+            'codigoSucursal' => (int) ($sale['sucursal']['codigoSucursal'] ?? $sale['codigoSucursal'] ?? 0),
+            'puntoVenta' => (int) ($sale['sucursal']['puntoVenta'] ?? $sale['puntoVenta'] ?? $sale['sucursal']['id'] ?? 0),
+            'totalVendido' => 0.0,
+            'totalQrFacturado' => 0.0,
+            'totalQrPagadoPendienteFactura' => 0.0,
+            'totalEfectivoFacturado' => 0.0,
+            'totalEcaFacturado' => 0.0,
+            'totalContratosNoSumados' => 0.0,
+            'facturadas' => 0,
+            'qrFacturadas' => 0,
+            'ecaFacturadas' => 0,
+            'electronicasFacturadas' => 0,
+            'contratosNoSumados' => 0,
+        ];
+    }
+
+    private function branchReportSaleKey(array $sale): string
+    {
+        $codigoSucursal = (int) ($sale['sucursal']['codigoSucursal'] ?? $sale['codigoSucursal'] ?? 0);
+        $puntoVenta = (int) ($sale['sucursal']['puntoVenta'] ?? $sale['puntoVenta'] ?? $sale['sucursal']['id'] ?? 0);
+
+        return str_pad((string) max(0, $codigoSucursal), 3, '0', STR_PAD_LEFT).'-'.max(0, $puntoVenta);
+    }
+
+    private function isBranchReportAnnulledSale(array $sale): bool
+    {
+        $statusKey = strtoupper(trim((string) data_get($sale, 'status.key', '')));
+        $estadoEmision = strtoupper(trim((string) ($sale['estado_emision'] ?? '')));
+        $estadoSufe = strtoupper(trim((string) (
+            data_get($sale, 'respuesta_emision.estadoSufe')
+            ?: ($sale['estadoSufe'] ?? null)
+            ?: ($sale['estado_sufe'] ?? '')
+        )));
+
+        return in_array($statusKey, ['ANULADA', 'ANULADO', 'ANULACION_SOLICITADA', 'DESCARTADA'], true)
+            || in_array($estadoEmision, ['ANULADA', 'ANULADO', 'ANULACION_SOLICITADA', 'DESCARTADA'], true)
+            || in_array($estadoSufe, ['ANULADA', 'ANULADO', 'ANULACION_SOLICITADA', 'DESCARTADA'], true);
+    }
+
+    private function isBranchReportQrSale(array $sale): bool
+    {
+        $codigoOrden = strtoupper(trim((string) ($sale['codigoOrden'] ?? '')));
+        $metodoPago = strtolower(trim((string) ($sale['metodo_pago'] ?? $sale['metodoPago'] ?? '')));
+        $canalEmision = strtolower(trim((string) ($sale['canal_emision'] ?? $sale['canalEmision'] ?? '')));
+
+        return str_starts_with($codigoOrden, 'VQ-')
+            || str_starts_with($codigoOrden, 'VQC-')
+            || $metodoPago === 'qr'
+            || $canalEmision === 'qr';
+    }
+
+    private function hasBranchReportInvoiceEvidence(array $sale): bool
+    {
+        $estadoEmision = strtoupper(trim((string) ($sale['estado_emision'] ?? '')));
+        $statusKey = strtoupper(trim((string) data_get($sale, 'status.key', '')));
+        $statusLabel = strtoupper(trim((string) data_get($sale, 'status.label', '')));
+        $cuf = trim((string) (
+            ($sale['cuf'] ?? null)
+            ?: data_get($sale, 'status.cuf')
+            ?: data_get($sale, 'seguimiento.cuf')
+            ?: data_get($sale, 'respuesta_emision.factura.cuf')
+            ?: data_get($sale, 'respuesta_emision.cuf')
+            ?: ''
+        ));
+        $pdfUrl = trim((string) (
+            data_get($sale, 'seguimiento.urlPdf')
+            ?: data_get($sale, 'respuesta_emision.factura.pdfUrl')
+            ?: data_get($sale, 'respuesta_emision.pdfUrl')
+            ?: ''
+        ));
+        $numeroFactura = trim((string) (
+            ($sale['numeroFactura'] ?? null)
+            ?: data_get($sale, 'respuesta_emision.factura.nroFactura')
+            ?: ''
+        ));
+
+        return $estadoEmision === 'FACTURADA'
+            || $statusKey === 'FACTURADA'
+            || str_contains($statusLabel, 'FACTURADA')
+            || $cuf !== ''
+            || $pdfUrl !== ''
+            || $numeroFactura !== '';
+    }
+
+    private function countsAsBranchReportCash(array $sale, ?bool $isAnnulled = null, ?bool $isQr = null): bool
+    {
+        $isAnnulled ??= $this->isBranchReportAnnulledSale($sale);
+        $isQr ??= $this->isBranchReportQrSale($sale);
+        if ($isAnnulled || $isQr || $this->isBranchReportExcludedSale($sale)) {
+            return false;
+        }
+
+        $estado = strtolower(trim((string) ($sale['estado'] ?? '')));
+        $estadoEmision = strtoupper(trim((string) ($sale['estado_emision'] ?? '')));
+        $statusKey = strtoupper(trim((string) data_get($sale, 'status.key', '')));
+        $statusLabel = strtoupper(trim((string) data_get($sale, 'status.label', '')));
+        $estadoPago = strtolower(trim((string) ($sale['estado_pago'] ?? '')));
+
+        return $estadoPago === 'pagado'
+            || in_array($statusKey, ['FACTURADA', 'EMITIDO'], true)
+            || str_contains($statusLabel, 'FACTURADA')
+            || str_contains($statusLabel, 'EMITIDO')
+            || $estadoEmision === 'FACTURADA'
+            || $estado === 'emitido';
+    }
+
+    private function isBranchReportExcludedSale(array $sale): bool
+    {
+        return $this->isBranchReportContractSale($sale) || $this->isBranchReportEcaSale($sale);
+    }
+
+    private function isBranchReportContractSale(array $sale): bool
+    {
+        $canalOperativo = strtolower(trim((string) ($sale['canal_operativo'] ?? $sale['canalOperativo'] ?? '')));
+        $esCuentaPorCobrar = $this->isJavaScriptTruthy($sale['es_cuenta_por_cobrar'] ?? $sale['esCuentaPorCobrar'] ?? false);
+        $empresaNombre = trim((string) ($sale['empresa_nombre'] ?? $sale['empresaNombre'] ?? ''));
+        $empresaSigla = trim((string) ($sale['empresa_sigla'] ?? $sale['empresaSigla'] ?? ''));
+
+        if ($canalOperativo === 'contrato' || $esCuentaPorCobrar || $empresaNombre !== '' || $empresaSigla !== '') {
+            return true;
+        }
+
+        foreach ((array) ($sale['detalle'] ?? []) as $item) {
+            foreach ($this->branchReportItemLabels($item) as $label) {
+                if (
+                    str_contains($label, 'servicio contratos')
+                    || str_contains($label, 'servicio contrato')
+                    || $label === 'contratos'
+                    || $label === 'contrato'
+                ) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function isBranchReportEcaSale(array $sale): bool
+    {
+        foreach ((array) ($sale['detalle'] ?? []) as $item) {
+            foreach ($this->branchReportItemLabels($item) as $label) {
+                if (str_contains($label, 'servicio eca') || preg_match('/(^|[^a-z0-9])eca([^a-z0-9]|$)/', $label) === 1) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function branchReportItemLabels($item): array
+    {
+        $labels = [];
+        foreach (['titulo', 'nombre_servicio', 'servicio', 'descripcion', 'detalle', 'nombre'] as $field) {
+            $value = data_get($item, $field);
+            if ($this->isJavaScriptTruthy($value)) {
+                $labels[] = mb_strtolower(trim((string) $value));
+            }
+        }
+
+        return $labels;
+    }
+
+    private function isJavaScriptTruthy($value): bool
+    {
+        if ($value === null || $value === false) {
+            return false;
+        }
+        if (is_string($value)) {
+            return $value !== '';
+        }
+        if (is_numeric($value)) {
+            return (float) $value !== 0.0;
+        }
+
+        return true;
+    }
+
     public function reporteSucursales(Request $request)
     {
         $startedAt = $this->reportStartedAt();
@@ -5127,7 +5540,8 @@ class VentaController extends Controller
         object $cart,
         array $preloadedItems = [],
         object|array|null $linkedVenta = null,
-        ?Notificacione $notification = null
+        ?Notificacione $notification = null,
+        bool $persistLinkedVentaBackfill = true
     ): array {
         $respuestaEmision = json_decode((string) ($cart->respuesta_emision ?? ''), true);
         if (! is_array($respuestaEmision)) {
@@ -5208,7 +5622,7 @@ class VentaController extends Controller
                 $ventaUpdates['url_xml'] = $backfillXmlUrl;
             }
 
-            if ($ventaUpdates !== []) {
+            if ($persistLinkedVentaBackfill && $ventaUpdates !== []) {
                 $ventaUpdates['updated_at'] = now();
                 DB::table('ventas')->where('id', $linkedVentaId)->update($ventaUpdates);
             }
