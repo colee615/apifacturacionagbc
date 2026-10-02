@@ -104,10 +104,11 @@ class UsuarioController extends Controller
 
    public function login(Request $request)
    {
-      $request->validate([
-         'email' => 'required|email',
-         'password' => 'required|string',
-      ]);
+       $request->validate([
+          'email' => 'required|email',
+          'password' => 'required|string',
+          'remember_me' => 'sometimes|boolean',
+       ]);
 
       $email = strtolower(trim((string) $request->email));
       $usuario = Usuario::where('email', $email)->first();
@@ -117,8 +118,12 @@ class UsuarioController extends Controller
       }
 
 
-      try {
-         $token = JWTAuth::fromUser($usuario);
+       try {
+          $tokenTtl = $request->boolean('remember_me')
+             ? 60 * 24 * 30
+             : (int) config('jwt.ttl', 120);
+          JWTAuth::factory()->setTTL($tokenTtl);
+          $token = JWTAuth::fromUser($usuario);
       } catch (JWTException $e) {
          return response()->json(['error' => 'No se pudo generar el token de autenticacion'], 500);
       }
