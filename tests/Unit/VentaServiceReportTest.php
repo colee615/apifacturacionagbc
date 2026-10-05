@@ -136,6 +136,8 @@ class VentaServiceReportTest extends TestCase
             [
                 'id' => 1,
                 'fecha' => '2026-09-03 08:00:00',
+                'estado_sufe' => 'PROCESADA',
+                'estado_pago' => 'pagado',
                 'anulada' => false,
                 'medioPago' => 'QR',
                 'usuario' => ['id' => 1, 'nombre' => 'Ana'],
@@ -150,6 +152,8 @@ class VentaServiceReportTest extends TestCase
             [
                 'id' => 2,
                 'fecha' => '2026-09-02 08:00:00',
+                'estado_sufe' => 'PROCESADA',
+                'estado_pago' => 'pagado',
                 'anulada' => false,
                 'medioPago' => 'EFECTIVO',
                 'usuario' => ['id' => 2, 'nombre' => 'Luis'],

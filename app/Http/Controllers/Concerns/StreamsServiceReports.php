@@ -20,22 +20,14 @@ trait StreamsServiceReports
      */
     private function mergedServiceReportVentaStream(array $filters, bool $includeAnnulled = false): \Generator
     {
-        $batchSize = 1000;
+        $batchSize = 3000;
         $cartQuery = Schema::hasTable('facturacion_carts')
             ? $this->buildFacturacionCartReportQuery($filters)
             : null;
 
         $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
-        if ($includeAnnulled) {
-            $ventasQuery->where(function ($statusQuery) {
-                $statusQuery->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL', 'ANULADA', 'ANULADO', 'ANULACION_SOLICITADA')");
-
-                if (Schema::hasColumn('ventas', 'anulada_at')) {
-                    $statusQuery->orWhereNotNull('anulada_at');
-                }
-            });
-        } else {
-            $ventasQuery->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')");
+        if (!$includeAnnulled) {
+            $ventasQuery->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL', 'ANULACION_SOLICITADA', 'ANULACION_OBSERVADA')");
         }
 
         if ($cartQuery && ! $includeAnnulled) {
@@ -60,7 +52,8 @@ trait StreamsServiceReports
                 $lastCartId = (int) $cartRows->last()->id;
 
                 $cartIds = $cartRows->pluck('id')->map(fn ($id) => (string) $id)->all();
-                $linkedCartIds = (clone $ventasQuery)
+                // A linked invoice outside the period must not reappear as a cart sale.
+                $linkedCartIds = Venta::query()->where('estado', 1)
                     ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
                     ->whereIn(DB::raw('cast(origen_venta_id as varchar)'), $cartIds)
                     ->pluck('origen_venta_id')
@@ -72,6 +65,7 @@ trait StreamsServiceReports
                     ->reject(fn ($cart) => isset($linkedCartIds[(string) $cart->id]))
                     ->values();
 
+                if ($unlinkedCartRows->isEmpty()) continue;
                 foreach ($this->mapServiceReportCartChunk($unlinkedCartRows, $includeAnnulled) as $payload) {
                     yield $payload;
                 }
@@ -89,6 +83,7 @@ trait StreamsServiceReports
             $this->hasOrigenSucursalCodigoColumn() ? 'origen_sucursal_codigo' : null,
             'codigoSucursal', 'puntoVenta', 'razonSocial', 'documentoIdentidad', 'codigoCliente',
             'total', 'estado_sufe', 'tipo_emision_sufe', 'cuf', 'url_pdf', 'url_xml',
+            'metodoPago',
             'observacion_sufe', 'fecha_notificacion_sufe', 'departamento',
             Schema::hasColumn('ventas', 'canal_operativo') ? 'canal_operativo' : null,
             Schema::hasColumn('ventas', 'metodo_pago') ? 'metodo_pago' : null,
@@ -139,7 +134,8 @@ trait StreamsServiceReports
                 $cart,
                 $cartItemsMap[(int) $cart->id] ?? [],
                 $cartFiscalBackfillMap[(string) $cart->id] ?? null,
-                $cartNotificationBackfillMap[(string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''))] ?? null
+                $cartNotificationBackfillMap[(string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''))] ?? null,
+                false
             ))
             ->map(function (array $payload) use ($cartFiscalBackfillMap, $includeAnnulled) {
                 if ($includeAnnulled) {
@@ -151,7 +147,7 @@ trait StreamsServiceReports
 
                 return $payload;
             })
-            ->reject(fn (array $payload) => $this->shouldExcludeCartFromServiceReport($payload, $cartFiscalBackfillMap, $includeAnnulled))
+            ->reject(fn (array $payload) => !$includeAnnulled && $this->shouldExcludeCartFromServiceReport($payload, $cartFiscalBackfillMap, false))
             ->map(function (array $payload) use ($includeAnnulled) {
                 if ($includeAnnulled) {
                     $payload['anulada'] = $this->isServiceReportAnnulled($payload);
@@ -166,12 +162,9 @@ trait StreamsServiceReports
                 // These fields are not part of the service report response.
                 unset(
                     $payload['respuesta_emision'], $payload['historial_qr'], $payload['qrCancelacion'],
-                    $payload['cliente'], $payload['tipo_documento'], $payload['numero_documento'],
-                    $payload['razon_social'], $payload['mensaje_emision'], $payload['incidencia_revisada_at'],
+                    $payload['tipo_documento'], $payload['mensaje_emision'], $payload['incidencia_revisada_at'],
                     $payload['incidencia_revisada_por'], $payload['incidencia_revision_nota'],
-                    $payload['modalidad_facturacion'], $payload['canal_operativo'],
-                    $payload['es_cuenta_por_cobrar'], $payload['empresa_nombre'], $payload['empresa_sigla'],
-                    $payload['anulacion'], $payload['qr_transaction_id']
+                    $payload['modalidad_facturacion'], $payload['anulacion']
                 );
 
                 return $payload;
@@ -193,7 +186,8 @@ trait StreamsServiceReports
         $payloads = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $includeAnnulled) {
             $ventaId = (int) $venta->id;
             $cartId = (int) ($venta->origen_venta_id ?? 0);
-            $bridgeCart = $bridgeCartMetaMap[$cartId] ?? null;
+            $bridgeCart = in_array($venta->origen_venta_tipo, ['facturacion_cart', 'facturacion_cart_remote'], true)
+                ? ($bridgeCartMetaMap[$cartId] ?? null) : null;
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
             $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
             $status = $this->protocolStatusFromVentaNotification($venta, $notification);
@@ -217,6 +211,12 @@ trait StreamsServiceReports
                 'codigoSeguimiento' => $venta->codigoSeguimiento,
                 'numeroFactura' => $numeroFactura !== '' ? $numeroFactura : null,
                 'numero_factura' => $numeroFactura !== '' ? $numeroFactura : null,
+                'razonSocial' => $venta->razonSocial,
+                'documentoIdentidad' => $venta->documentoIdentidad,
+                'cliente' => [
+                    'razonSocial' => $venta->razonSocial,
+                    'documentoIdentidad' => $venta->documentoIdentidad,
+                ],
                 'origenVentaId' => $venta->origen_venta_id,
                 'origenVentaTipo' => $venta->origen_venta_tipo,
                 'usuario' => [
@@ -237,10 +237,16 @@ trait StreamsServiceReports
                 'itemsCount' => $itemsCount,
                 'cantidad' => max(1, $itemsCount ?: count($detalle)),
                 'total' => (float) $venta->total,
+                'cuf' => $venta->cuf,
+                'metodoPago' => (int) ($venta->metodoPago ?? 0),
+                'canal_operativo' => $venta->canal_operativo ?? 'normal',
+                'es_cuenta_por_cobrar' => (bool) ($venta->es_cuenta_por_cobrar ?? false),
+                'empresa_nombre' => (string) ($venta->empresa_nombre ?? ''),
+                'empresa_sigla' => (string) ($venta->empresa_sigla ?? ''),
                 'status' => $status,
             ];
 
-            if ($includeAnnulled) {
+            {
                 $payload['estado_sufe'] = strtoupper(trim((string) ($venta->estado_sufe ?? '')));
                 $payload['metodo_pago'] = strtolower(trim((string) ($venta->metodo_pago ?? $bridgeCart->metodo_pago ?? '')));
                 $payload['canal_emision'] = strtolower(trim((string) ($venta->canal_emision ?? $bridgeCart->canal_emision ?? '')));

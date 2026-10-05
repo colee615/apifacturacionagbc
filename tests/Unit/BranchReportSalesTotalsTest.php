@@ -46,11 +46,13 @@ class BranchReportSalesTotalsTest extends TestCase
             ]),
             $this->sale([
                 'estado_pago' => 'pendiente',
+                'estado_sufe' => 'PROCESADA',
                 'detalle' => [['descripcion' => 'Servicio ECA']],
                 'total' => 20,
             ]),
             $this->sale([
                 'canal_operativo' => 'contrato',
+                'estado_sufe' => 'PROCESADA',
                 'detalle' => [['descripcion' => 'Servicio ECA']],
                 'total' => 80,
             ]),

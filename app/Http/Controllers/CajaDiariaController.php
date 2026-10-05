@@ -867,7 +867,7 @@ class CajaDiariaController extends Controller
                     (string) ($row->sucursal_nombre ?? '')
                 );
 
-                $freshRow = $this->findOrCreateConciliacionRow(
+                $freshRow = $this->readConciliacionRow(
                     $fecha,
                     (int) $row->codigo_sucursal,
                     (int) $row->punto_venta,
@@ -891,7 +891,7 @@ class CajaDiariaController extends Controller
         $codigoSucursal = (int) $validated['codigoSucursal'];
         $puntoVenta = (int) ($validated['puntoVenta'] ?? 0);
 
-        $row = $this->findOrCreateConciliacionRow(
+        $row = $this->readConciliacionRow(
             $fecha,
             $codigoSucursal,
             $puntoVenta,
@@ -941,12 +941,8 @@ class CajaDiariaController extends Controller
         $codigoSucursal = (int) $validated['codigoSucursal'];
         $puntoVenta = (int) ($validated['puntoVenta'] ?? 0);
 
-        $row = $this->findOrCreateConciliacionRow($fecha, $codigoSucursal, $puntoVenta, [
-            'sucursal_nombre' => trim((string) ($validated['sucursalNombre'] ?? '')) ?: null,
-            'total_efectivo_sistema' => round((float) ($validated['totalEfectivoSistema'] ?? 0), 2),
-            'total_qr_sistema' => round((float) ($validated['totalQrSistema'] ?? 0), 2),
-            'total_general_sistema' => round((float) ($validated['totalGeneralSistema'] ?? 0), 2),
-        ]);
+        $row = $this->findOrCreateConciliacionRow($fecha, $codigoSucursal, $puntoVenta,
+            $this->buildConciliacionSnapshot($fecha, $codigoSucursal, $puntoVenta, $validated['sucursalNombre'] ?? null));
 
         $file = $validated['archivo'];
         $folderRelative = 'uploads/conciliaciones/' . now()->format('Y/m');
@@ -1072,117 +1068,43 @@ class CajaDiariaController extends Controller
 
     private function ventasDelDia(string $usuarioId, string $fecha, int $codigoSucursal, int $puntoVenta): array
     {
-        $query = DB::table('ventas')
-            ->where('estado', 1)
-            ->whereDate('created_at', $fecha)
-            ->where(function ($sub) use ($usuarioId) {
-                $sub->where('origen_usuario_id', $usuarioId)
-                    ->orWhereRaw('cast(origen_usuario_id as text) = ?', [$usuarioId]);
-            })
-            ->where('codigoSucursal', $codigoSucursal)
-            ->where('puntoVenta', $puntoVenta)
-            ->whereRaw("upper(coalesce(estado_sufe, '')) <> 'ANULADA'")
-            ->whereRaw("upper(coalesce(estado_sufe, '')) <> 'REGISTRADA_OFICIAL'")
-            ->where(function ($sub) {
-                $sub->whereNull('metodoPago')
-                    ->orWhere('metodoPago', '<>', 5);
-            });
-
-        if (Schema::hasColumn('ventas', 'canal_operativo')) {
-            $query->whereRaw("lower(coalesce(canal_operativo, 'normal')) <> 'contrato'");
-        }
-
-        if (Schema::hasColumn('ventas', 'es_cuenta_por_cobrar')) {
-            $query->where(function ($sub) {
-                $sub->whereNull('es_cuenta_por_cobrar')
-                    ->orWhere('es_cuenta_por_cobrar', false);
-            });
-        }
-
-        $row = $query
-            ->selectRaw('count(*) as cantidad, coalesce(sum(total), 0) as total')
-            ->first();
-
-        return [
-            (float) ($row->total ?? 0),
-            (int) ($row->cantidad ?? 0),
-        ];
+        $rows = $this->ventasDelDiaRows($usuarioId, $fecha, $codigoSucursal, $puntoVenta);
+        $cents = 0;
+        foreach ($rows as $row) $cents += \App\Support\FinancialSale::cents($row->total);
+        return [$cents / 100, $rows->count()];
     }
 
     private function buildConciliacionSnapshot(string $fecha, int $codigoSucursal, int $puntoVenta, ?string $sucursalNombre = null): array
     {
-        $row = DB::table('ventas')
-            ->where('estado', 1)
-            ->whereDate('created_at', $fecha)
-            ->where('codigoSucursal', $codigoSucursal)
-            ->where('puntoVenta', $puntoVenta)
-            ->selectRaw("
-                coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
-                        and (
-                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
-                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
-                        )
-                    then total else 0
-                end), 0) as total_qr_facturado,
-                coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) = 'PROCESADA'
-                        and not (
-                            upper(coalesce(\"codigoOrden\", '')) like 'VQ-%'
-                            or upper(coalesce(\"codigoOrden\", '')) like 'VQC-%'
-                        )
-                    then total else 0
-                end), 0) as total_efectivo_facturado,
-                coalesce(sum(case
-                    when upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')
-                    then total else 0
-                end), 0) as total_vendido
-            ")
-            ->first();
+        $report = app(VentaController::class)->financialReportSnapshot(['fechaInicio'=>$fecha,'fechaFin'=>$fecha,
+            'codigoSucursal'=>$codigoSucursal,'puntoVenta'=>$puntoVenta], 0);
+        return ['sucursal_nombre'=>$sucursalNombre,
+            'total_efectivo_sistema'=>$report['resumen']['totalEfectivoFacturado'],
+            'total_qr_sistema'=>$report['resumen']['totalQrFacturado'],
+            'total_general_sistema'=>$report['resumen']['totalVendido']];
+    }
 
-        $totalQr = round((float) ($row->total_qr_facturado ?? 0), 2);
-        $totalEfectivo = round((float) ($row->total_efectivo_facturado ?? 0), 2);
-        $totalGeneral = round((float) ($row->total_vendido ?? ($totalEfectivo + $totalQr)), 2);
-
-        return [
-            'sucursal_nombre' => trim((string) ($sucursalNombre ?? '')) ?: null,
-            'total_efectivo_sistema' => $totalEfectivo,
-            'total_qr_sistema' => $totalQr,
-            'total_general_sistema' => $totalGeneral,
-        ];
+    private function readConciliacionRow(string $fecha, int $codigoSucursal, int $puntoVenta, array $snapshot): object
+    {
+        $row = Schema::hasTable('cierre_diario_sucursales') ? DB::table('cierre_diario_sucursales')
+            ->whereDate('fecha_operacion', $fecha)->where('codigo_sucursal', $codigoSucursal)->where('punto_venta', $puntoVenta)->first() : null;
+        $row ??= (object)['id'=>0,'fecha_operacion'=>$fecha,'codigo_sucursal'=>$codigoSucursal,'punto_venta'=>$puntoVenta,
+            'sucursal_nombre'=>null,'total_comprobantes'=>0,'observacion_general'=>null,'created_at'=>null,'updated_at'=>null];
+        foreach ($snapshot as $key=>$value) if ($value!==null) $row->$key=$value;
+        $row->diferencia=round((float)$row->total_comprobantes-(float)$row->total_efectivo_sistema,2);
+        $row->estado=$this->resolveConciliacionEstado((float)$row->total_efectivo_sistema,(float)$row->total_comprobantes);
+        return $row;
     }
 
     private function ventasDelDiaRows(string $usuarioId, string $fecha, int $codigoSucursal, int $puntoVenta)
     {
-        $query = DB::table('ventas')
-            ->where('estado', 1)
-            ->whereDate('created_at', $fecha)
-            ->where(function ($sub) use ($usuarioId) {
-                $sub->where('origen_usuario_id', $usuarioId)
-                    ->orWhereRaw('cast(origen_usuario_id as text) = ?', [$usuarioId]);
-            })
-            ->where('codigoSucursal', $codigoSucursal)
-            ->where('puntoVenta', $puntoVenta)
-            ->whereRaw("upper(coalesce(estado_sufe, '')) <> 'ANULADA'")
-            ->whereRaw("upper(coalesce(estado_sufe, '')) <> 'REGISTRADA_OFICIAL'")
-            ->where(function ($sub) {
-                $sub->whereNull('metodoPago')
-                    ->orWhere('metodoPago', '<>', 5);
-            })
-            ->orderBy('id');
-
-        if (Schema::hasColumn('ventas', 'canal_operativo')) {
-            $query->whereRaw("lower(coalesce(canal_operativo, 'normal')) <> 'contrato'");
+        $ids = [];
+        $filters = ['fechaInicio'=>$fecha,'fechaFin'=>$fecha,'codigoSucursal'=>$codigoSucursal,'puntoVenta'=>$puntoVenta,'origen_usuario_id'=>$usuarioId];
+        foreach (app(VentaController::class)->financialReportRows($filters) as $row) {
+            if ($row['financiero']['incluidaEnTotalVendido'] && $row['financiero']['medioPago']==='EFECTIVO'
+                && empty($row['cartId']) && is_numeric($row['id'] ?? null)) $ids[]=(int)$row['id'];
         }
-
-        if (Schema::hasColumn('ventas', 'es_cuenta_por_cobrar')) {
-            $query->where(function ($sub) {
-                $sub->whereNull('es_cuenta_por_cobrar')
-                    ->orWhere('es_cuenta_por_cobrar', false);
-            });
-        }
-
-        return $query->get();
+        return DB::table('ventas')->whereIn('id', $ids)->orderBy('id')->get();
     }
 
     private function findOrCreateConciliacionRow(string $fecha, int $codigoSucursal, int $puntoVenta, array $snapshot): object
