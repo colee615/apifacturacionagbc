@@ -193,10 +193,12 @@ trait StreamsServiceReports
         $seguimientos = $ventas->pluck('codigoSeguimiento')->all();
         [$notificationsMap, $numeroFacturaMap] = $this->serviceReportNotificationMaps($seguimientos);
         $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventas);
+        $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventas, true);
 
-        $payloads = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $includeAnnulled) {
+        $payloads = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $includeAnnulled) {
             $ventaId = (int) $venta->id;
             $cartId = (int) ($venta->origen_venta_id ?? 0);
+            $bridgeCart = $bridgeCartMetaMap[$cartId] ?? null;
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
             $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
             $status = $this->protocolStatusFromVentaNotification($venta, $notification);
@@ -219,6 +221,7 @@ trait StreamsServiceReports
                 'codigoOrden' => $venta->codigoOrden,
                 'codigoSeguimiento' => $venta->codigoSeguimiento,
                 'numeroFactura' => $numeroFactura !== '' ? $numeroFactura : null,
+                'numero_factura' => $numeroFactura !== '' ? $numeroFactura : null,
                 'origenVentaId' => $venta->origen_venta_id,
                 'origenVentaTipo' => $venta->origen_venta_tipo,
                 'usuario' => [
@@ -244,11 +247,11 @@ trait StreamsServiceReports
 
             if ($includeAnnulled) {
                 $payload['estado_sufe'] = strtoupper(trim((string) ($venta->estado_sufe ?? '')));
-                $payload['estado_pago'] = strtolower(trim((string) ($venta->estado_pago ?? '')));
-                $payload['estado_emision'] = strtoupper(trim((string) ($venta->estado_emision ?? '')));
-                $payload['metodo_pago'] = strtolower(trim((string) ($venta->metodo_pago ?? '')));
-                $payload['canal_emision'] = strtolower(trim((string) ($venta->canal_emision ?? '')));
-                $payload['qr_transaction_id'] = $venta->qr_transaction_id ?? null;
+                $payload['metodo_pago'] = strtolower(trim((string) ($venta->metodo_pago ?? $bridgeCart->metodo_pago ?? '')));
+                $payload['canal_emision'] = strtolower(trim((string) ($venta->canal_emision ?? $bridgeCart->canal_emision ?? '')));
+                $payload['estado_pago'] = strtolower(trim((string) ($venta->estado_pago ?? $bridgeCart->estado_pago ?? '')));
+                $payload['estado_emision'] = strtoupper(trim((string) ($venta->estado_emision ?? $bridgeCart->estado_emision ?? '')));
+                $payload['qr_transaction_id'] = $venta->qr_transaction_id ?? $bridgeCart->qr_transaction_id ?? null;
                 $payload['anulada_at'] = $venta->anulada_at ?? null;
                 $payload['anulada'] = $this->isServiceReportAnnulled($payload);
                 $payload['estadoFiscal'] = $this->serviceReportFiscalStatus($payload);

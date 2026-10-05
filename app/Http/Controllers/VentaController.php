@@ -1278,11 +1278,17 @@ class VentaController extends Controller
         return preg_replace('#(?<!:)//+#', '/', $url);
     }
 
-    private function bridgeCartMetaMapFromVentasRows($ventasRows): array
+    private function bridgeCartMetaMapFromVentasRows($ventasRows, bool $includeAuditReferences = false): array
     {
+        $originTypes = ['facturacion_cart', 'facturacion_cart_remote'];
+        if ($includeAuditReferences) {
+            $originTypes[] = 'auditoria_reconstruccion';
+        }
+
         $cartIds = collect($ventasRows)
-            ->filter(function ($row) {
-                return in_array((string) ($row->origen_venta_tipo ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true)
+            ->filter(function ($row) use ($originTypes) {
+                // Audit rows may read cart details for display without becoming the active invoice.
+                return in_array((string) ($row->origen_venta_tipo ?? ''), $originTypes, true)
                     && trim((string) ($row->origen_venta_id ?? '')) !== '';
             })
             ->pluck('origen_venta_id')
@@ -1539,7 +1545,7 @@ class VentaController extends Controller
                 ->get($detalleColumns);
             $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($detalleRows->pluck('codigoSeguimiento')->all());
             $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($detalleRows);
-            $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($detalleRows);
+            $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($detalleRows, true);
             $itemsCountMaps = $this->itemsCountMapsFromRows($detalleRows);
             $detalleMaps = $this->detalleMapsFromRows($detalleRows);
 
@@ -1565,6 +1571,7 @@ class VentaController extends Controller
                     'codigoOrden' => $venta->codigoOrden,
                     'codigoSeguimiento' => $venta->codigoSeguimiento,
                     'numeroFactura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
+                    'numero_factura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
                     'origenVentaId' => $venta->origen_venta_id,
                     'origenVentaTipo' => $venta->origen_venta_tipo,
                     'origenUsuarioEmail' => $venta->origen_usuario_email,
@@ -1581,6 +1588,12 @@ class VentaController extends Controller
                     'estado_pago' => $bridgeCart->estado_pago ?? null,
                     'estado_emision' => $bridgeCart->estado_emision ?? null,
                     'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
+                    'medioPago' => $this->isQrPaymentRow([
+                        'codigoOrden' => $venta->codigoOrden,
+                        'metodo_pago' => $bridgeCart->metodo_pago ?? '',
+                        'canal_emision' => $bridgeCart->canal_emision ?? '',
+                        'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
+                    ]) ? 'QR' : 'EFECTIVO',
                     'itemsCount' => $itemsCount,
                     'detalle' => $items->values()->all(),
                     'estadoSufe' => $venta->estado_sufe,
@@ -1632,14 +1645,6 @@ class VentaController extends Controller
                 ->limit($limite)
                 ->get()
             : collect();
-
-        $cartIds = $cartRows
-            ->pluck('id')
-            ->map(fn ($value) => (int) $value)
-            ->filter(fn ($value) => $value > 0)
-            ->unique()
-            ->values()
-            ->all();
 
         $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
         if ($cartIds !== []) {
@@ -2108,10 +2113,12 @@ class VentaController extends Controller
         $notificationsMap = $this->latestNotificationsMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
         $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
         $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventas);
+        $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventas, true);
 
-        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $includeAnnulled) {
+        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $includeAnnulled) {
             $ventaId = (int) $venta->id;
             $cartId = (int) ($venta->origen_venta_id ?? 0);
+            $bridgeCart = $bridgeCartMetaMap[$cartId] ?? null;
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
             $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
             $status = $this->protocolStatusFromVentaNotification($venta, $notification);
@@ -2136,6 +2143,7 @@ class VentaController extends Controller
                 'codigoOrden' => $venta->codigoOrden,
                 'codigoSeguimiento' => $venta->codigoSeguimiento,
                 'numeroFactura' => $numeroFactura !== '' ? $numeroFactura : null,
+                'numero_factura' => $numeroFactura !== '' ? $numeroFactura : null,
                 'origenVentaId' => $venta->origen_venta_id,
                 'origenVentaTipo' => $venta->origen_venta_tipo,
                 'usuario' => [
@@ -2161,11 +2169,11 @@ class VentaController extends Controller
 
             if ($includeAnnulled) {
                 $payload['estado_sufe'] = strtoupper(trim((string) ($venta->estado_sufe ?? '')));
-                $payload['estado_pago'] = strtolower(trim((string) ($venta->estado_pago ?? '')));
-                $payload['estado_emision'] = strtoupper(trim((string) ($venta->estado_emision ?? '')));
-                $payload['metodo_pago'] = strtolower(trim((string) ($venta->metodo_pago ?? '')));
-                $payload['canal_emision'] = strtolower(trim((string) ($venta->canal_emision ?? '')));
-                $payload['qr_transaction_id'] = $venta->qr_transaction_id ?? null;
+                $payload['metodo_pago'] = strtolower(trim((string) ($venta->metodo_pago ?? $bridgeCart->metodo_pago ?? '')));
+                $payload['canal_emision'] = strtolower(trim((string) ($venta->canal_emision ?? $bridgeCart->canal_emision ?? '')));
+                $payload['estado_pago'] = strtolower(trim((string) ($venta->estado_pago ?? $bridgeCart->estado_pago ?? '')));
+                $payload['estado_emision'] = strtoupper(trim((string) ($venta->estado_emision ?? $bridgeCart->estado_emision ?? '')));
+                $payload['qr_transaction_id'] = $venta->qr_transaction_id ?? $bridgeCart->qr_transaction_id ?? null;
                 $payload['anulada_at'] = $venta->anulada_at ?? null;
                 $payload['anulada'] = $this->isServiceReportAnnulled($payload);
                 $payload['estadoFiscal'] = $this->serviceReportFiscalStatus($payload);
@@ -3960,7 +3968,7 @@ class VentaController extends Controller
             ])));
         $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventasRows->pluck('codigoSeguimiento')->all());
         $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventasRows);
-        $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventasRows);
+        $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventasRows, true);
         $itemsCountMaps = $this->itemsCountMapsFromRows($ventasRows);
 
         $ventas = $ventasRows->map(function (Venta $venta) use ($numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $itemsCountMaps) {
@@ -3979,6 +3987,7 @@ class VentaController extends Controller
                 'codigoOrden' => $venta->codigoOrden,
                 'codigoSeguimiento' => $venta->codigoSeguimiento,
                 'numeroFactura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
+                'numero_factura' => ($venta->numero_factura ?? null) ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$origenVentaId] ?? null)),
                 'origenVentaId' => $venta->origen_venta_id,
                 'origenVentaTipo' => $venta->origen_venta_tipo,
                 'usuario' => [
@@ -4004,6 +4013,12 @@ class VentaController extends Controller
                 'estado_pago' => $bridgeCart->estado_pago ?? null,
                 'estado_emision' => $bridgeCart->estado_emision ?? null,
                 'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
+                'medioPago' => $this->isQrPaymentRow([
+                    'codigoOrden' => $venta->codigoOrden,
+                    'metodo_pago' => $bridgeCart->metodo_pago ?? '',
+                    'canal_emision' => $bridgeCart->canal_emision ?? '',
+                    'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
+                ]) ? 'QR' : 'EFECTIVO',
                 'itemsCount' => $itemsCount,
                 'total' => (float) $venta->total,
                 'estadoSufe' => $venta->estado_sufe,
@@ -5780,22 +5795,20 @@ class VentaController extends Controller
             'cart_rows_count' => $cartRows->count(),
         ]));
 
-        $cartIds = $cartRows
-            ->pluck('id')
-            ->map(fn ($value) => (int) $value)
-            ->filter(fn ($value) => $value > 0)
-            ->unique()
-            ->values()
-            ->all();
+        // Resolve optional columns once per request. Checking the schema from
+        // the per-sale mapper creates thousands of metadata queries on the
+        // unfiltered branch kardex and can exceed the frontend timeout.
+        $hasVentaCanalOperativo = Schema::hasColumn('ventas', 'canal_operativo');
+        $hasVentaCuentaPorCobrar = Schema::hasColumn('ventas', 'es_cuenta_por_cobrar');
+        $hasVentaEmpresaNombre = Schema::hasColumn('ventas', 'empresa_nombre');
+        $hasVentaEmpresaSigla = Schema::hasColumn('ventas', 'empresa_sigla');
+        $hasVentaContratoPdfColumns = $this->hasVentaContratoPdfColumns();
+        $hasVentaContratoPdfSubidoAt = $hasVentaContratoPdfColumns && Schema::hasColumn('ventas', 'contrato_pdf_subido_at');
+        $hasVentaContratoPdfSubidoPorUserId = $hasVentaContratoPdfColumns && Schema::hasColumn('ventas', 'contrato_pdf_subido_por_user_id');
+        $hasVentaContratoPdfSubidoPorNombre = $hasVentaContratoPdfColumns && Schema::hasColumn('ventas', 'contrato_pdf_subido_por_nombre');
+        $hasVentaContratoPdfSubidoPorEmail = $hasVentaContratoPdfColumns && Schema::hasColumn('ventas', 'contrato_pdf_subido_por_email');
 
         $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
-        if ($cartIds !== []) {
-            $ventasQuery->where(function ($query) use ($cartIds) {
-                $query->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
-                    ->orWhereNull('origen_venta_tipo')
-                    ->orWhereNotIn('origen_venta_id', $cartIds);
-            });
-        }
 
         $ventas = $ventasQuery
             ->latest('created_at')
@@ -5815,6 +5828,7 @@ class VentaController extends Controller
                 'origen_sucursal_nombre',
                 'codigoSucursal',
                 'puntoVenta',
+                'numero_factura',
                 'razonSocial',
                 'documentoIdentidad',
                 'codigoCliente',
@@ -5827,18 +5841,18 @@ class VentaController extends Controller
                 'observacion_sufe',
                 'fecha_notificacion_sufe',
                 'departamento',
-                Schema::hasColumn('ventas', 'canal_operativo') ? 'canal_operativo' : null,
-                Schema::hasColumn('ventas', 'es_cuenta_por_cobrar') ? 'es_cuenta_por_cobrar' : null,
-                Schema::hasColumn('ventas', 'empresa_nombre') ? 'empresa_nombre' : null,
-                Schema::hasColumn('ventas', 'empresa_sigla') ? 'empresa_sigla' : null,
-                $this->hasVentaContratoPdfColumns() ? 'contrato_pdf_path' : null,
-                $this->hasVentaContratoPdfColumns() ? 'contrato_pdf_nombre' : null,
-                $this->hasVentaContratoPdfColumns() ? 'contrato_pdf_mime' : null,
-                $this->hasVentaContratoPdfColumns() ? 'contrato_pdf_size' : null,
-                $this->hasVentaContratoPdfColumns() && Schema::hasColumn('ventas', 'contrato_pdf_subido_at') ? 'contrato_pdf_subido_at' : null,
-                $this->hasVentaContratoPdfColumns() && Schema::hasColumn('ventas', 'contrato_pdf_subido_por_user_id') ? 'contrato_pdf_subido_por_user_id' : null,
-                $this->hasVentaContratoPdfColumns() && Schema::hasColumn('ventas', 'contrato_pdf_subido_por_nombre') ? 'contrato_pdf_subido_por_nombre' : null,
-                $this->hasVentaContratoPdfColumns() && Schema::hasColumn('ventas', 'contrato_pdf_subido_por_email') ? 'contrato_pdf_subido_por_email' : null,
+                $hasVentaCanalOperativo ? 'canal_operativo' : null,
+                $hasVentaCuentaPorCobrar ? 'es_cuenta_por_cobrar' : null,
+                $hasVentaEmpresaNombre ? 'empresa_nombre' : null,
+                $hasVentaEmpresaSigla ? 'empresa_sigla' : null,
+                $hasVentaContratoPdfColumns ? 'contrato_pdf_path' : null,
+                $hasVentaContratoPdfColumns ? 'contrato_pdf_nombre' : null,
+                $hasVentaContratoPdfColumns ? 'contrato_pdf_mime' : null,
+                $hasVentaContratoPdfColumns ? 'contrato_pdf_size' : null,
+                $hasVentaContratoPdfSubidoAt ? 'contrato_pdf_subido_at' : null,
+                $hasVentaContratoPdfSubidoPorUserId ? 'contrato_pdf_subido_por_user_id' : null,
+                $hasVentaContratoPdfSubidoPorNombre ? 'contrato_pdf_subido_por_nombre' : null,
+                $hasVentaContratoPdfSubidoPorEmail ? 'contrato_pdf_subido_por_email' : null,
             ])));
         Log::info('ventas.index.ventas.ready', $this->reportLogContext($request, [
             'elapsed_ms' => $this->reportElapsedMs($startedAt),
@@ -5848,10 +5862,22 @@ class VentaController extends Controller
         $detalleMaps = $this->detalleMapsFromRows($ventas);
         $itemsCountMaps = $this->itemsCountMapsFromRows($ventas);
         $notificationsMap = $this->latestNotificationsMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
+        $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventas, true);
 
-        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap) {
+        $list = $ventas->map(function (Venta $venta) use (
+            $detalleMaps,
+            $itemsCountMaps,
+            $notificationsMap,
+            $bridgeCartMetaMap,
+            $hasVentaCanalOperativo,
+            $hasVentaCuentaPorCobrar,
+            $hasVentaEmpresaNombre,
+            $hasVentaEmpresaSigla,
+            $hasVentaContratoPdfColumns
+        ) {
             $ventaId = (int) $venta->id;
             $cartId = (int) ($venta->origen_venta_id ?? 0);
+            $bridgeCart = $bridgeCartMetaMap[$cartId] ?? null;
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
             $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
             $status = $this->protocolStatusFromVentaNotification($venta, $notification);
@@ -5867,6 +5893,14 @@ class VentaController extends Controller
                 $itemsCount = (int) ($itemsCountMaps['cart'][$cartId] ?? 0);
             }
 
+            $numeroFactura = trim((string) ($venta->numero_factura ?? ''));
+            $medioPago = $this->isQrPaymentRow([
+                'codigoOrden' => $venta->codigoOrden,
+                'metodo_pago' => $bridgeCart->metodo_pago ?? '',
+                'canal_emision' => $bridgeCart->canal_emision ?? '',
+                'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
+            ]) ? 'QR' : 'EFECTIVO';
+
             return [
                 'id' => $venta->id,
                 'fecha' => optional($venta->created_at)->format('Y-m-d H:i:s'),
@@ -5874,6 +5908,13 @@ class VentaController extends Controller
                 'codigoSeguimiento' => $venta->codigoSeguimiento,
                 'origenVentaId' => $venta->origen_venta_id,
                 'origenVentaTipo' => $venta->origen_venta_tipo,
+                'numeroFactura' => $numeroFactura !== '' ? $numeroFactura : null,
+                'numero_factura' => $numeroFactura !== '' ? $numeroFactura : null,
+                'metodo_pago' => strtolower(trim((string) ($bridgeCart->metodo_pago ?? ''))),
+                'canal_emision' => strtolower(trim((string) ($bridgeCart->canal_emision ?? ''))),
+                'estado_pago' => strtolower(trim((string) ($bridgeCart->estado_pago ?? ''))),
+                'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
+                'medioPago' => $medioPago,
                 'cliente' => [
                     'razonSocial' => $venta->razonSocial,
                     'documentoIdentidad' => $venta->documentoIdentidad,
@@ -5898,12 +5939,12 @@ class VentaController extends Controller
                 'cantidad' => max(1, $itemsCount ?: count($detalle)),
                 'total' => (float) $venta->total,
                 'estadoSufe' => $venta->estado_sufe,
-                'canal_operativo' => Schema::hasColumn('ventas', 'canal_operativo') ? (string) ($venta->canal_operativo ?? 'normal') : 'normal',
-                'es_cuenta_por_cobrar' => Schema::hasColumn('ventas', 'es_cuenta_por_cobrar') ? (bool) ($venta->es_cuenta_por_cobrar ?? false) : false,
-                'empresa_nombre' => Schema::hasColumn('ventas', 'empresa_nombre') ? (string) ($venta->empresa_nombre ?? '') : '',
-                'empresa_sigla' => Schema::hasColumn('ventas', 'empresa_sigla') ? (string) ($venta->empresa_sigla ?? '') : '',
+                'canal_operativo' => $hasVentaCanalOperativo ? (string) ($venta->canal_operativo ?? 'normal') : 'normal',
+                'es_cuenta_por_cobrar' => $hasVentaCuentaPorCobrar ? (bool) ($venta->es_cuenta_por_cobrar ?? false) : false,
+                'empresa_nombre' => $hasVentaEmpresaNombre ? (string) ($venta->empresa_nombre ?? '') : '',
+                'empresa_sigla' => $hasVentaEmpresaSigla ? (string) ($venta->empresa_sigla ?? '') : '',
                 'cuf' => $venta->cuf,
-                'contratoPdf' => $this->contratoPdfPayloadForVenta($venta),
+                'contratoPdf' => $hasVentaContratoPdfColumns ? $this->contratoPdfPayloadForVenta($venta) : null,
                 'status' => $status,
                 'seguimiento' => [
                     'codigoSeguimiento' => $venta->codigoSeguimiento,
@@ -5942,6 +5983,31 @@ class VentaController extends Controller
                 $cartNotificationBackfillMap[(string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''))] ?? null
             ))
             ->values();
+
+        $cartCurrentInvoiceNumbers = $cartRows->mapWithKeys(function ($cart) use ($cartFiscalBackfillMap) {
+            $cartId = (int) ($cart->id ?? 0);
+            $numeroFactura = $this->facturacionCartNumeroFactura((string) ($cart->respuesta_emision ?? ''))
+                ?: trim((string) data_get($cartFiscalBackfillMap, (string) $cartId.'.numero_factura', ''));
+
+            return $cartId > 0
+                ? [$cartId => $numeroFactura]
+                : [];
+        });
+
+        // Conserva las facturas previas vinculadas a un carrito. La fila del
+        // carrito representa la factura actual; descarta filas sin numero
+        // propio o que repiten el numero actual.
+        $list = $list->reject(function (array $payload) use ($cartCurrentInvoiceNumbers) {
+            if (! in_array((string) ($payload['origenVentaTipo'] ?? ''), ['facturacion_cart', 'facturacion_cart_remote'], true)) {
+                return false;
+            }
+
+            $cartId = (int) ($payload['origenVentaId'] ?? 0);
+            $numeroFactura = trim((string) ($payload['numeroFactura'] ?? ''));
+            $numeroFacturaActual = trim((string) ($cartCurrentInvoiceNumbers[$cartId] ?? ''));
+
+            return $numeroFactura === '' || ($numeroFacturaActual !== '' && $numeroFactura === $numeroFacturaActual);
+        })->values();
 
         $merged = $list
             ->concat($cartPayloads)
