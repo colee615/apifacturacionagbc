@@ -14,8 +14,9 @@ trait StreamsServiceReports
     private static ?array $serviceReportCartColumnCache = null;
 
     /**
-     * Reads report inputs in bounded batches. It deliberately emits carts and
-     * linked sales through the same mapping/filtering rules as the old report.
+     * Reads report inputs in bounded batches. A cart is emitted only when it
+     * has no fiscal sale visible in the current filters; linked fiscal sales
+     * are emitted individually so reissues and annulments remain auditable.
      */
     private function mergedServiceReportVentaStream(array $filters, bool $includeAnnulled = false): \Generator
     {
@@ -23,6 +24,19 @@ trait StreamsServiceReports
         $cartQuery = Schema::hasTable('facturacion_carts')
             ? $this->buildFacturacionCartReportQuery($filters)
             : null;
+
+        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
+        if ($includeAnnulled) {
+            $ventasQuery->where(function ($statusQuery) {
+                $statusQuery->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL', 'ANULADA', 'ANULADO', 'ANULACION_SOLICITADA')");
+
+                if (Schema::hasColumn('ventas', 'anulada_at')) {
+                    $statusQuery->orWhereNotNull('anulada_at');
+                }
+            });
+        } else {
+            $ventasQuery->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')");
+        }
 
         if ($cartQuery && ! $includeAnnulled) {
             $cartQuery->whereRaw("upper(coalesce(estado_emision, '')) not in ('ANULADA', 'ANULADO')");
@@ -44,43 +58,24 @@ trait StreamsServiceReports
                 }
 
                 $lastCartId = (int) $cartRows->last()->id;
-                foreach ($this->mapServiceReportCartChunk($cartRows, $includeAnnulled) as $payload) {
+
+                $cartIds = $cartRows->pluck('id')->map(fn ($id) => (string) $id)->all();
+                $linkedCartIds = (clone $ventasQuery)
+                    ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                    ->whereIn(DB::raw('cast(origen_venta_id as varchar)'), $cartIds)
+                    ->pluck('origen_venta_id')
+                    ->map(fn ($id) => (string) $id)
+                    ->flip()
+                    ->all();
+
+                $unlinkedCartRows = $cartRows
+                    ->reject(fn ($cart) => isset($linkedCartIds[(string) $cart->id]))
+                    ->values();
+
+                foreach ($this->mapServiceReportCartChunk($unlinkedCartRows, $includeAnnulled) as $payload) {
                     yield $payload;
                 }
                 unset($cartRows);
-            }
-        }
-
-        $ventasQuery = $this->applyVentaFilters(Venta::query(), $filters);
-        if ($includeAnnulled) {
-            $ventasQuery->where(function ($statusQuery) {
-                $statusQuery->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL', 'ANULADA', 'ANULADO', 'ANULACION_SOLICITADA')");
-
-                if (Schema::hasColumn('ventas', 'anulada_at')) {
-                    $statusQuery->orWhereNotNull('anulada_at');
-                }
-            });
-        } else {
-            $ventasQuery->whereRaw("upper(coalesce(estado_sufe, '')) in ('PROCESADA', 'REGISTRADA_OFICIAL')");
-        }
-
-        if ($cartQuery) {
-            // Keep the old duplicate suppression without materializing every
-            // matching cart ID in a PHP array / SQL IN clause.
-            $matchingCartIds = (clone $cartQuery)->reorder()->select('id');
-            if ((clone $matchingCartIds)->exists()) {
-                $ventasQuery->where(function ($query) use ($matchingCartIds) {
-                    $query->whereNotIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
-                        ->orWhereNull('origen_venta_tipo')
-                        ->orWhere(function ($unlinked) use ($matchingCartIds) {
-                            $unlinked->whereNotNull('origen_venta_id')
-                                ->whereNotExists(function ($notExists) use ($matchingCartIds) {
-                                    $notExists->selectRaw('1')
-                                        ->fromSub(clone $matchingCartIds, 'service_report_carts')
-                                        ->whereRaw('cast(service_report_carts.id as varchar) = cast(ventas.origen_venta_id as varchar)');
-                                });
-                        });
-                });
             }
         }
 
