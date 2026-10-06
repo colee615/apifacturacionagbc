@@ -7,6 +7,7 @@ use App\Models\Venta;
 use App\Support\SufeSectorUnoValidator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
 class NotificacioneController extends Controller
@@ -242,11 +243,82 @@ class NotificacioneController extends Controller
       $this->reverseVentaFromCajaIfNeeded($venta, $estadoSufe);
    }
 
+   private function siatResultForDiagnostic(array $payload): array
+   {
+      $observation = (string) (
+         data_get($payload, 'observacion')
+         ?? data_get($payload, 'detalle.observacion')
+         ?? ''
+      );
+
+      $response = data_get($payload, 'detalle.registroSiat.RespuestaServicioFacturacion')
+         ?? data_get($payload, 'detalle.RespuestaServicioFacturacion')
+         ?? data_get($payload, 'registroSiat.RespuestaServicioFacturacion');
+
+      if (!is_array($response)) {
+         $response = data_get($payload, 'detalle.registroSiat');
+      }
+
+      if (!is_array($response) && $observation !== '') {
+         $jsonStart = strpos($observation, '{');
+         if ($jsonStart !== false) {
+            $embedded = json_decode(substr($observation, $jsonStart), true);
+            if (is_array($embedded)) {
+               $response = data_get($embedded, 'registroSiat.RespuestaServicioFacturacion')
+                  ?? data_get($embedded, 'RespuestaServicioFacturacion')
+                  ?? $embedded;
+            }
+         }
+      }
+
+      if (!is_array($response)) {
+         $response = [];
+      }
+
+      if (isset($response['RespuestaServicioFacturacion']) && is_array($response['RespuestaServicioFacturacion'])) {
+         $response = $response['RespuestaServicioFacturacion'];
+      }
+
+      return [
+         'codigoEstado' => data_get($response, 'codigoEstado'),
+         'codigoDescripcion' => data_get($response, 'codigoDescripcion'),
+         'mensajesList' => data_get($response, 'mensajesList'),
+         'observacionConRespuesta' => $observation !== '' ? substr($observation, 0, 2000) : null,
+      ];
+   }
+
    public function procesarNotificacion(Request $request, $codigoSeguimiento)
    {
       $payload = array_merge($request->all(), [
          'codigoSeguimiento' => $request->input('codigoSeguimiento', $codigoSeguimiento),
       ]);
+
+      $tipoEmisionRecibido = (string) data_get($payload, 'detalle.tipoEmision', '');
+      $estadoRecibido = (string) data_get($payload, 'estado', '');
+      $observacionRecibida = (string) (data_get($payload, 'observacion') ?? data_get($payload, 'detalle.observacion') ?? '');
+      $siatDiagnostic = $this->siatResultForDiagnostic($payload);
+
+      if (
+         $tipoEmisionRecibido === 'ANULACION'
+         || stripos($observacionRecibida, 'ANULACION RECHAZADA') !== false
+         || $siatDiagnostic['mensajesList'] !== null
+      ) {
+         Log::info('ANULACION_TRACE_NOTIFICATION_RECEIVED', [
+            'codigoSeguimientoUrl' => (string) $codigoSeguimiento,
+            'codigoSeguimientoBody' => data_get($payload, 'codigoSeguimiento'),
+            'tipoEmision' => $tipoEmisionRecibido,
+            'estadoNotificacion' => $estadoRecibido,
+            'finalizado' => data_get($payload, 'finalizado'),
+            'fuente' => data_get($payload, 'fuente'),
+            'cuf' => data_get($payload, 'detalle.cuf'),
+            'nroFactura' => data_get($payload, 'detalle.nroFactura'),
+            'mensaje' => data_get($payload, 'mensaje'),
+            'codigoEstadoSiat' => $siatDiagnostic['codigoEstado'],
+            'codigoDescripcionSiat' => $siatDiagnostic['codigoDescripcion'],
+            'mensajesListSiat' => $siatDiagnostic['mensajesList'],
+            'observacionConRespuesta' => $siatDiagnostic['observacionConRespuesta'],
+         ]);
+      }
 
       $validated = $this->sufeValidator->validateNotification($payload, $codigoSeguimiento);
 
