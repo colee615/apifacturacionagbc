@@ -993,6 +993,8 @@ class VentaController extends Controller
             'excluirUsuariosConteo' => ['sometimes', 'array', 'max:200'],
             'excluirUsuariosConteo.*' => ['string', 'distinct', 'max:120'],
             'regionalConteo' => ['nullable', 'string', 'max:120'],
+            'incluirDetalleAnuladas' => ['sometimes', 'boolean'],
+            'regionalDetalle' => ['nullable', 'string', 'max:120'],
         ]);
     }
 
@@ -1766,17 +1768,23 @@ class VentaController extends Controller
             'excludeUsers' => $filters['excluirUsuariosConteo'] ?? [],
             'regional' => trim((string) ($filters['regionalConteo'] ?? '')),
         ];
+        $includeAnnulledDetails = (bool) ($filters['incluirDetalleAnuladas'] ?? false);
+        $annulledDetailsRegional = trim((string) ($filters['regionalDetalle'] ?? ''));
         $report = $this->buildServiceReportFromVentas(
             $this->mergedServiceReportVentaStream($filters, true),
-            false,
+            $includeAnnulledDetails,
             null,
             null,
             $serviciosFiltro,
-            $countFilters
+            $countFilters,
+            $includeAnnulledDetails,
+            $annulledDetailsRegional
         );
         $allServices = collect($report['servicios'] ?? [])
-            ->map(function (array $item) {
-                unset($item['rows']);
+            ->map(function (array $item) use ($includeAnnulledDetails) {
+                if (! $includeAnnulledDetails) {
+                    unset($item['rows']);
+                }
 
                 return $item;
             });
@@ -1803,6 +1811,10 @@ class VentaController extends Controller
             'meta' => [
                 'versionReportes' => 2,
                 'conteoVentasUnicas' => true,
+                'detalleAnulacionesIncluido' => $includeAnnulledDetails,
+                'regionalDetalle' => $includeAnnulledDetails && $annulledDetailsRegional !== ''
+                    ? $annulledDetailsRegional
+                    : null,
                 'totalServiciosSinLimite' => $allServices->count(),
                 'totalVentasSinLimite' => (int) ($report['resumen']['cantidadVentas'] ?? 0),
                 'totalVentasAnuladasSinLimite' => (int) ($report['resumen']['cantidadVentasAnuladas'] ?? 0),
@@ -2276,7 +2288,9 @@ class VentaController extends Controller
         ?string $onlyService = null,
         ?callable $rowWriter = null,
         ?array $onlyServices = null,
-        array $saleCountFilters = []
+        array $saleCountFilters = [],
+        bool $includeAnnulledRowsOnly = false,
+        string $annulledRowsRegional = ''
     ): array
     {
         $grouped = [];
@@ -2433,6 +2447,24 @@ class VentaController extends Controller
                 }
 
                 if ($includeRows || $rowWriter !== null) {
+                    if ($includeAnnulledRowsOnly && ! $isAnnulled) {
+                        $paymentStatus = strtoupper(trim((string) (
+                            $venta['estadoPago'] ?? $venta['estado_pago'] ?? ''
+                        )));
+                        if (! in_array($paymentStatus, ['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO'], true)) {
+                            continue;
+                        }
+                    }
+                    if ($includeAnnulledRowsOnly && $annulledRowsRegional !== '') {
+                        $rowRegional = $this->normalizeServiceReportCountRegional(
+                            (string) data_get($venta, 'regional.nombre', '')
+                        );
+                        $requestedRegional = $this->normalizeServiceReportCountRegional($annulledRowsRegional);
+                        if ($rowRegional !== $requestedRegional) {
+                            continue;
+                        }
+                    }
+
                     $row = [
                         'ventaId' => $venta['id'] ?? null,
                         'detalleId' => $item['id'] ?? ($item['detalle_id'] ?? null),
