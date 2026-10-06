@@ -1812,6 +1812,7 @@ class VentaController extends Controller
                 'versionReportes' => 2,
                 'conteoVentasUnicas' => true,
                 'detalleAnulacionesIncluido' => $includeAnnulledDetails,
+                'auditoriaMediosPagoIncluida' => $includeAnnulledDetails,
                 'regionalDetalle' => $includeAnnulledDetails && $annulledDetailsRegional !== ''
                     ? $annulledDetailsRegional
                     : null,
@@ -2370,6 +2371,7 @@ class VentaController extends Controller
                         'ultimaFecha' => '',
                         'descripciones' => [],
                         'rows' => [],
+                        'auditoriaMediosPago' => [],
                         'dimensionesRegional' => [],
                         'dimensionesPersona' => [],
                     ];
@@ -2433,6 +2435,49 @@ class VentaController extends Controller
                     );
                     $seenRegionalGroups[$regionalKey] = true;
                     $seenPersonGroups[$personKey] = true;
+                }
+
+                if ($includeAnnulledRowsOnly) {
+                    $paymentStatus = strtoupper(trim((string) (
+                        $venta['estadoPago'] ?? $venta['estado_pago'] ?? ''
+                    )));
+                    $auditCancelled = $isAnnulled || in_array(
+                        $paymentStatus,
+                        ['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO'],
+                        true
+                    );
+                    $requestedRegional = $this->normalizeServiceReportCountRegional($annulledRowsRegional);
+                    $rowRegional = $this->normalizeServiceReportCountRegional(
+                        (string) data_get($venta, 'regional.nombre', '')
+                    );
+
+                    if (! $auditCancelled && ($requestedRegional === '' || $rowRegional === $requestedRegional)) {
+                        $usuario = is_array($venta['usuario'] ?? null) ? $venta['usuario'] : [];
+                        $auditIdentity = [
+                            trim((string) ($usuario['id'] ?? '')),
+                            mb_strtolower(trim((string) ($usuario['email'] ?? ''))),
+                            mb_strtolower(trim((string) ($usuario['alias'] ?? ''))),
+                            mb_strtolower(trim((string) ($usuario['nombre'] ?? ''))),
+                        ];
+                        $auditKey = hash('sha256', serialize($auditIdentity));
+                        if (! isset($grouped[$groupKey]['auditoriaMediosPago'][$auditKey])) {
+                            $grouped[$groupKey]['auditoriaMediosPago'][$auditKey] = [
+                                'usuarioId' => $usuario['id'] ?? null,
+                                'usuarioNombre' => $usuario['nombre'] ?? null,
+                                'usuarioEmail' => $usuario['email'] ?? null,
+                                'usuarioAlias' => $usuario['alias'] ?? null,
+                                'totalMonto' => 0.0,
+                                'porMedioPago' => ['qr' => 0.0, 'efectivo' => 0.0, 'otros' => 0.0],
+                            ];
+                        }
+
+                        $paymentMethod = strtoupper(trim($medioPago));
+                        $paymentGroup = str_contains($paymentMethod, 'QR')
+                            ? 'qr'
+                            : (str_contains($paymentMethod, 'EFECTIVO') ? 'efectivo' : 'otros');
+                        $grouped[$groupKey]['auditoriaMediosPago'][$auditKey]['totalMonto'] += $totalLinea;
+                        $grouped[$groupKey]['auditoriaMediosPago'][$auditKey]['porMedioPago'][$paymentGroup] += round($totalLinea, 2);
+                    }
                 }
 
                 if (! $isAnnulled && $descripcion !== '') {
@@ -2537,6 +2582,14 @@ class VentaController extends Controller
                     'descripcionMuestra' => implode(' | ', array_slice($descripciones, 0, 3)),
                     'porRegionales' => $this->finishServiceReportDimension($group['dimensionesRegional']),
                     'porPersonas' => $this->finishServiceReportDimension($group['dimensionesPersona']),
+                    'auditoriaMediosPago' => collect($group['auditoriaMediosPago'] ?? [])->map(function (array $auditRow): array {
+                        $auditRow['totalMonto'] = round((float) ($auditRow['totalMonto'] ?? 0), 2);
+                        $auditRow['porMedioPago'] = collect($auditRow['porMedioPago'] ?? [])->map(
+                            fn ($amount): float => round((float) $amount, 2)
+                        )->all();
+
+                        return $auditRow;
+                    })->values()->all(),
                     'rows' => array_values($group['rows']),
                 ];
             })
