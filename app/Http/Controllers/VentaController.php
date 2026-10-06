@@ -269,7 +269,24 @@ class VentaController extends Controller
             ->first();
     }
 
-    private function latestNotificationsMapFromSeguimientos(array $seguimientos): array
+    private function latestEmissionNotificationForVenta(Venta $venta): ?Notificacione
+    {
+        if (blank($venta->codigoSeguimiento) || Str::startsWith($venta->codigoSeguimiento, 'pendiente-')) {
+            return null;
+        }
+
+        return Notificacione::query()
+            ->where('codigo_seguimiento', $venta->codigoSeguimiento)
+            ->orderByDesc('id')
+            ->get()
+            ->first(function (Notificacione $notification): bool {
+                $detalle = json_decode((string) $notification->detalle, true);
+
+                return strtoupper(trim((string) data_get($detalle, 'tipoEmision'))) === 'EMISION';
+            });
+    }
+
+    private function latestNotificationsMapFromSeguimientos(array $seguimientos, ?string $tipoEmision = null): array
     {
         $seguimientos = array_values(array_unique(array_filter(array_map(
             fn ($value) => trim((string) $value),
@@ -290,6 +307,13 @@ class VentaController extends Controller
             $codigoSeguimiento = trim((string) $notificacion->codigo_seguimiento);
             if ($codigoSeguimiento === '' || array_key_exists($codigoSeguimiento, $map)) {
                 continue;
+            }
+
+            if ($tipoEmision !== null) {
+                $detalle = json_decode((string) $notificacion->detalle, true);
+                if (strtoupper(trim((string) data_get($detalle, 'tipoEmision'))) !== strtoupper(trim($tipoEmision))) {
+                    continue;
+                }
             }
 
             $map[$codigoSeguimiento] = $notificacion;
@@ -338,16 +362,79 @@ class VentaController extends Controller
         ], $this->statusCatalog($channel, $key), $overrides);
     }
 
-    private function protocolStatusFromVentaNotification(Venta $venta, ?Notificacione $notification): array
+    private function protocolStatusFromVentaNotification(
+        Venta $venta,
+        ?Notificacione $notification,
+        ?Notificacione $emissionNotification = null
+    ): array
     {
         $detalle = $notification ? json_decode((string) $notification->detalle, true) : [];
         $estadoSufe = strtoupper((string) ($venta->estado_sufe ?? ''));
+        $estadoNotificacion = strtoupper(trim((string) ($notification->estado ?? '')));
+        $tipoEmision = strtoupper(trim((string) data_get($detalle, 'tipoEmision')));
+        $cuf = trim((string) (data_get($detalle, 'cuf') ?: ($venta->cuf ?? '')));
+
+        if (in_array($estadoSufe, ['ANULADA', 'ANULADO'], true)) {
+            return $this->makeStatusPayload('fiscal', 'ANULADA', [
+                'can_consult' => true,
+                'notification_state' => $notification?->estado,
+                'tipoEmision' => $tipoEmision !== '' ? $tipoEmision : $venta->tipo_emision_sufe,
+                'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
+        }
 
         if (blank($venta->codigoSeguimiento) || Str::startsWith((string) $venta->codigoSeguimiento, 'pendiente-')) {
             return $this->makeStatusPayload('fiscal', 'PENDIENTE', [
                 'can_emit' => true,
                 'can_massive' => true,
                 'can_cafc' => true,
+            ]);
+        }
+
+        if ($tipoEmision === 'ANULACION') {
+            if ($estadoNotificacion === 'EXITO') {
+                return $this->makeStatusPayload('fiscal', 'ANULADA', [
+                    'can_consult' => true,
+                    'notification_state' => $notification?->estado,
+                    'tipoEmision' => 'ANULACION',
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
+
+            if (in_array($estadoNotificacion, ['OBSERVADO', 'RECHAZADA'], true)) {
+                $emision = $emissionNotification ?? $this->latestEmissionNotificationForVenta($venta);
+
+                if ($emision) {
+                    return $this->protocolStatusFromVentaNotification($venta, $emision);
+                }
+
+                if (in_array($estadoSufe, ['PROCESADA', 'PROCESADO', 'ANULACION_OBSERVADA'], true) || $cuf !== '') {
+                    return $this->makeStatusPayload('fiscal', 'PROCESADO', [
+                        'can_consult' => true,
+                        'can_annul' => $cuf !== '',
+                        'notification_state' => $notification?->estado,
+                        'tipoEmision' => 'EMISION',
+                        'cuf' => $cuf !== '' ? $cuf : null,
+                    ]);
+                }
+            }
+
+            if (in_array($estadoNotificacion, ['CREADO', 'PENDIENTE'], true)) {
+                return $this->makeStatusPayload('fiscal', 'ANULACION_SOLICITADA', [
+                    'can_consult' => true,
+                    'notification_state' => $notification?->estado,
+                    'tipoEmision' => 'ANULACION',
+                    'cuf' => $cuf !== '' ? $cuf : null,
+                ]);
+            }
+        }
+
+        if ($estadoSufe === 'ANULACION_SOLICITADA') {
+            return $this->makeStatusPayload('fiscal', 'ANULACION_SOLICITADA', [
+                'can_consult' => true,
+                'notification_state' => $notification?->estado,
+                'tipoEmision' => $venta->tipo_emision_sufe ?: 'ANULACION',
+                'cuf' => $cuf !== '' ? $cuf : null,
             ]);
         }
 
@@ -460,7 +547,14 @@ class VentaController extends Controller
 
     private function protocolStatusForVenta(Venta $venta): array
     {
-        return $this->protocolStatusFromVentaNotification($venta, $this->latestNotificationForVenta($venta));
+        $notification = $this->latestNotificationForVenta($venta);
+        $detalle = $notification ? json_decode((string) $notification->detalle, true) : [];
+        $tipoEmision = strtoupper(trim((string) data_get($detalle, 'tipoEmision')));
+        $emissionNotification = $tipoEmision === 'ANULACION'
+            ? $this->latestEmissionNotificationForVenta($venta)
+            : null;
+
+        return $this->protocolStatusFromVentaNotification($venta, $notification, $emissionNotification);
     }
 
     private function buildAnulacionAuditData($currentUser, array $guard, array $requestData): array
@@ -1927,18 +2021,21 @@ class VentaController extends Controller
 
         $detalleMaps = $this->detalleMapsFromRows($ventas);
         $itemsCountMaps = $this->itemsCountMapsFromRows($ventas);
-        $notificationsMap = $this->latestNotificationsMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
+        $seguimientos = $ventas->pluck('codigoSeguimiento')->all();
+        $notificationsMap = $this->latestNotificationsMapFromSeguimientos($seguimientos);
+        $emissionNotificationsMap = $this->latestNotificationsMapFromSeguimientos($seguimientos, 'EMISION');
         $numeroFacturaMap = $this->numeroFacturaMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
         $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventas);
         $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventas, true);
 
-        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $includeAnnulled) {
+        $list = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $emissionNotificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $includeAnnulled) {
             $ventaId = (int) $venta->id;
             $cartId = (int) ($venta->origen_venta_id ?? 0);
             $bridgeCart = $bridgeCartMetaMap[$cartId] ?? null;
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
             $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
-            $status = $this->protocolStatusFromVentaNotification($venta, $notification);
+            $emissionNotification = $codigoSeguimiento !== '' ? ($emissionNotificationsMap[$codigoSeguimiento] ?? null) : null;
+            $status = $this->protocolStatusFromVentaNotification($venta, $notification, $emissionNotification);
             $numeroFactura = trim((string) (
                 $venta->numero_factura
                 ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$cartId] ?? ''))
@@ -4828,13 +4925,16 @@ class VentaController extends Controller
 
         $detalleMaps = $this->detalleMapsFromRows($ventas);
         $itemsCountMaps = $this->itemsCountMapsFromRows($ventas);
-        $notificationsMap = $this->latestNotificationsMapFromSeguimientos($ventas->pluck('codigoSeguimiento')->all());
+        $seguimientos = $ventas->pluck('codigoSeguimiento')->all();
+        $notificationsMap = $this->latestNotificationsMapFromSeguimientos($seguimientos);
+        $emissionNotificationsMap = $this->latestNotificationsMapFromSeguimientos($seguimientos, 'EMISION');
         $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventas, true);
 
         $list = $ventas->map(function (Venta $venta) use (
             $detalleMaps,
             $itemsCountMaps,
             $notificationsMap,
+            $emissionNotificationsMap,
             $bridgeCartMetaMap,
             $hasVentaCanalOperativo,
             $hasVentaCuentaPorCobrar,
@@ -4847,7 +4947,8 @@ class VentaController extends Controller
             $bridgeCart = $bridgeCartMetaMap[$cartId] ?? null;
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
             $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
-            $status = $this->protocolStatusFromVentaNotification($venta, $notification);
+            $emissionNotification = $codigoSeguimiento !== '' ? ($emissionNotificationsMap[$codigoSeguimiento] ?? null) : null;
+            $status = $this->protocolStatusFromVentaNotification($venta, $notification, $emissionNotification);
             $detalleNotificacion = $notification ? json_decode((string) $notification->detalle, true) : [];
             $detalle = $detalleMaps['detalle'][$ventaId] ?? [];
 
