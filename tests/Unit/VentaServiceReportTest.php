@@ -188,6 +188,41 @@ class VentaServiceReportTest extends TestCase
         $this->assertSame(1, $report['resumen']['cantidadVentasAnuladas']);
     }
 
+    public function test_unique_sale_count_uses_selected_services_and_count_exclusions(): void
+    {
+        $controller = new VentaController(new SufeSectorUnoValidator());
+        $method = new ReflectionMethod($controller, 'buildServiceReportFromVentas');
+        $report = $method->invoke($controller, [
+            [
+                'id' => 1,
+                'usuario' => ['nombre' => 'Ana'],
+                'regional' => ['nombre' => 'SANTA CRUZ DE LA SIERRA'],
+                'detalle' => [
+                    ['descripcion' => 'EMS - Nacional', 'cantidad' => 1, 'precio' => 20, 'total_linea' => 20],
+                    ['descripcion' => 'SERVICIO ECA INTERNACIONAL - Paquete', 'cantidad' => 1, 'precio' => 15, 'total_linea' => 15],
+                ],
+            ],
+            [
+                'id' => 2,
+                'usuario' => ['nombre' => 'Luis'],
+                'regional' => ['nombre' => 'COCHABAMBA'],
+                'detalle' => [[
+                    'descripcion' => 'SERVICIO ECA INTERNACIONAL - Paquete',
+                    'cantidad' => 1,
+                    'precio' => 25,
+                    'total_linea' => 25,
+                ]],
+            ],
+        ], false, null, null, ['EMS', 'SERVICIO ECA INTERNACIONAL'], [
+            'excludeGroups' => ['eca_internacional'],
+            'regional' => 'SANTA CRUZ',
+        ]);
+
+        $this->assertSame(1, $report['resumen']['cantidadVentas']);
+        $this->assertSame(3, $report['servicios'][0]['cantidadVentas'] + $report['servicios'][1]['cantidadVentas']);
+        $this->assertSame(60.0, $report['resumen']['totalMonto']);
+    }
+
     private function venta(
         int $id,
         string $numeroFactura,

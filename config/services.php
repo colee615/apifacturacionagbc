@@ -37,6 +37,7 @@ return [
     ],
     'facturacion_api' => [
         'integration_token' => env('FACTURACION_INTEGRATION_TOKEN', env('AGETIC_TOKEN')),
+        'report_token' => env('FACTURACION_BRIDGE_TOKEN', env('FACTURACION_INTEGRATION_TOKEN', env('AGETIC_TOKEN'))),
         'integration_usuario_id' => env('FACTURACION_INTEGRATION_USUARIO_ID'),
     ],
     'qhantuy_checkout' => [

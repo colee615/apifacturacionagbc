@@ -983,6 +983,16 @@ class VentaController extends Controller
             'estado_sufe' => ['nullable', 'string', 'max:50'],
             'q' => ['nullable', 'string', 'max:100'],
             'limite' => ['nullable', 'integer', 'min:1', 'max:500'],
+            'pagina' => ['nullable', 'integer', 'min:1', 'max:100000'],
+            'servicios' => ['sometimes', 'array', 'max:200'],
+            'servicios.*' => ['string', 'distinct', 'max:180'],
+            'excluirGruposConteo' => ['sometimes', 'array', 'max:2'],
+            'excluirGruposConteo.*' => ['string', 'distinct', 'in:contratos,eca_internacional'],
+            'incluirGruposConteo' => ['sometimes', 'array', 'max:2'],
+            'incluirGruposConteo.*' => ['string', 'distinct', 'in:contratos,eca_internacional'],
+            'excluirUsuariosConteo' => ['sometimes', 'array', 'max:200'],
+            'excluirUsuariosConteo.*' => ['string', 'distinct', 'max:120'],
+            'regionalConteo' => ['nullable', 'string', 'max:120'],
         ]);
     }
 
@@ -1746,17 +1756,32 @@ class VentaController extends Controller
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
         $limite = max(1, min((int) ($filters['limite'] ?? 200), 1000));
+        $pagina = max(1, (int) ($filters['pagina'] ?? 1));
+        $serviciosFiltro = array_key_exists('servicios', $filters)
+            ? array_values(array_unique(array_map(fn ($service) => mb_strtoupper(trim((string) $service)), $filters['servicios'])))
+            : null;
+        $countFilters = [
+            'excludeGroups' => $filters['excluirGruposConteo'] ?? [],
+            'includeGroups' => $filters['incluirGruposConteo'] ?? [],
+            'excludeUsers' => $filters['excluirUsuariosConteo'] ?? [],
+            'regional' => trim((string) ($filters['regionalConteo'] ?? '')),
+        ];
         $report = $this->buildServiceReportFromVentas(
             $this->mergedServiceReportVentaStream($filters, true),
-            false
+            false,
+            null,
+            null,
+            $serviciosFiltro,
+            $countFilters
         );
-        $servicios = collect($report['servicios'] ?? [])
+        $allServices = collect($report['servicios'] ?? [])
             ->map(function (array $item) {
                 unset($item['rows']);
 
                 return $item;
-            })
-            ->slice(0, $limite)
+            });
+        $servicios = $allServices
+            ->slice(($pagina - 1) * $limite, $limite)
             ->values();
         $resumen = $report['resumen'] ?? [
             'cantidadServicios' => 0,
@@ -1772,15 +1797,23 @@ class VentaController extends Controller
         ];
 
         return response()->json([
-            'filters' => array_merge($filters, ['limite' => $limite]),
+            'filters' => array_merge($filters, ['limite' => $limite, 'pagina' => $pagina]),
             'resumen' => $resumen,
             'servicios' => $servicios,
             'meta' => [
-                'totalServiciosSinLimite' => (int) count($report['servicios'] ?? []),
+                'versionReportes' => 2,
+                'conteoVentasUnicas' => true,
+                'totalServiciosSinLimite' => $allServices->count(),
                 'totalVentasSinLimite' => (int) ($report['resumen']['cantidadVentas'] ?? 0),
                 'totalVentasAnuladasSinLimite' => (int) ($report['resumen']['cantidadVentasAnuladas'] ?? 0),
                 'cantidadDetallesSinLimite' => (int) ($report['resumen']['cantidadDetalles'] ?? 0),
                 'cantidadDetallesAnuladasSinLimite' => (int) ($report['resumen']['cantidadDetallesAnuladas'] ?? 0),
+                'paginacionServicios' => [
+                    'pagina' => $pagina,
+                    'porPagina' => $limite,
+                    'total' => $allServices->count(),
+                    'totalPaginas' => (int) max(1, ceil($allServices->count() / $limite)),
+                ],
             ],
         ]);
     }
@@ -2237,7 +2270,14 @@ class VentaController extends Controller
         return FinancialSale::classify($venta)['motivoExclusion'];
     }
 
-    private function buildServiceReportFromVentas(iterable $ventas, bool $includeRows = true, ?string $onlyService = null, ?callable $rowWriter = null): array
+    private function buildServiceReportFromVentas(
+        iterable $ventas,
+        bool $includeRows = true,
+        ?string $onlyService = null,
+        ?callable $rowWriter = null,
+        ?array $onlyServices = null,
+        array $saleCountFilters = []
+    ): array
     {
         $grouped = [];
         $cantidadVentas = 0;
@@ -2245,6 +2285,14 @@ class VentaController extends Controller
         $cantidadVentasNoIncluidas = 0;
         $cantidadVentasAnuladas = 0;
         $onlyServiceKey = $onlyService !== null ? mb_strtoupper($onlyService) : null;
+        $onlyServiceKeys = $onlyServices !== null ? array_fill_keys($onlyServices, true) : null;
+        $excludedCountGroups = array_fill_keys($saleCountFilters['excludeGroups'] ?? [], true);
+        $includedCountGroups = array_fill_keys($saleCountFilters['includeGroups'] ?? [], true);
+        $excludedCountUsers = array_fill_keys(array_map(
+            fn ($name) => $this->normalizeServiceReportSearch((string) $name),
+            $saleCountFilters['excludeUsers'] ?? []
+        ), true);
+        $countRegional = $this->normalizeServiceReportCountRegional((string) ($saleCountFilters['regional'] ?? ''));
 
         foreach ($ventas as $venta) {
             $venta = is_array($venta) ? $venta : (array) $venta;
@@ -2254,6 +2302,7 @@ class VentaController extends Controller
             $exclusionReason = $isAnnulled ? 'ANULADA' : $this->serviceReportTotalExclusionReason($venta);
             $includedInSoldTotal = ! $isAnnulled && $exclusionReason === null;
             $saleMatched = false;
+            $saleCountMatched = false;
             $saleIncluded = false;
             $saleNotIncluded = false;
             $seenSaleGroups = [];
@@ -2270,7 +2319,20 @@ class VentaController extends Controller
                 if ($onlyServiceKey !== null && $groupKey !== $onlyServiceKey) {
                     continue;
                 }
+                if ($onlyServiceKeys !== null && ! isset($onlyServiceKeys[$groupKey])) {
+                    continue;
+                }
                 $saleMatched = true;
+                $countGroup = $this->serviceReportCountGroup($groupKey);
+                $regional = $this->normalizeServiceReportCountRegional((string) data_get($venta, 'regional.nombre', ''));
+                $userName = $this->normalizeServiceReportSearch((string) data_get($venta, 'usuario.nombre', ''));
+                $countGroupAllowed = ($includedCountGroups === [] || isset($includedCountGroups[$countGroup]))
+                    && ! isset($excludedCountGroups[$countGroup]);
+                $countRegionalAllowed = $countRegional === '' || $regional === $countRegional;
+                $countUserAllowed = ! isset($excludedCountUsers[$userName]);
+                if ($countGroupAllowed && $countRegionalAllowed && $countUserAllowed) {
+                    $saleCountMatched = true;
+                }
                 $cantidad = (float) ($item['cantidad'] ?? 0);
                 $precio = (float) ($item['precio'] ?? ($item['monto_base'] ?? 0));
                 $totalLinea = (float) ($item['total_linea'] ?? ($cantidad * $precio));
@@ -2402,7 +2464,7 @@ class VentaController extends Controller
                 }
             }
 
-            if ($saleMatched) {
+            if ($saleCountMatched) {
                 if ($isAnnulled) {
                     $cantidadVentasAnuladas++;
                 } else {
@@ -2469,6 +2531,31 @@ class VentaController extends Controller
             ],
             'servicios' => $servicios,
         ];
+    }
+
+    private function serviceReportCountGroup(string $serviceKey): string
+    {
+        if (str_contains($serviceKey, 'CONTRAT')) {
+            return 'contratos';
+        }
+        if (str_contains($serviceKey, 'ECA') && str_contains($serviceKey, 'INTERNACIONAL')) {
+            return 'eca_internacional';
+        }
+
+        return 'otros';
+    }
+
+    private function normalizeServiceReportCountRegional(string $regional): string
+    {
+        $normalized = $this->normalizeServiceReportSearch($regional);
+        $aliases = [
+            'santa cruz de la sierra' => 'santa cruz',
+            'chuquisaca' => 'sucre',
+            'pando' => 'cobija',
+            'beni' => 'trinidad',
+        ];
+
+        return $aliases[$normalized] ?? $normalized;
     }
 
     private function buildServiceReportDimension(array $rows, string $dimension): array

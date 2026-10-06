@@ -20,12 +20,17 @@ class AuthenticateFacturaVenta
     {
         $incomingToken = (string) ($request->bearerToken() ?? '');
         $integrationToken = (string) config('services.facturacion_api.integration_token');
+        $reportToken = (string) config('services.facturacion_api.report_token');
 
         if ($incomingToken !== '' && $this->matchesManagedToken($incomingToken)) {
             return $next($request);
         }
 
         if ($incomingToken !== '' && $integrationToken !== '' && hash_equals($integrationToken, $incomingToken)) {
+            return $next($request);
+        }
+
+        if ($incomingToken !== '' && $reportToken !== '' && hash_equals($reportToken, $incomingToken)) {
             return $next($request);
         }
 
