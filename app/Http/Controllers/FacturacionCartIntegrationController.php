@@ -2157,7 +2157,7 @@ class FacturacionCartIntegrationController extends Controller
         $linkedVenta = $linkedVentaId > 0
             ? DB::table('ventas')
                 ->where('id', $linkedVentaId)
-                ->first(['id', 'estado', 'estado_sufe', 'cuf', 'numero_factura', 'codigoOrden', 'codigoSeguimiento', 'razonSocial', 'documentoIdentidad', 'tipoDocumentoIdentidad', 'codigoCliente', 'url_pdf', 'url_xml', 'created_at', 'total']);
+                ->first(['id', 'estado', 'estado_sufe', 'cuf', 'numero_factura', 'codigoOrden', 'codigoSeguimiento', 'razonSocial', 'documentoIdentidad', 'tipoDocumentoIdentidad', 'codigoCliente', 'url_pdf', 'url_xml', 'created_at', 'total'])
             : null;
         $status = $this->facturacionCartStatusPayload($c, $linkedVenta);
         $respuestaEmision = $this->decode((string) ($c->respuesta_emision ?? ''));
