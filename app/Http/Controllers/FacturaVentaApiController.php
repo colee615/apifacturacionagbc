@@ -9,6 +9,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -231,12 +232,37 @@ class FacturaVentaApiController extends Controller
             $codigoOrden = Venta::formatCodigoOrdenFromNumberWithPrefix((int) $matches[1], Venta::CODIGO_ORDEN_OFICIAL_PREFIX);
         }
 
-        $exists = DB::table('ventas')
+        $existingOrder = DB::table('ventas')
             ->where('codigoOrden', $codigoOrden)
-            ->exists();
+            ->first([
+                'id',
+                'origen_venta_id',
+                'origen_venta_tipo',
+                'estado_sufe',
+                'numero_factura',
+                'cuf',
+            ]);
 
-        if ($exists) {
-            $codigoOrden = $nextCodigoOrden;
+        if ($existingOrder) {
+            $sameOrigin = trim((string) ($payload['origenVenta']['id'] ?? '')) !== ''
+                && trim((string) ($payload['origenVenta']['tipo'] ?? '')) !== ''
+                && trim((string) ($existingOrder->origen_venta_id ?? '')) === trim((string) $payload['origenVenta']['id'])
+                && trim((string) ($existingOrder->origen_venta_tipo ?? '')) === trim((string) $payload['origenVenta']['tipo']);
+            $existingStatus = strtoupper(trim((string) ($existingOrder->estado_sufe ?? '')));
+            $hasFiscalIdentity = trim((string) ($existingOrder->numero_factura ?? '')) !== ''
+                || trim((string) ($existingOrder->cuf ?? '')) !== '';
+            $isFinalFiscalEmission = in_array($existingStatus, ['PROCESADA', 'ANULADA', 'ANULADO'], true)
+                && $hasFiscalIdentity;
+
+            if (!$sameOrigin) {
+                $codigoOrden = $nextCodigoOrden;
+            } elseif ($isFinalFiscalEmission && !in_array($existingStatus, ['ANULADA', 'ANULADO'], true)) {
+                throw ValidationException::withMessages([
+                    'codigoOrden' => ['Esta venta ya tiene una factura fiscal activa asociada.'],
+                ]);
+            } elseif ($isFinalFiscalEmission) {
+                $codigoOrden = $nextCodigoOrden;
+            }
         }
 
         return $codigoOrden;
@@ -1507,6 +1533,7 @@ class FacturaVentaApiController extends Controller
         $requestData = $request->all();
         $codigoOrdenRecibido = (string) ($requestData['codigoOrden'] ?? '');
         $codigoOrden = $codigoOrdenRecibido;
+        $origenLock = null;
 
         if ($this->shouldLogVerbose($request)) {
             Log::debug('FacturaVentaApi emitir started', [
@@ -1538,6 +1565,50 @@ class FacturaVentaApiController extends Controller
             }
             $this->assertFacturaVentaSector($validated);
             $this->assertCajaAbierta($validated);
+
+            $origenVentaId = trim((string) data_get($validated, 'origenVenta.id', ''));
+            $origenVentaTipo = trim((string) data_get($validated, 'origenVenta.tipo', ''));
+            if ($origenVentaId !== '' && in_array($origenVentaTipo, ['facturacion_cart', 'facturacion_cart_remote'], true)) {
+                $origenLock = Cache::lock('factura-venta-emision-origen:' . $origenVentaTipo . ':' . $origenVentaId, 300);
+                if (!$origenLock->get()) {
+                    return response()->json([
+                        'ok' => false,
+                        'estado' => 'EMITIENDO',
+                        'estadoPuente' => 'EMITIENDO',
+                        'message' => 'Ya existe una emision en curso para este carrito. Consulta el estado antes de volver a intentar.',
+                    ], 409);
+                }
+
+                $activeVenta = DB::table('ventas')
+                    ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [$origenVentaId])
+                    ->where('origen_venta_tipo', $origenVentaTipo)
+                    ->whereRaw("upper(coalesce(estado_sufe, '')) not in ('ANULADA','ANULADO','RECHAZADA')")
+                    ->where(function ($fiscal) {
+                        $fiscal->whereRaw("upper(coalesce(estado_sufe, '')) = 'PROCESADA'")
+                            ->orWhereRaw("btrim(coalesce(cuf, '')) <> ''")
+                            ->orWhereRaw("btrim(coalesce(numero_factura, '')) <> ''")
+                            ->orWhereRaw("btrim(coalesce(\"codigoSeguimiento\", '')) <> ''");
+                    })
+                    ->orderByDesc('id')
+                    ->first(['id', 'codigoOrden', 'numero_factura', 'cuf', 'estado_sufe']);
+
+                if ($activeVenta) {
+                    return response()->json([
+                        'ok' => false,
+                        'estado' => 'FACTURADA',
+                        'estadoPuente' => 'FACTURADA',
+                        'message' => 'Este carrito ya tiene una factura fiscal activa asociada.',
+                        'factura_existente' => [
+                            'venta_id' => (int) $activeVenta->id,
+                            'codigoOrden' => $activeVenta->codigoOrden,
+                            'numeroFactura' => $activeVenta->numero_factura,
+                            'cuf' => $activeVenta->cuf,
+                            'estadoSufe' => $activeVenta->estado_sufe,
+                        ],
+                    ], 409);
+                }
+            }
+
             if ($this->shouldLogVerbose($request)) {
                 Log::debug('FacturaVentaApi emitir sector validated', [
                     'codigoOrden_recibido' => $codigoOrdenRecibido,
@@ -1781,6 +1852,8 @@ class FacturaVentaApiController extends Controller
                 'message' => 'Error inesperado al emitir la factura de venta.',
                 'details' => $e->getMessage(),
             ], 500);
+        } finally {
+            optional($origenLock)->release();
         }
     }
 

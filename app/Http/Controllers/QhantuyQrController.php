@@ -169,6 +169,39 @@ class QhantuyQrController extends Controller
         };
     }
 
+    private function parseCheckoutAmount($value): ?float
+    {
+        if (is_int($value) || is_float($value)) {
+            return is_finite((float) $value) ? round((float) $value, 2) : null;
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $amount = trim($value);
+        if ($amount === '') {
+            return null;
+        }
+
+        // Qhantuy can return values such as "2,178.00". Remove commas only
+        // when they form valid thousands groups; otherwise preserve decimals.
+        if (preg_match('/^-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/D', $amount)) {
+            $amount = str_replace(',', '', $amount);
+        } elseif (preg_match('/^-?\d{1,3}(?:\.\d{3})+,\d{1,2}$/D', $amount)) {
+            $amount = str_replace('.', '', $amount);
+            $amount = str_replace(',', '.', $amount);
+        } elseif (preg_match('/^-?\d+,\d{1,2}$/D', $amount)) {
+            $amount = str_replace(',', '.', $amount);
+        } elseif (!is_numeric($amount)) {
+            return null;
+        }
+
+        $parsed = (float) $amount;
+
+        return is_finite($parsed) && $parsed >= 0 ? round($parsed, 2) : null;
+    }
+
     private function qrPaymentStateFromStatus(?string $status): string
     {
         return match ($this->normalizeQrPaymentStatus($status)) {
@@ -198,11 +231,27 @@ class QhantuyQrController extends Controller
 
         $status = $this->normalizeQrPaymentStatus($paymentStatus);
         $estadoPago = $this->qrPaymentStateFromStatus($status);
+        $estadoEmisionActual = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+        $isFiscalInvoiceAttempt = strtolower(trim((string) ($cart->canal_emision ?? ''))) !== 'qr'
+            && (
+                trim((string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? ''))) !== ''
+                || in_array($estadoEmisionActual, [
+                    'EMITIENDO',
+                    'EMISION_INCIERTA',
+                    'PENDIENTE',
+                    'ERROR',
+                    'RECHAZADA',
+                    'FACTURADA',
+                    'ANULACION_SOLICITADA',
+                    'ANULACION_OBSERVADA',
+                    'ANULADA',
+                ], true)
+            );
 
         $updates = [
             'metodo_pago' => 'qr',
             'estado_pago' => $estadoPago,
-            'estado_emision' => 'NO_APLICA',
+            'estado_emision' => $isFiscalInvoiceAttempt ? $cart->estado_emision : 'NO_APLICA',
             'updated_at' => now(),
         ];
 
@@ -496,7 +545,9 @@ class QhantuyQrController extends Controller
                 ?? data_get($body, 'items.0.status')
                 ?? 'holding'
             );
-            $amount = round((float) data_get($body, 'checkout_amount', collect($payload['items'])->sum(fn ($i) => $i['quantity'] * $i['price'])), 2);
+            $payloadAmount = round((float) collect($payload['items'])->sum(fn ($i) => $i['quantity'] * $i['price']), 2);
+            $providerAmount = $this->parseCheckoutAmount(data_get($body, 'checkout_amount'));
+            $amount = $providerAmount !== null && $providerAmount > 0 ? $providerAmount : $payloadAmount;
             $currency = strtoupper((string) data_get($body, 'checkout_currency', $this->currencyCode()));
             $imageData = trim((string) (
                 data_get($body, 'image_data')
@@ -833,11 +884,10 @@ class QhantuyQrController extends Controller
                 ?? data_get($body, 'status')
                 ?? 'holding'
             );
-            $amount = round((float) (
+            $amountFromProvider = $this->parseCheckoutAmount(
                 data_get($source, 'checkout_amount')
                 ?? data_get($body, 'checkout_amount')
-                ?? 0
-            ), 2);
+            );
             $currency = strtoupper(trim((string) (
                 data_get($source, 'checkout_currency')
                 ?? data_get($body, 'checkout_currency')
@@ -850,6 +900,9 @@ class QhantuyQrController extends Controller
             ));
 
             $target = $row ?: DB::table('qhantuy_qr_payments')->where('transaction_id', $transactionId)->first();
+            $amount = $amountFromProvider !== null && $amountFromProvider > 0
+                ? $amountFromProvider
+                : round((float) ($target->checkout_amount ?? 0), 2);
             if ($target) {
                 $resolvedImageData = trim((string) ($target->image_data ?? ''));
                 if ($resolvedImageData === '' && $qrUrl !== '') {
@@ -860,7 +913,9 @@ class QhantuyQrController extends Controller
                     ->where('id', $target->id)
                     ->update([
                         'transaction_id' => $transactionId,
-                        'checkout_amount' => $amount > 0 ? $amount : $target->checkout_amount,
+                        'checkout_amount' => $amountFromProvider !== null && $amountFromProvider > 0
+                            ? $amountFromProvider
+                            : $target->checkout_amount,
                         'checkout_currency' => $currency !== '' ? $currency : $target->checkout_currency,
                         'image_data' => $resolvedImageData !== '' ? $resolvedImageData : $target->image_data,
                         'payment_status' => $status,

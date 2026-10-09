@@ -585,7 +585,8 @@ class FacturacionCartIntegrationController extends Controller
             'empresa_sigla' => 'nullable|string|max:60',
         ]);
         $userId = (string) $validated['origen_usuario_id'];
-        $lock = Cache::lock($this->emitLockKey($userId), 15);
+        $cartId = isset($validated['cart_id']) ? (int) $validated['cart_id'] : 0;
+        $lock = Cache::lock($this->emitLockKey($userId), 300);
         if (!$lock->get()) {
             return response()->json([
                 'ok' => false,
@@ -594,9 +595,9 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         try {
-        $cartId = isset($validated['cart_id']) ? (int) $validated['cart_id'] : 0;
         $cartQuery = DB::table('facturacion_carts')
-            ->where('origen_usuario_id', $userId);
+            ->where('origen_usuario_id', $userId)
+            ->whereRaw("upper(coalesce(estado_emision, '')) not in ('EMITIENDO','EMISION_INCIERTA','PENDIENTE')");
 
         if ($cartId > 0) {
             $cartQuery->where('id', $cartId)
@@ -606,7 +607,7 @@ class FacturacionCartIntegrationController extends Controller
                             $qr->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
                                 ->whereNotNull('qr_transaction_id')
-                                ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('NO_APLICA','PENDIENTE','ERROR','RECHAZADA')");
+                                ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('NO_APLICA','ERROR','RECHAZADA','ANULADA')");
                         });
                 });
         } else {
@@ -621,7 +622,58 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         $cart = $cartQuery->latest('id')->first();
-        if (!$cart) return response()->json(['ok' => false, 'message' => 'No se encontro un borrador de facturacion activo.'], 422);
+        if (!$cart) {
+            $blockedQuery = DB::table('facturacion_carts')->where('origen_usuario_id', $userId);
+            if ($cartId > 0) {
+                $blockedQuery->where('id', $cartId);
+            } else {
+                $blockedQuery->whereRaw("upper(coalesce(estado_emision, '')) in ('EMITIENDO','EMISION_INCIERTA','PENDIENTE')");
+            }
+            $blockedCart = $blockedQuery->latest('id')->first(['id', 'codigo_orden', 'estado_emision']);
+            $blockedState = strtoupper(trim((string) ($blockedCart->estado_emision ?? '')));
+
+            if ($blockedState === 'EMITIENDO') {
+                return response()->json([
+                    'ok' => false,
+                    'estado' => 'EMITIENDO',
+                    'message' => 'La emision sigue en curso. Consulta el estado antes de intentar nuevamente.',
+                    'codigo_orden' => $blockedCart->codigo_orden ?? null,
+                ], 409);
+            }
+            if ($blockedState === 'EMISION_INCIERTA') {
+                return response()->json([
+                    'ok' => false,
+                    'estado' => 'EMISION_INCIERTA',
+                    'message' => 'No se pudo confirmar si el servicio fiscal recibio la solicitud. Verifica el codigo de orden en SEFE antes de emitir otra vez.',
+                    'codigo_orden' => $blockedCart->codigo_orden ?? null,
+                ], 409);
+            }
+            if ($blockedState === 'PENDIENTE') {
+                return response()->json([
+                    'ok' => false,
+                    'estado' => 'PENDIENTE',
+                    'message' => 'La factura esta pendiente de respuesta fiscal. Consulta su estado; no se emitira otra factura.',
+                    'codigo_orden' => $blockedCart->codigo_orden ?? null,
+                ], 409);
+            }
+
+            return response()->json(['ok' => false, 'message' => 'No se encontro un borrador de facturacion activo.'], 422);
+        }
+
+        $activeLinkedVenta = $this->activeLinkedFiscalVentaForCart((int) $cart->id);
+        if ($activeLinkedVenta) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Este carrito ya tiene una factura fiscal activa. No se emitio otra factura; revisa la venta existente por su CUF.',
+                'factura_existente' => [
+                    'venta_id' => (int) $activeLinkedVenta->id,
+                    'codigoOrden' => $activeLinkedVenta->codigoOrden,
+                    'numeroFactura' => $activeLinkedVenta->numero_factura,
+                    'cuf' => $activeLinkedVenta->cuf,
+                    'estadoSufe' => $activeLinkedVenta->estado_sufe,
+                ],
+            ], 409);
+        }
 
         $overrideCanal = in_array((string) ($validated['canal_emision'] ?? ''), ['factura_electronica', 'qr'], true)
             ? (string) $validated['canal_emision']
@@ -753,6 +805,22 @@ class FacturacionCartIntegrationController extends Controller
             'codigo_orden_anterior' => $cart->codigo_orden ?? null,
             'codigo_orden_intento' => $codigoOrdenIntento,
         ]);
+
+        $claimState = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+        $claimed = DB::table('facturacion_carts')
+            ->where('id', (int) $cart->id)
+            ->whereRaw("upper(coalesce(estado_emision, '')) = ?", [$claimState])
+            ->update([
+                'estado_emision' => 'EMITIENDO',
+                'updated_at' => now(),
+            ]);
+        if ($claimed !== 1) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Este carrito ya esta siendo emitido. Consulta el estado antes de volver a intentar.',
+            ], 409);
+        }
+
         $codigoOrdenAnterior = trim((string) ($cart->codigo_orden ?? ''));
         DB::table('facturacion_carts')->where('id', $cart->id)->update([
             'codigo_orden' => $codigoOrdenIntento,
@@ -846,6 +914,7 @@ class FacturacionCartIntegrationController extends Controller
             $ventaLocal = DB::table('ventas')
                 ->where('origen_venta_id', (string) $cart->id)
                 ->where('origen_venta_tipo', 'facturacion_cart_remote')
+                ->where('codigoOrden', $codigoOrdenIntento)
                 ->orderByDesc('id')
                 ->first();
 
@@ -895,11 +964,14 @@ class FacturacionCartIntegrationController extends Controller
             && $canalEmision !== 'qr'
             && (!$ok || $emitStatusCode >= 400);
 
-        $resolvedEstadoEmision = (string) ($body['estado'] ?? (
-            $ok
-                ? ($canalEmision === 'qr' ? 'NO_APLICA' : 'PENDIENTE')
-                : ($isFailedPaidQrInvoiceConversion ? 'ERROR' : 'RECHAZADA')
-        ));
+        $hasAmbiguousEmissionResult = !$ok && $emitStatusCode >= 500;
+        $resolvedEstadoEmision = $hasAmbiguousEmissionResult
+            ? 'EMISION_INCIERTA'
+            : (string) ($body['estado'] ?? (
+                $ok
+                    ? ($canalEmision === 'qr' ? 'NO_APLICA' : 'PENDIENTE')
+                    : ($isFailedPaidQrInvoiceConversion ? 'ERROR' : 'RECHAZADA')
+            ));
         $shouldKeepPaidQrSaleVisible = $preservePaidQrPayment && $canalEmision !== 'qr';
 
         $resolvedCartEstado = $ok
@@ -1027,7 +1099,7 @@ class FacturacionCartIntegrationController extends Controller
             && $metodoPago === 'qr'
             && $hasQrTransaction
             && $estadoPagoActual === 'pagado'
-            && in_array($estadoEmisionActual, ['', 'NO_APLICA', 'PENDIENTE', 'ERROR', 'RECHAZADA', 'ANULADA'], true);
+            && in_array($estadoEmisionActual, ['', 'NO_APLICA', 'RECHAZADA', 'ANULADA'], true);
 
         if ($shouldAutoEmitStoredPaidQr) {
             $emitRequest = Request::create('/api/factura-venta/cart/emitir', 'POST', [
@@ -1338,7 +1410,7 @@ class FacturacionCartIntegrationController extends Controller
         $v = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
             'estado' => 'nullable|in:all,borrador,pendiente_pago,emitido',
-            'estado_emision' => 'nullable|in:all,FACTURADA,PENDIENTE,RECHAZADA,ERROR,NO_APLICA',
+            'estado_emision' => 'nullable|in:all,FACTURADA,PENDIENTE,RECHAZADA,ERROR,NO_APLICA,EMITIENDO,EMISION_INCIERTA',
             'from' => 'nullable|date', 'to' => 'nullable|date', 'q' => 'nullable|string|max:120',
             'per_page' => 'nullable|integer|min:10|max:100', 'page' => 'nullable|integer|min:1',
         ]);
@@ -1356,6 +1428,7 @@ class FacturacionCartIntegrationController extends Controller
             'totalBorradores' => (clone $sum)->where('estado', 'borrador')->count(),
             'facturadas' => (clone $sum)->whereRaw("upper(coalesce(estado_emision, '')) = 'FACTURADA'")->count(),
             'pendientes' => (clone $sum)->whereRaw("upper(coalesce(estado_emision, '')) = 'PENDIENTE'")->count(),
+            'inciertas' => (clone $sum)->whereRaw("upper(coalesce(estado_emision, '')) = 'EMISION_INCIERTA'")->count(),
             'rechazadas' => (clone $sum)->where(function ($query) {
                 $query->whereRaw("upper(coalesce(estado_emision, '')) = 'RECHAZADA'")
                     ->orWhere(function ($qr) {
@@ -1397,7 +1470,7 @@ class FacturacionCartIntegrationController extends Controller
         $v = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
             'estado' => 'nullable|in:all,borrador,pendiente_pago,emitido',
-            'estado_emision' => 'nullable|in:all,FACTURADA,PENDIENTE,RECHAZADA,ERROR,NO_APLICA',
+            'estado_emision' => 'nullable|in:all,FACTURADA,PENDIENTE,RECHAZADA,ERROR,NO_APLICA,EMITIENDO,EMISION_INCIERTA',
             'from' => 'nullable|date',
             'to' => 'nullable|date',
             'q' => 'nullable|string|max:120',
@@ -2084,10 +2157,21 @@ class FacturacionCartIntegrationController extends Controller
         $linkedVenta = $linkedVentaId > 0
             ? DB::table('ventas')
                 ->where('id', $linkedVentaId)
-                ->first(['id', 'estado_sufe', 'cuf', 'numero_factura', 'codigoOrden', 'codigoSeguimiento', 'razonSocial', 'documentoIdentidad', 'tipoDocumentoIdentidad', 'codigoCliente', 'url_pdf', 'url_xml', 'created_at', 'total'])
+                ->first(['id', 'estado', 'estado_sufe', 'cuf', 'numero_factura', 'codigoOrden', 'codigoSeguimiento', 'razonSocial', 'documentoIdentidad', 'tipoDocumentoIdentidad', 'codigoCliente', 'url_pdf', 'url_xml', 'created_at', 'total']);
             : null;
         $status = $this->facturacionCartStatusPayload($c, $linkedVenta);
         $respuestaEmision = $this->decode((string) ($c->respuesta_emision ?? ''));
+        $responseCodigoOrden = trim((string) (
+            data_get($respuestaEmision, 'codigoOrden')
+            ?: data_get($respuestaEmision, 'codigo_orden')
+            ?: data_get($respuestaEmision, 'factura.codigoOrden')
+            ?: data_get($respuestaEmision, 'sefe.datos.codigoOrden')
+            ?: ''
+        ));
+        $linkedCodigoOrden = trim((string) ($linkedVenta->codigoOrden ?? ''));
+        $respuestaEmisionDesalineada = $responseCodigoOrden !== ''
+            && $linkedCodigoOrden !== ''
+            && $responseCodigoOrden !== $linkedCodigoOrden;
         $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
         $allowLinkedFiscalFallback = !in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
         if (!$allowLinkedFiscalFallback) {
@@ -2111,23 +2195,23 @@ class FacturacionCartIntegrationController extends Controller
         $resolvedNumeroDocumento = $c->numero_documento ?? ($linkedVenta->documentoIdentidad ?? null);
         $resolvedRazonSocial = $c->razon_social ?? ($linkedVenta->razonSocial ?? null);
         $resolvedNumeroFactura = trim((string) (
-            data_get($respuestaEmision, 'factura.nroFactura')
-            ?: data_get($respuestaEmision, 'nroFactura')
+            ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.nroFactura'))
+            ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'nroFactura'))
             ?: ($allowLinkedFiscalFallback ? ($linkedVenta->numero_factura ?? '') : '')
         ));
         $resolvedCuf = trim((string) (
-            data_get($respuestaEmision, 'factura.cuf')
-            ?: data_get($respuestaEmision, 'cuf')
+            ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.cuf'))
+            ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'cuf'))
             ?: ($allowLinkedFiscalFallback ? ($linkedVenta->cuf ?? '') : '')
         ));
         $resolvedPdfUrl = trim((string) (
-            data_get($respuestaEmision, 'factura.pdfUrl')
-            ?: data_get($respuestaEmision, 'pdfUrl')
+            ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.pdfUrl'))
+            ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'pdfUrl'))
             ?: ($allowLinkedFiscalFallback ? ($linkedVenta->url_pdf ?? '') : '')
         ));
         $resolvedXmlUrl = trim((string) (
-            data_get($respuestaEmision, 'factura.xmlUrl')
-            ?: data_get($respuestaEmision, 'xmlUrl')
+            ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.xmlUrl'))
+            ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'xmlUrl'))
             ?: ($allowLinkedFiscalFallback ? ($linkedVenta->url_xml ?? '') : '')
         ));
         $qrReemision = data_get($respuestaEmision, 'qr_reemision');
@@ -2157,7 +2241,6 @@ class FacturacionCartIntegrationController extends Controller
                 ],
             ];
         }
-
         Log::info('facturacion_cart.cart_by_id.payload', [
             'cart_id' => $id,
             'db_cantidad_items' => (int) ($c->cantidad_items ?? 0),
@@ -2174,7 +2257,7 @@ class FacturacionCartIntegrationController extends Controller
             })->values()->all(),
         ]);
 
-        return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $resolvedTipoDocumento, 'numero_documento' => $resolvedNumeroDocumento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $resolvedRazonSocial, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $respuestaEmision, 'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : null, 'cuf' => $resolvedCuf !== '' ? $resolvedCuf : null, 'pdf_url' => $resolvedPdfUrl !== '' ? $resolvedPdfUrl : null, 'xml_url' => $resolvedXmlUrl !== '' ? $resolvedXmlUrl : null, 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'historial_qr' => $historialQr, 'items' => $items];
+        return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $resolvedTipoDocumento, 'numero_documento' => $resolvedNumeroDocumento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $resolvedRazonSocial, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $respuestaEmision, 'respuesta_emision_desalineada' => $respuestaEmisionDesalineada, 'codigo_orden_respuesta' => $responseCodigoOrden !== '' ? $responseCodigoOrden : null, 'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : null, 'cuf' => $resolvedCuf !== '' ? $resolvedCuf : null, 'pdf_url' => $resolvedPdfUrl !== '' ? $resolvedPdfUrl : null, 'xml_url' => $resolvedXmlUrl !== '' ? $resolvedXmlUrl : null, 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'historial_qr' => $historialQr, 'items' => $items];
     }
 
     private function facturacionCartStatusPayload(object $cart, ?object $linkedVenta = null): array
@@ -2208,6 +2291,22 @@ class FacturacionCartIntegrationController extends Controller
             && ($estadoEmision === 'FACTURADA'
                 || $linkedVentaStatus === 'PROCESADA'
                 || !blank($linkedVenta->cuf ?? null));
+
+        if (in_array($estadoEmision, ['EMITIENDO', 'EMISION_INCIERTA'], true)) {
+            return $this->makeFacturacionCartStatusPayload($estadoEmision, [
+                'can_emit' => false,
+                'can_consult' => $estadoEmision === 'EMITIENDO' && $canConsult,
+                'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
+        }
+
+        if ($estadoEmision === 'PENDIENTE' && $canal !== 'qr') {
+            return $this->makeFacturacionCartStatusPayload('PENDIENTE', [
+                'can_emit' => false,
+                'can_consult' => $canConsult,
+                'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
+        }
 
         if ($estado === 'descartado') {
             return $this->makeFacturacionCartStatusPayload('DESCARTADA', [
@@ -3124,6 +3223,32 @@ class FacturacionCartIntegrationController extends Controller
     private function emitLockKey(string $userId): string
     {
         return 'facturacion-cart-emitir:' . trim($userId);
+    }
+
+    private function activeLinkedFiscalVentaForCart(int $cartId): ?object
+    {
+        if ($cartId <= 0) {
+            return null;
+        }
+
+        return DB::table('ventas')
+            ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [$cartId])
+            ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+            ->whereRaw("upper(coalesce(estado_sufe, '')) not in ('ANULADA','ANULADO','RECHAZADA')")
+            ->where(function ($fiscal) {
+                $fiscal->whereRaw("upper(coalesce(estado_sufe, '')) = 'PROCESADA'")
+                    ->orWhereRaw("btrim(coalesce(cuf, '')) <> ''")
+                    ->orWhereRaw("btrim(coalesce(numero_factura, '')) <> ''")
+                    ->orWhereRaw("btrim(coalesce(\"codigoSeguimiento\", '')) <> ''");
+            })
+            ->orderByDesc('id')
+            ->first([
+                'id',
+                'codigoOrden',
+                'numero_factura',
+                'cuf',
+                'estado_sufe',
+            ]);
     }
 
     private function shouldReusePendingQr(object $cart): bool

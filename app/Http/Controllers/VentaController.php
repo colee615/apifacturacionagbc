@@ -4380,6 +4380,10 @@ class VentaController extends Controller
                             ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
                             ->whereNotNull('qr_transaction_id')
                             ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('PENDIENTE','ERROR','RECHAZADA','NO_APLICA')");
+                    })
+                    ->orWhere(function ($uncertain) {
+                        $uncertain->whereRaw("lower(coalesce(estado, '')) = 'borrador'")
+                            ->whereRaw("upper(coalesce(estado_emision, '')) = 'EMISION_INCIERTA'");
                     });
             });
 
@@ -4562,6 +4566,22 @@ class VentaController extends Controller
             && ($estadoEmision === 'FACTURADA'
                 || $linkedVentaStatus === 'PROCESADA'
                 || ! blank($linkedVenta->cuf ?? null));
+
+        if (in_array($estadoEmision, ['EMITIENDO', 'EMISION_INCIERTA'], true)) {
+            return $this->makeStatusPayload('cart', $estadoEmision, [
+                'can_emit' => false,
+                'can_consult' => $estadoEmision === 'EMITIENDO' && $canConsult,
+                'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
+        }
+
+        if ($estadoEmision === 'PENDIENTE' && $canal !== 'qr') {
+            return $this->makeStatusPayload('cart', 'PENDIENTE', [
+                'can_emit' => false,
+                'can_consult' => $canConsult,
+                'cuf' => $cuf !== '' ? $cuf : null,
+            ]);
+        }
 
         if ($estado === 'descartado') {
             return $this->makeStatusPayload('cart', 'DESCARTADA', [
