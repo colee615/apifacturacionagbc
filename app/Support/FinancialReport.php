@@ -7,9 +7,11 @@ final class FinancialReport
     public static function emptyTotals(): array
     {
         return array_fill_keys(['totalVendido', 'totalQrFacturado', 'totalEfectivoFacturado',
+            'totalQrPorDetalle', 'totalEfectivoPorDetalle',
             'totalFacturasAnuladas', 'totalQrCancelado', 'totalQrPendiente',
             'totalQrPagadoPendienteFactura', 'totalEcaFacturado', 'totalContratosNoSumados',
-            'totalOficial', 'totalNoIncluido', 'totalRegistros', 'diferenciaCabeceraDetalle'], 0.0)
+            'totalOficial', 'totalNoIncluido', 'totalRegistros', 'diferenciaCabeceraDetalle',
+            'diferenciaCabeceraDetalleQr', 'diferenciaCabeceraDetalleEfectivo'], 0.0)
             + array_fill_keys(['cantidadRegistros', 'facturadas', 'qrFacturadas', 'electronicasFacturadas',
                 'facturasAnuladas', 'qrCancelado', 'qrPendiente', 'qrPagadoPendienteFactura',
                 'ecaFacturadas', 'contratosNoSumados', 'oficiales', 'observadas'], 0);
@@ -42,12 +44,22 @@ final class FinancialReport
             $days[$day] ??= self::emptyTotals() + ['fecha'=>$day];
             $delta = self::emptyTotals();
             $amount = $f['importeCentavos'] /100.0;
+            $detailCents = FinancialSale::detailCents($sale);
+            $detailDifference = $f['importeCentavos'] - $detailCents;
             $delta['cantidadRegistros'] = 1;
             $delta['totalRegistros'] = $amount;
             if ($f['incluidaEnTotalVendido']) {
                 $delta['totalVendido'] = $amount;
                 $delta['facturadas'] = 1;
-                $delta[$f['medioPago']==='QR' ? 'totalQrFacturado' : 'totalEfectivoFacturado'] = $amount;
+                if ($f['medioPago'] === 'QR') {
+                    $delta['totalQrFacturado'] = $amount;
+                    $delta['totalQrPorDetalle'] = $detailCents / 100.0;
+                    $delta['diferenciaCabeceraDetalleQr'] = $detailDifference / 100.0;
+                } else {
+                    $delta['totalEfectivoFacturado'] = $amount;
+                    $delta['totalEfectivoPorDetalle'] = $detailCents / 100.0;
+                    $delta['diferenciaCabeceraDetalleEfectivo'] = $detailDifference / 100.0;
+                }
                 $delta[$f['medioPago']==='QR' ? 'qrFacturadas' : 'electronicasFacturadas'] = 1;
             } else {
                 $delta['totalNoIncluido'] = $amount;
@@ -71,7 +83,6 @@ final class FinancialReport
                 elseif (!$f['pagoCancelado'] && !$f['anulada'] && !$f['facturaVigente']) { $delta['totalQrPagadoPendienteFactura']=$amount; $delta['qrPagadoPendienteFactura']=1; }
             }
             if (!$f['facturaVigente'] && !$f['anulada'] && $f['categoria']!=='OFICIAL') $delta['observadas']=1;
-            $detailDifference = $f['importeCentavos'] - FinancialSale::detailCents($sale);
             $delta['diferenciaCabeceraDetalle']=$detailDifference/100.0;
             foreach ($delta as $field=>$value) {
                 foreach ([&$summary, &$branches[$key], &$users[$userKey], &$days[$day]] as &$bucket) {
@@ -115,13 +126,33 @@ final class FinancialReport
                 if (count($issues)<$issueLimit) $issues[]=$row;
             }
         }
-        $summary['diferenciaMediosPago']=(FinancialSale::cents($summary['totalVendido'])-FinancialSale::cents($summary['totalQrFacturado'])-FinancialSale::cents($summary['totalEfectivoFacturado']))/100.0;
+        $finalizePaymentDifferences = static function (array &$totals): void {
+            $totals['diferenciaMediosPago'] = (FinancialSale::cents($totals['totalVendido'])
+                - FinancialSale::cents($totals['totalQrFacturado'])
+                - FinancialSale::cents($totals['totalEfectivoFacturado'])) / 100.0;
+            $totals['diferenciaMediosPagoPorDetalle'] = (FinancialSale::cents($totals['totalVendido'])
+                - FinancialSale::cents($totals['totalQrPorDetalle'])
+                - FinancialSale::cents($totals['totalEfectivoPorDetalle'])) / 100.0;
+        };
+        $finalizePaymentDifferences($summary);
+        foreach ($branches as &$bucket) {
+            $finalizePaymentDifferences($bucket);
+        }
+        unset($bucket);
+        foreach ($users as &$bucket) {
+            $finalizePaymentDifferences($bucket);
+        }
+        unset($bucket);
+        foreach ($days as &$bucket) {
+            $finalizePaymentDifferences($bucket);
+        }
+        unset($bucket);
         $summary['cantidadVentas']=$summary['facturadas'];
         ksort($branches); ksort($days);
         return ['version'=>FinancialSale::VERSION,'resumen'=>$summary,'sucursales'=>array_values($branches),'porUsuarios'=>array_values($users),'porFecha'=>array_values($days),
             'pagosQr'=>['cantidadTransaccionesIdentificadas'=>count($paidQr),'importeVinculadoSinDuplicar'=>$paidQrCents/100.0,
                 'alcance'=>'Importes asociados en la base local; requiere contraste con extracto bancario. No representa devoluciones.'],
             'incidencias'=>$issues,'meta'=>['cantidadIncidencias'=>$issueCount,'incidenciasTruncadas'=>$issueCount>count($issues),'limiteIncidencias'=>$issueLimit,
-                'criterio'=>'Total vendido = efectivo facturado + QR facturado con pago confirmado. Anuladas y pagos cancelados no suman. ECA, contratos y oficiales se informan por separado.']];
+            'criterio'=>'Total vendido = efectivo facturado + QR facturado con pago confirmado. Las columnas PorDetalle y diferenciaCabeceraDetalle comparan las líneas con el total de factura. Anuladas y pagos cancelados no suman. ECA, contratos y oficiales se informan por separado.']];
     }
 }

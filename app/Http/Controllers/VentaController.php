@@ -1801,7 +1801,11 @@ class VentaController extends Controller
             'totalCantidad' => 0,
             'totalCantidadAnulada' => 0,
             'totalMonto' => 0,
+            'totalMontoDetalle' => 0,
+            'totalMontoAjusteCabeceraDetalle' => 0,
             'totalMontoAnulado' => 0,
+            'totalMontoAnuladoDetalle' => 0,
+            'totalMontoAnuladoAjusteCabeceraDetalle' => 0,
         ];
 
         return response()->json([
@@ -1809,8 +1813,14 @@ class VentaController extends Controller
             'resumen' => $resumen,
             'servicios' => $servicios,
             'meta' => [
-                'versionReportes' => 2,
+                'versionReportes' => 3,
                 'conteoVentasUnicas' => true,
+                'reconciliacionMontos' => [
+                    'totalMonto' => 'Importe conciliado con cabecera de factura cuando todo el detalle pertenece a un servicio.',
+                    'totalMontoDetalle' => 'Suma de las líneas originales, sin ajustes de cabecera.',
+                    'totalMontoAjusteCabeceraDetalle' => 'Cabecera de factura menos suma de líneas originales.',
+                    'detalleMixto' => 'El ajuste queda en el grupo AJUSTE CABECERA/DETALLE cuando no puede asignarse a un solo servicio.',
+                ],
                 'detalleAnulacionesIncluido' => $includeAnnulledDetails,
                 'auditoriaMediosPagoIncluida' => $includeAnnulledDetails,
                 'regionalDetalle' => $includeAnnulledDetails && $annulledDetailsRegional !== ''
@@ -1905,6 +1915,7 @@ class VentaController extends Controller
                 'totalClientesSinLimite' => (int) count($report['clientes'] ?? []),
                 'totalVentasSinLimite' => (int) ($report['resumen']['cantidadVentas'] ?? 0),
                 'cantidadDetallesSinLimite' => (int) ($report['resumen']['cantidadDetalles'] ?? 0),
+                'reconciliacionMontos' => 'totalMonto incluye diferencia cabecera-detalle solo en facturas compuestas únicamente por Contratos; los campos totalMontoDetalle y totalMontoAjusteCabeceraDetalle exponen ambos importes.',
             ],
         ]);
     }
@@ -2313,6 +2324,22 @@ class VentaController extends Controller
             $venta = is_array($venta) ? $venta : (array) $venta;
             $isAnnulled = (bool) ($venta['anulada'] ?? $this->isServiceReportAnnulled($venta));
             $medioPago = (string) ($venta['medioPago'] ?? ($this->isQrPaymentRow($venta) ? 'QR' : 'EFECTIVO'));
+            $detalleOriginal = (array) ($venta['detalle'] ?? []);
+            $serviciosOriginales = collect($detalleOriginal)
+                ->reject(fn ($item) => strtolower(trim((string) data_get($item, 'tipoLinea', ''))) === 'conciliacion')
+                ->map(function ($item) {
+                    $item = is_array($item) ? $item : (array) $item;
+                    $descripcion = $this->normalizeServiceReportDescription(
+                        $item['descripcion'] ?? $item['nombre_servicio'] ?? $item['titulo'] ?? 'SIN DETALLE'
+                    );
+
+                    return $this->serviceGroupLabel($descripcion);
+                })
+                ->unique(fn ($servicio) => mb_strtoupper($servicio))
+                ->values();
+            // When every source line belongs to one service, the invoice-header
+            // adjustment can be assigned there without inventing a new service.
+            $servicioAjuste = $serviciosOriginales->count() === 1 ? $serviciosOriginales->first() : null;
             $detalle = FinancialSale::reconciledDetails($venta);
             $exclusionReason = $isAnnulled ? 'ANULADA' : $this->serviceReportTotalExclusionReason($venta);
             $includedInSoldTotal = ! $isAnnulled && $exclusionReason === null;
@@ -2329,7 +2356,10 @@ class VentaController extends Controller
                 $descripcion = $this->normalizeServiceReportDescription(
                     $item['descripcion'] ?? $item['nombre_servicio'] ?? $item['titulo'] ?? 'SIN DETALLE'
                 );
-                $servicio = $this->serviceGroupLabel($descripcion);
+                $esAjusteConciliacion = strtolower(trim((string) ($item['tipoLinea'] ?? ''))) === 'conciliacion';
+                $servicio = $esAjusteConciliacion && $servicioAjuste !== null
+                    ? $servicioAjuste
+                    : ($esAjusteConciliacion ? 'AJUSTE CABECERA/DETALLE' : $this->serviceGroupLabel($descripcion));
                 $groupKey = mb_strtoupper($servicio);
                 if ($onlyServiceKey !== null && $groupKey !== $onlyServiceKey) {
                     continue;
@@ -2365,9 +2395,13 @@ class VentaController extends Controller
                         'totalCantidad' => 0.0,
                         'totalCantidadAnulada' => 0.0,
                         'totalMonto' => 0.0,
+                        'totalMontoDetalle' => 0.0,
+                        'totalMontoAjusteCabeceraDetalle' => 0.0,
                         'totalMontoVendido' => 0.0,
                         'totalMontoNoIncluidoEnTotalVendido' => 0.0,
                         'totalMontoAnulado' => 0.0,
+                        'totalMontoAnuladoDetalle' => 0.0,
+                        'totalMontoAnuladoAjusteCabeceraDetalle' => 0.0,
                         'ultimaFecha' => '',
                         'descripciones' => [],
                         'rows' => [],
@@ -2392,12 +2426,22 @@ class VentaController extends Controller
                 }
 
                 if ($isAnnulled) {
-                    $grouped[$groupKey]['cantidadDetallesAnuladas']++;
-                    $grouped[$groupKey]['totalCantidadAnulada'] += $cantidad;
+                    if ($esAjusteConciliacion) {
+                        $grouped[$groupKey]['totalMontoAnuladoAjusteCabeceraDetalle'] += $totalLinea;
+                    } else {
+                        $grouped[$groupKey]['cantidadDetallesAnuladas']++;
+                        $grouped[$groupKey]['totalCantidadAnulada'] += $cantidad;
+                        $grouped[$groupKey]['totalMontoAnuladoDetalle'] += $totalLinea;
+                    }
                     $grouped[$groupKey]['totalMontoAnulado'] += $totalLinea;
                 } else {
-                    $grouped[$groupKey]['cantidadDetalles']++;
-                    $grouped[$groupKey]['totalCantidad'] += $cantidad;
+                    if ($esAjusteConciliacion) {
+                        $grouped[$groupKey]['totalMontoAjusteCabeceraDetalle'] += $totalLinea;
+                    } else {
+                        $grouped[$groupKey]['cantidadDetalles']++;
+                        $grouped[$groupKey]['totalCantidad'] += $cantidad;
+                        $grouped[$groupKey]['totalMontoDetalle'] += $totalLinea;
+                    }
                     $grouped[$groupKey]['totalMonto'] += $totalLinea;
                     if ($includedInSoldTotal) {
                         $grouped[$groupKey]['totalMontoVendido'] += $totalLinea;
@@ -2480,7 +2524,7 @@ class VentaController extends Controller
                     }
                 }
 
-                if (! $isAnnulled && $descripcion !== '') {
+                if (! $isAnnulled && ! $esAjusteConciliacion && $descripcion !== '') {
                     if (! isset($grouped[$groupKey]['descripciones'][$descripcion])
                         || ($fecha !== '' && $fecha > $grouped[$groupKey]['descripciones'][$descripcion])) {
                         $grouped[$groupKey]['descripciones'][$descripcion] = $fecha;
@@ -2572,11 +2616,15 @@ class VentaController extends Controller
                     'totalCantidad' => round((float) $group['totalCantidad'], 2),
                     'totalCantidadAnulada' => round((float) $group['totalCantidadAnulada'], 2),
                     'totalMonto' => round((float) $group['totalMonto'], 2),
+                    'totalMontoDetalle' => round((float) $group['totalMontoDetalle'], 2),
+                    'totalMontoAjusteCabeceraDetalle' => round((float) $group['totalMontoAjusteCabeceraDetalle'], 2),
                     'cantidadVentasIncluidasEnTotalVendido' => $group['cantidadVentasIncluidasEnTotalVendido'],
                     'cantidadVentasNoIncluidasEnTotalVendido' => $group['cantidadVentasNoIncluidasEnTotalVendido'],
                     'totalMontoVendido' => round((float) $group['totalMontoVendido'], 2),
                     'totalMontoNoIncluidoEnTotalVendido' => round((float) $group['totalMontoNoIncluidoEnTotalVendido'], 2),
                     'totalMontoAnulado' => round((float) $group['totalMontoAnulado'], 2),
+                    'totalMontoAnuladoDetalle' => round((float) $group['totalMontoAnuladoDetalle'], 2),
+                    'totalMontoAnuladoAjusteCabeceraDetalle' => round((float) $group['totalMontoAnuladoAjusteCabeceraDetalle'], 2),
                     'ultimaFecha' => $group['ultimaFecha'],
                     'descripciones' => $descripciones,
                     'descripcionMuestra' => implode(' | ', array_slice($descripciones, 0, 3)),
@@ -2610,9 +2658,13 @@ class VentaController extends Controller
                 'totalCantidad' => round((float) collect($servicios)->sum('totalCantidad'), 2),
                 'totalCantidadAnulada' => round((float) collect($servicios)->sum('totalCantidadAnulada'), 2),
                 'totalMonto' => round((float) collect($servicios)->sum('totalMonto'), 2),
+                'totalMontoDetalle' => round((float) collect($servicios)->sum('totalMontoDetalle'), 2),
+                'totalMontoAjusteCabeceraDetalle' => round((float) collect($servicios)->sum('totalMontoAjusteCabeceraDetalle'), 2),
                 'totalMontoVendido' => round((float) collect($servicios)->sum('totalMontoVendido'), 2),
                 'totalMontoNoIncluidoEnTotalVendido' => round((float) collect($servicios)->sum('totalMontoNoIncluidoEnTotalVendido'), 2),
                 'totalMontoAnulado' => round((float) collect($servicios)->sum('totalMontoAnulado'), 2),
+                'totalMontoAnuladoDetalle' => round((float) collect($servicios)->sum('totalMontoAnuladoDetalle'), 2),
+                'totalMontoAnuladoAjusteCabeceraDetalle' => round((float) collect($servicios)->sum('totalMontoAnuladoAjusteCabeceraDetalle'), 2),
             ],
             'servicios' => $servicios,
         ];
@@ -2762,17 +2814,30 @@ class VentaController extends Controller
         foreach ($ventas as $venta) {
             $venta = is_array($venta) ? $venta : (array) $venta;
             $ventaKey = (string) ($venta['id'] ?? $venta['codigoSeguimiento'] ?? $venta['codigoOrden'] ?? uniqid('venta_', true));
-            $detalle = collect($venta['detalle'] ?? []);
-            $razonSocial = trim((string) ($venta['razonSocial'] ?? data_get($venta, 'cliente.razonSocial', '')));
-            $nit = trim((string) ($venta['documentoIdentidad'] ?? data_get($venta, 'cliente.documentoIdentidad', '')));
-
-            foreach ($detalle as $item) {
+            $detalleOriginal = collect($venta['detalle'] ?? []);
+            $lineasContrato = $detalleOriginal->filter(function ($item) {
                 $item = is_array($item) ? $item : (array) $item;
                 $descripcion = $this->normalizeServiceReportDescription(
                     $item['descripcion'] ?? $item['nombre_servicio'] ?? $item['titulo'] ?? 'SIN DETALLE'
                 );
 
-                if (! $this->isContractServiceDescription($descripcion)) {
+                return $this->isContractServiceDescription($descripcion);
+            });
+            $soloContratos = $detalleOriginal->isNotEmpty() && $lineasContrato->count() === $detalleOriginal->count();
+            $detalle = $soloContratos
+                ? collect(FinancialSale::reconciledDetails($venta))
+                : $detalleOriginal;
+            $razonSocial = trim((string) ($venta['razonSocial'] ?? data_get($venta, 'cliente.razonSocial', '')));
+            $nit = trim((string) ($venta['documentoIdentidad'] ?? data_get($venta, 'cliente.documentoIdentidad', '')));
+
+            foreach ($detalle as $item) {
+                $item = is_array($item) ? $item : (array) $item;
+                $esAjusteConciliacion = strtolower(trim((string) ($item['tipoLinea'] ?? ''))) === 'conciliacion';
+                $descripcion = $this->normalizeServiceReportDescription(
+                    $item['descripcion'] ?? $item['nombre_servicio'] ?? $item['titulo'] ?? 'SIN DETALLE'
+                );
+
+                if (! $esAjusteConciliacion && ! $this->isContractServiceDescription($descripcion)) {
                     continue;
                 }
 
@@ -2790,6 +2855,8 @@ class VentaController extends Controller
                         'cantidadDetalles' => 0,
                         'totalCantidad' => 0.0,
                         'totalMonto' => 0.0,
+                        'totalMontoDetalle' => 0.0,
+                        'totalMontoAjusteCabeceraDetalle' => 0.0,
                         'ultimaFecha' => '',
                         'servicios' => [],
                         'rows' => [],
@@ -2797,11 +2864,16 @@ class VentaController extends Controller
                     ];
                 }
 
-                $servicio = $this->serviceGroupLabel($descripcion);
+                $servicio = $esAjusteConciliacion ? 'Contratos' : $this->serviceGroupLabel($descripcion);
                 $fecha = (string) ($venta['fecha'] ?? '');
 
-                $grouped[$groupKey]['cantidadDetalles'] += 1;
-                $grouped[$groupKey]['totalCantidad'] += $cantidad;
+                if ($esAjusteConciliacion) {
+                    $grouped[$groupKey]['totalMontoAjusteCabeceraDetalle'] += $totalLinea;
+                } else {
+                    $grouped[$groupKey]['cantidadDetalles'] += 1;
+                    $grouped[$groupKey]['totalCantidad'] += $cantidad;
+                    $grouped[$groupKey]['totalMontoDetalle'] += $totalLinea;
+                }
                 $grouped[$groupKey]['totalMonto'] += $totalLinea;
                 $grouped[$groupKey]['ventaIds'][$ventaKey] = true;
 
@@ -2822,6 +2894,7 @@ class VentaController extends Controller
                     'codigoOrden' => $venta['codigoOrden'] ?? '',
                     'codigoSeguimiento' => $venta['codigoSeguimiento'] ?? '',
                     'fecha' => $fecha,
+                    'tipoLinea' => $esAjusteConciliacion ? 'conciliacion' : ($item['tipoLinea'] ?? 'servicio'),
                     'totalLinea' => round($totalLinea, 2),
                 ];
 
@@ -2838,6 +2911,8 @@ class VentaController extends Controller
                     'cantidadDetalles' => (int) $group['cantidadDetalles'],
                     'totalCantidad' => round((float) $group['totalCantidad'], 2),
                     'totalMonto' => round((float) $group['totalMonto'], 2),
+                    'totalMontoDetalle' => round((float) $group['totalMontoDetalle'], 2),
+                    'totalMontoAjusteCabeceraDetalle' => round((float) $group['totalMontoAjusteCabeceraDetalle'], 2),
                     'ultimaFecha' => $group['ultimaFecha'],
                     'servicios' => array_values($group['servicios']),
                     'servicioMuestra' => implode(' | ', array_slice($group['servicios'], 0, 3)),
@@ -2855,6 +2930,8 @@ class VentaController extends Controller
                 'cantidadDetalles' => (int) collect($clientes)->sum('cantidadDetalles'),
                 'totalCantidad' => round((float) collect($clientes)->sum('totalCantidad'), 2),
                 'totalMonto' => round((float) collect($clientes)->sum('totalMonto'), 2),
+                'totalMontoDetalle' => round((float) collect($clientes)->sum('totalMontoDetalle'), 2),
+                'totalMontoAjusteCabeceraDetalle' => round((float) collect($clientes)->sum('totalMontoAjusteCabeceraDetalle'), 2),
             ],
             'clientes' => $clientes,
         ];
