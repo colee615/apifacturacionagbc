@@ -257,34 +257,42 @@ class FacturacionCartIntegrationController extends Controller
             ->where('origen_tipo', (string) ($payload['origen_tipo'] ?? ''))
             ->where('origen_id', (int) ($payload['origen_id'] ?? 0));
 
-        $existing = $query->orderBy('id')->first();
-        if (!$existing) {
+        $existingRows = $query->orderBy('id')->get();
+        if ($existingRows->isEmpty()) {
             return null;
         }
 
         if (!$this->isConceptoFacturacionOrigin((string) ($payload['origen_tipo'] ?? ''))) {
-            return $existing;
+            return $existingRows->first();
         }
 
         $incomingResumen = (array) ($payload['resumen_origen'] ?? []);
-        $existingResumen = $this->decode((string) ($existing->resumen_origen ?? ''));
         $incomingUnitAmount = round((float) ($payload['monto_base'] ?? 0), 2);
-        $existingUnitAmount = round((float) ($existing->monto_base ?? 0), 2);
         $incomingDescription = trim((string) ($incomingResumen['descripcion_servicio'] ?? ''));
-        $existingDescription = trim((string) ($existingResumen['descripcion_servicio'] ?? ''));
         $incomingCode = $this->resolveConceptVariantCodeFromPayload($payload);
-        $existingCode = $this->resolveConceptVariantCodeFromRow($existing);
 
-        $sameVariant = $incomingCode !== ''
-            && $existingCode !== ''
-            && mb_strtolower($incomingCode) === mb_strtolower($existingCode)
-            && $incomingUnitAmount === $existingUnitAmount
-            && mb_strtolower($incomingDescription) === mb_strtolower($existingDescription);
+        foreach ($existingRows as $existing) {
+            $existingResumen = $this->decode((string) ($existing->resumen_origen ?? ''));
+            $existingUnitAmount = round((float) ($existing->monto_base ?? 0), 2);
+            $existingDescription = trim((string) ($existingResumen['descripcion_servicio'] ?? ''));
+            $existingCode = $this->resolveConceptVariantCodeFromRow($existing);
 
-        if ($sameVariant) {
-            return $existing;
+            $sameVariant = $incomingCode !== ''
+                && $existingCode !== ''
+                && mb_strtolower($this->extractVariantBaseCode($incomingCode)) === mb_strtolower($this->extractVariantBaseCode($existingCode))
+                && $incomingUnitAmount === $existingUnitAmount
+                && mb_strtolower($incomingDescription) === mb_strtolower($existingDescription);
+
+            if ($sameVariant) {
+                return $existing;
+            }
         }
 
+        $existing = $existingRows->first();
+        $existingResumen = $this->decode((string) ($existing->resumen_origen ?? ''));
+        $existingUnitAmount = round((float) ($existing->monto_base ?? 0), 2);
+        $existingDescription = trim((string) ($existingResumen['descripcion_servicio'] ?? ''));
+        $existingCode = $this->resolveConceptVariantCodeFromRow($existing);
         Log::info('facturacion_cart.upsert_item.force_insert_variant', [
             'cart_id' => $cartId,
             'origen_id' => (int) ($payload['origen_id'] ?? 0),
@@ -1030,7 +1038,6 @@ class FacturacionCartIntegrationController extends Controller
                         'codigo_orden' => $codigoOrdenEmitido,
                     ]);
                 }
-            }
             }
         }
 
