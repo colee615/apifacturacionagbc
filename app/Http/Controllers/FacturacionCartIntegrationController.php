@@ -104,6 +104,7 @@ class FacturacionCartIntegrationController extends Controller
             : (array_key_exists('numero_documento', $v)
                 ? $this->nullBlank($v['numero_documento'])
                 : $this->nullBlank($draft->numero_documento ?? null));
+        $numero = $numero !== null ? Str::upper(trim((string) $numero)) : null;
         $razon = $mode === 'sin_cliente'
             ? null
             : (array_key_exists('razon_social', $v)
@@ -1007,6 +1008,32 @@ class FacturacionCartIntegrationController extends Controller
             'updated_at' => now(),
         ]);
 
+        if ($ok && $resolvedCartEstado === 'emitido') {
+            $itemsParaTrazabilidad = $canalEmision === 'qr'
+                ? $items->filter(function ($item): bool {
+                    $origen = strtolower(preg_replace('/[^a-z0-9]/i', '', (string) ($item->origen_tipo ?? '')) ?? '');
+
+                    return str_contains($origen, 'conceptofacturacion');
+                })->values()
+                : $items;
+
+            if ($itemsParaTrazabilidad->isNotEmpty()) {
+                $ventaId = $this->resolveLinkedVentaIdForCart(
+                    (int) $cart->id,
+                    $this->normalizeBridgeCodigoOrden($codigoOrdenEmitido, $canalEmision)
+                );
+                if ($ventaId > 0) {
+                    $this->persistTariffTraceabilityForSale((int) $cart->id, $ventaId, $itemsParaTrazabilidad);
+                } else {
+                    Log::warning('No se pudo asociar la trazabilidad tarifaria a la venta emitida; el resumen permanece en el carrito.', [
+                        'cart_id' => (int) $cart->id,
+                        'codigo_orden' => $codigoOrdenEmitido,
+                    ]);
+                }
+            }
+            }
+        }
+
         $cartSnapshot = DB::table('facturacion_carts')
             ->where('id', $cart->id)
             ->first([
@@ -1062,6 +1089,102 @@ class FacturacionCartIntegrationController extends Controller
                 'codigoSeguimiento',
                 'created_at',
             ]);
+    }
+
+    private function persistTariffTraceabilityForSale(int $cartId, int $ventaId, \Illuminate\Support\Collection $items): void
+    {
+        if (! \Illuminate\Support\Facades\Schema::hasTable('facturacion_tarifa_trazas')) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            $origenTipo = (string) ($item->origen_tipo ?? '');
+            $origenNormalizado = strtolower(preg_replace('/[^a-z0-9]/i', '', $origenTipo) ?? '');
+            $esEms = str_contains($origenNormalizado, 'paqueteems');
+            $esConceptoManual = str_contains($origenNormalizado, 'conceptofacturacion');
+            if (! $esEms && ! $esConceptoManual) {
+                continue;
+            }
+
+            $resumen = is_array($item->resumen_origen ?? null) ? $item->resumen_origen : [];
+            $ahora = now();
+            if ($esConceptoManual) {
+                if (! Schema::hasColumn('facturacion_tarifa_trazas', 'manual_version_id')) {
+                    continue;
+                }
+
+                $manualSnapshot = data_get($resumen, 'tarifario_manual_referencia');
+                $manualSnapshot = is_array($manualSnapshot) ? $manualSnapshot : null;
+                $manualVersionId = (int) data_get($manualSnapshot, 'version_id', 0);
+                $manualVersionCode = trim((string) data_get($manualSnapshot, 'version_codigo', ''));
+                $traceState = $manualVersionId > 0 && $manualVersionCode !== ''
+                    ? 'VERSION_REFERENCIA_MANUAL'
+                    : 'LEGACY_SIN_VERSION';
+
+                DB::table('facturacion_tarifa_trazas')->insertOrIgnore([
+                    'venta_id' => $ventaId,
+                    'cart_id' => $cartId,
+                    'cart_item_id' => (int) $item->id,
+                    'origen_tipo' => $origenTipo !== '' ? $origenTipo : null,
+                    'origen_id' => isset($item->origen_id) ? (int) $item->origen_id : null,
+                    'codigo_paquete' => trim((string) ($item->codigo ?? '')) ?: null,
+                    'estado_trazabilidad' => $traceState,
+                    'tarifario_version_id' => null,
+                    'source_tarifario_id' => null,
+                    'version_codigo' => null,
+                    'version_checksum' => null,
+                    'tarifario_snapshot' => null,
+                    'manual_version_id' => $manualVersionId > 0 ? $manualVersionId : null,
+                    'manual_version_codigo' => $manualVersionCode !== '' ? $manualVersionCode : null,
+                    'manual_version_nombre' => trim((string) data_get($manualSnapshot, 'version_nombre', '')) ?: null,
+                    'manual_version_snapshot' => $manualSnapshot !== null ? json_encode($manualSnapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+                    'importe_facturado' => round((float) ($item->total_linea ?? $item->monto_base ?? 0), 2),
+                    'moneda' => 'BOB',
+                    'capturado_en' => $ahora,
+                    'created_at' => $ahora,
+                    'updated_at' => $ahora,
+                ]);
+
+                continue;
+            }
+
+            $snapshot = data_get($resumen, 'tarifario_snapshot');
+            $snapshot = is_array($snapshot) ? $snapshot : null;
+            $versionId = (int) (data_get($resumen, 'tarifario_version_id') ?: data_get($snapshot, 'version_id') ?: 0);
+            $sourceTarifarioId = (int) (data_get($resumen, 'tarifario_id') ?: data_get($snapshot, 'source_tarifario_id') ?: 0);
+            $versionCode = trim((string) data_get($snapshot, 'version_codigo', ''));
+            $tipoCorrespondencia = strtoupper(trim((string) data_get($resumen, 'tipo_correspondencia', '')));
+            $fueraDeAlcance = str_contains($tipoCorrespondencia, 'OFICIAL') || str_contains($tipoCorrespondencia, 'CERTIFIC');
+            $traceState = $fueraDeAlcance
+                ? 'NO_APLICA'
+                : ($versionId > 0 && $snapshot !== null
+                    ? 'VERSIONADA'
+                    : ($versionId > 0 ? 'VERSION_SIN_DETALLE' : 'LEGACY_SIN_VERSION'));
+            $now = $ahora;
+
+            DB::table('facturacion_tarifa_trazas')->insertOrIgnore([
+                array_merge(
+                    ['venta_id' => $ventaId, 'cart_item_id' => (int) $item->id],
+                    [
+                    'cart_id' => $cartId,
+                    'origen_tipo' => $origenTipo !== '' ? $origenTipo : null,
+                    'origen_id' => isset($item->origen_id) ? (int) $item->origen_id : null,
+                    'codigo_paquete' => trim((string) ($item->codigo ?? '')) ?: null,
+                    'estado_trazabilidad' => $traceState,
+                    'tarifario_version_id' => $versionId > 0 ? $versionId : null,
+                    'source_tarifario_id' => $sourceTarifarioId > 0 ? $sourceTarifarioId : null,
+                    'version_codigo' => $versionCode !== '' ? $versionCode : null,
+                    'version_checksum' => trim((string) data_get($snapshot, 'checksum', '')) ?: null,
+                    'tarifario_snapshot' => $snapshot !== null ? json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+                    'importe_facturado' => round((float) ($item->total_linea ?? $item->monto_base ?? 0), 2),
+                    'moneda' => 'BOB',
+                    'capturado_en' => $now,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                    ]
+                ),
+            ]);
+        }
     }
 
     public function consultar(Request $request): JsonResponse
@@ -1679,7 +1802,7 @@ class FacturacionCartIntegrationController extends Controller
         $resolvedRazonSocial = $cart->razon_social ?? ($linkedVenta->razonSocial ?? null);
         $sinCliente = (string) ($cart->modalidad_facturacion ?? 'con_datos') === 'sin_cliente';
         $tipo = $sinCliente ? 5 : (int) ($resolvedTipoDocumento ?: 1);
-        $doc = $sinCliente ? '99003' : (string) ($resolvedNumeroDocumento ?: '');
+        $doc = $sinCliente ? '99003' : Str::upper(trim((string) ($resolvedNumeroDocumento ?: '')));
         $razon = $sinCliente ? 'SIN NOMBRE' : (string) ($resolvedRazonSocial ?: '');
         if (!$sinCliente && ($doc === '' || $razon === '' || blank($resolvedTipoDocumento))) abort(422, 'Completa tipo de documento, numero de documento y razon social antes de emitir.');
 
@@ -2132,22 +2255,59 @@ class FacturacionCartIntegrationController extends Controller
         $c = DB::table('facturacion_carts')->where('id', $id)->first();
         if (!$c) return null;
         $items = DB::table('facturacion_cart_items')->where('cart_id', $id)->orderBy('id')->get()->map(function ($i) {
+            $resumen = $this->decode((string) ($i->resumen_origen ?? ''));
+            $origenTipo = (string) $i->origen_tipo;
+            $normalizado = strtolower(preg_replace('/[^a-z0-9]/i', '', $origenTipo) ?? '');
+            $esPaqueteEms = str_contains($normalizado, 'paqueteems');
+            $esConceptoManual = str_contains($normalizado, 'conceptofacturacion');
+            $tarifarioSnapshot = data_get($resumen, 'tarifario_snapshot');
+            $tarifarioSnapshot = is_array($tarifarioSnapshot) ? $tarifarioSnapshot : null;
+            $versionId = (int) (data_get($resumen, 'tarifario_version_id') ?: data_get($tarifarioSnapshot, 'version_id') ?: 0);
+            $manualVersionSnapshot = data_get($resumen, 'tarifario_manual_referencia');
+            $manualVersionSnapshot = is_array($manualVersionSnapshot) ? $manualVersionSnapshot : null;
+            $manualVersionId = (int) data_get($manualVersionSnapshot, 'version_id', 0);
+            $manualVersionCode = trim((string) data_get($manualVersionSnapshot, 'version_codigo', ''));
+
             return $this->enrichCartItemPayload([
                 'id' => (int) $i->id,
                 'cart_id' => (int) $i->cart_id,
-                'origen_tipo' => (string) $i->origen_tipo,
+                'origen_tipo' => $origenTipo,
                 'origen_id' => (int) $i->origen_id,
                 'codigo' => $i->codigo,
                 'titulo' => $i->titulo,
                 'nombre_servicio' => $i->nombre_servicio,
                 'nombre_destinatario' => $i->nombre_destinatario,
                 'servicios_extra' => $this->decode((string) ($i->servicios_extra ?? '')),
-                'resumen_origen' => $this->decode((string) ($i->resumen_origen ?? '')),
+                'resumen_origen' => $resumen,
                 'cantidad' => (int) $i->cantidad,
                 'monto_base' => (float) $i->monto_base,
                 'monto_extras' => (float) $i->monto_extras,
                 'total_linea' => (float) $i->total_linea,
-            ], (string) $i->origen_tipo, (int) $i->origen_id);
+                'trazabilidad_tarifaria' => [
+                    'estado' => $esPaqueteEms
+                        ? ((str_contains(strtoupper((string) data_get($resumen, 'tipo_correspondencia', '')), 'OFICIAL') || str_contains(strtoupper((string) data_get($resumen, 'tipo_correspondencia', '')), 'CERTIFIC'))
+                            ? 'NO_APLICA'
+                            : ($versionId > 0 && $tarifarioSnapshot !== null ? 'VERSIONADA' : 'SIN_VERSION_REGISTRADA'))
+                        : 'NO_APLICA',
+                    'version_id' => $versionId > 0 ? $versionId : null,
+                    'version_codigo' => data_get($tarifarioSnapshot, 'version_codigo'),
+                    'source_tarifario_id' => data_get($resumen, 'tarifario_id') ?: data_get($tarifarioSnapshot, 'source_tarifario_id'),
+                    'snapshot' => $tarifarioSnapshot,
+                    'importe_facturado' => round((float) ($i->total_linea ?? 0), 2),
+                    'moneda' => 'BOB',
+                ],
+                'trazabilidad_version_manual' => [
+                    'estado' => $esConceptoManual
+                        ? ($manualVersionId > 0 && $manualVersionCode !== '' ? 'VERSION_REFERENCIA_MANUAL' : 'SIN_VERSION_REGISTRADA')
+                        : 'NO_APLICA',
+                    'version_id' => $manualVersionId > 0 ? $manualVersionId : null,
+                    'version_codigo' => $manualVersionCode !== '' ? $manualVersionCode : null,
+                    'version_nombre' => data_get($manualVersionSnapshot, 'version_nombre'),
+                    'snapshot' => $manualVersionSnapshot,
+                    'importe_facturado' => round((float) ($i->total_linea ?? 0), 2),
+                    'moneda' => 'BOB',
+                ],
+            ], $origenTipo, (int) $i->origen_id);
         })->values()->all();
         $canal = strtolower(trim((string) ($c->canal_emision ?? 'factura_electronica')));
         if (!in_array($canal, ['factura_electronica', 'qr'], true)) {

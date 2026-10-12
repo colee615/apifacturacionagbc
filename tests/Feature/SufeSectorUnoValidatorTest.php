@@ -23,6 +23,16 @@ class SufeSectorUnoValidatorTest extends TestCase
             'codigoSucursal' => 0,
             'puntoVenta' => 0,
             'documentoSector' => 1,
+            'canalEmision' => 'factura_electronica',
+            'canalOperativo' => 'contrato',
+            'contabilizaEnCaja' => false,
+            'esCuentaPorCobrar' => true,
+            'empresaContrato' => [
+                'id' => 12,
+                'codigoCliente' => 'EMP-012',
+                'nombre' => 'EMPRESA DE PRUEBA',
+                'sigla' => 'EPT',
+            ],
             'municipio' => 'LA PAZ',
             'departamento' => 'LA PAZ',
             'telefono' => '2457000',
@@ -58,6 +68,10 @@ class SufeSectorUnoValidatorTest extends TestCase
 
         $this->assertSame('AGBC-0000001', $validated['codigoOrden']);
         $this->assertSame(1, $validated['documentoSector']);
+        $this->assertSame('contrato', $validated['canalOperativo']);
+        $this->assertFalse($validated['contabilizaEnCaja']);
+        $this->assertTrue($validated['esCuentaPorCobrar']);
+        $this->assertSame('EPT', $validated['empresaContrato']['sigla']);
     }
 
     public function test_individual_payload_rejects_inconsistent_fichas_postales_amount(): void

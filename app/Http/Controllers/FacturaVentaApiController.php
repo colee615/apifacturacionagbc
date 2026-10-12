@@ -700,6 +700,13 @@ class FacturaVentaApiController extends Controller
 
         unset($clean['origenVenta'], $clean['origenUsuario'], $clean['origenSucursal']);
         unset($clean['fichasPostales']);
+        unset(
+            $clean['canalEmision'],
+            $clean['canalOperativo'],
+            $clean['contabilizaEnCaja'],
+            $clean['esCuentaPorCobrar'],
+            $clean['empresaContrato']
+        );
 
         if ((int) ($clean['tipoDocumentoIdentidad'] ?? 0) !== 1 || blank($clean['complemento'] ?? null)) {
             unset($clean['complemento']);

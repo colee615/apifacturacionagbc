@@ -42,6 +42,15 @@ class SufeSectorUnoValidator
                 'codigoSucursal' => ['required', 'integer', 'min:0'],
                 'puntoVenta' => ['required', 'integer', 'min:0'],
                 'documentoSector' => ['required', 'integer', 'in:' . implode(',', self::INDIVIDUAL_DOCUMENT_SECTORS)],
+                'canalEmision' => ['nullable', 'string', 'in:factura_electronica,qr,oficial'],
+                'canalOperativo' => ['nullable', 'string', 'in:normal,contrato'],
+                'contabilizaEnCaja' => ['nullable', 'boolean'],
+                'esCuentaPorCobrar' => ['nullable', 'boolean'],
+                'empresaContrato' => ['nullable', 'array'],
+                'empresaContrato.id' => ['nullable', 'integer', 'min:1'],
+                'empresaContrato.codigoCliente' => ['nullable', 'string', 'max:60'],
+                'empresaContrato.nombre' => ['nullable', 'string', 'max:255'],
+                'empresaContrato.sigla' => ['nullable', 'string', 'max:60'],
             ],
             $this->invoiceRules('', 500, false, false)
         ));
