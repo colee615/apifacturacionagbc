@@ -2343,6 +2343,16 @@ class VentaController extends Controller
             $detalle = FinancialSale::reconciledDetails($venta);
             $exclusionReason = $isAnnulled ? 'ANULADA' : $this->serviceReportTotalExclusionReason($venta);
             $includedInSoldTotal = ! $isAnnulled && $exclusionReason === null;
+            $nit = trim((string) (
+                $venta['documentoIdentidad']
+                ?? $venta['numero_documento']
+                ?? data_get($venta, 'cliente.documentoIdentidad', '')
+            ));
+            $razonSocial = trim((string) (
+                $venta['razonSocial']
+                ?? $venta['razon_social']
+                ?? data_get($venta, 'cliente.razonSocial', '')
+            ));
             $saleMatched = false;
             $saleCountMatched = false;
             $saleIncluded = false;
@@ -2404,6 +2414,7 @@ class VentaController extends Controller
                         'totalMontoAnuladoAjusteCabeceraDetalle' => 0.0,
                         'ultimaFecha' => '',
                         'descripciones' => [],
+                        'nits' => [],
                         'rows' => [],
                         'auditoriaMediosPago' => [],
                         'dimensionesRegional' => [],
@@ -2423,6 +2434,10 @@ class VentaController extends Controller
                             $grouped[$groupKey]['cantidadVentasNoIncluidasEnTotalVendido']++;
                         }
                     }
+                }
+
+                if ($nit !== '') {
+                    $grouped[$groupKey]['nits'][$nit] = $nit;
                 }
 
                 if ($isAnnulled) {
@@ -2557,6 +2572,8 @@ class VentaController extends Controller
                     $row = [
                         'ventaId' => $venta['id'] ?? null,
                         'detalleId' => $item['id'] ?? ($item['detalle_id'] ?? null),
+                        'nit' => $nit !== '' ? $nit : null,
+                        'razonSocial' => $razonSocial !== '' ? $razonSocial : null,
                         'numeroFactura' => $venta['numeroFactura'] ?? null,
                         'descripcion' => $descripcion,
                         'codigoOrden' => $venta['codigoOrden'] ?? '',
@@ -2628,6 +2645,7 @@ class VentaController extends Controller
                     'ultimaFecha' => $group['ultimaFecha'],
                     'descripciones' => $descripciones,
                     'descripcionMuestra' => implode(' | ', array_slice($descripciones, 0, 3)),
+                    'nits' => array_values($group['nits']),
                     'porRegionales' => $this->finishServiceReportDimension($group['dimensionesRegional']),
                     'porPersonas' => $this->finishServiceReportDimension($group['dimensionesPersona']),
                     'auditoriaMediosPago' => collect($group['auditoriaMediosPago'] ?? [])->map(function (array $auditRow): array {
