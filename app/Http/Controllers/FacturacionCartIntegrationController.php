@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\FacturacionCartItemRequest;
 use App\Models\Notificacione;
 use App\Models\Venta;
 use Dompdf\Dompdf;
@@ -170,31 +171,9 @@ class FacturacionCartIntegrationController extends Controller
         return response()->json(['ok' => true, 'cart' => $this->cartById($cartId)]);
     }
 
-    public function upsertItem(Request $request): JsonResponse
+    public function upsertItem(FacturacionCartItemRequest $request): JsonResponse
     {
-        $v = $request->validate([
-            'origen_usuario_id' => 'required|string|max:60',
-            'origen_usuario_nombre' => 'nullable|string|max:255',
-            'origen_usuario_email' => 'nullable|string|max:255',
-            'origen_usuario_alias' => 'nullable|string|max:80',
-            'origen_usuario_carnet' => 'nullable|string|max:40',
-            'origen_sucursal_id' => 'nullable|string|max:60',
-            'origen_sucursal_codigo' => 'nullable|string|max:60',
-            'origen_sucursal_nombre' => 'nullable|string|max:255',
-            'origen_tipo' => 'required|string|max:120',
-            'origen_id' => 'required|integer|min:1',
-            'codigo' => 'required_if:origen_tipo,cliente_online|nullable|string|max:120',
-            'titulo' => 'required|string|max:255',
-            'nombre_servicio' => 'nullable|string|max:255',
-            'nombre_destinatario' => 'nullable|string|max:255',
-            'servicios_extra' => 'nullable|array',
-            'resumen_origen' => 'nullable|array',
-            'resumen_origen.qr_attempt_id' => 'required_if:origen_tipo,cliente_online|uuid',
-            'cantidad' => 'nullable|integer|min:1',
-            'monto_base' => 'nullable|numeric|min:0',
-            'monto_extras' => 'nullable|numeric|min:0',
-            'total_linea' => 'nullable|numeric|min:0',
-        ]);
+        $v = $request->validated();
 
         Log::info('facturacion_cart.upsert_item.request', [
             'origen_usuario_id' => (string) ($v['origen_usuario_id'] ?? ''),
@@ -1127,6 +1106,15 @@ class FacturacionCartIntegrationController extends Controller
             'codigo_orden_intento' => $codigoOrdenIntento,
         ]);
 
+        // Validate fiscal data before claiming the emission. A local payload
+        // error must not leave the cart locked in EMITIENDO when no request
+        // has been sent to the fiscal provider.
+        $payloadCart = clone $cart;
+        $payloadCart->codigo_orden = $codigoOrdenIntento;
+        $emissionPayload = $canalEmision === 'qr'
+            ? $this->qrCheckoutPayloadFromCart($payloadCart, $items)
+            : $this->payloadFromCart($payloadCart, $items);
+
         $claimState = strtoupper(trim((string) ($cart->estado_emision ?? '')));
         $claimed = DB::table('facturacion_carts')
             ->where('id', (int) $cart->id)
@@ -1155,7 +1143,7 @@ class FacturacionCartIntegrationController extends Controller
 
         $emitStartedAt = microtime(true);
         if ($canalEmision === 'qr') {
-            $qrPayload = $this->qrCheckoutPayloadFromCart($cart, $items);
+            $qrPayload = $emissionPayload;
             Log::debug('FacturacionCart emitir QR payload preparado', [
                 'user_id' => $userId,
                 'cart_id' => $cart->id ?? null,
@@ -1181,7 +1169,7 @@ class FacturacionCartIntegrationController extends Controller
             $emitReq->headers->set('Accept', 'application/json');
             $emitRes = app(QhantuyQrController::class)->checkout($emitReq);
         } else {
-            $facturaPayload = $this->payloadFromCart($cart, $items);
+            $facturaPayload = $emissionPayload;
             Log::debug('FacturacionCart emitir factura payload preparado', [
                 'user_id' => $userId,
                 'cart_id' => $cart->id ?? null,
