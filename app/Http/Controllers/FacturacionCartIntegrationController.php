@@ -250,6 +250,194 @@ class FacturacionCartIntegrationController extends Controller
         return response()->json(['ok' => true, 'cart' => $this->cartById($cartId)]);
     }
 
+    public function clienteOnline(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'origen_usuario_id' => 'required|string|max:60',
+            'qr_attempt_id' => 'nullable|uuid',
+            'origen_id' => 'nullable|integer|min:1',
+            'per_page' => 'nullable|integer|min:1|max:100',
+            'page' => 'nullable|integer|min:1',
+        ]);
+
+        $base = DB::table('facturacion_carts as c')
+            ->where('c.origen_usuario_id', (string) $v['origen_usuario_id'])
+            ->whereExists(function ($items): void {
+                $items->selectRaw('1')
+                    ->from('facturacion_cart_items as i')
+                    ->whereColumn('i.cart_id', 'c.id')
+                    ->where('i.origen_tipo', 'cliente_online');
+            });
+
+        if (!empty($v['qr_attempt_id'])) {
+            $itemCode = 'SOLQR-'.strtoupper(str_replace('-', '', strtolower((string) $v['qr_attempt_id'])));
+            $cartId = (clone $base)
+                ->whereExists(function ($items) use ($itemCode): void {
+                    $items->selectRaw('1')
+                        ->from('facturacion_cart_items as i')
+                        ->whereColumn('i.cart_id', 'c.id')
+                        ->where('i.origen_tipo', 'cliente_online')
+                        ->where('i.codigo', $itemCode);
+                })
+                ->orderByDesc('c.id')
+                ->value('c.id');
+
+            if (!$cartId && !empty($v['origen_id'])) {
+                $originId = (int) $v['origen_id'];
+                $cartId = (clone $base)
+                    ->whereExists(function ($items) use ($originId): void {
+                        $items->selectRaw('1')
+                            ->from('facturacion_cart_items as i')
+                            ->whereColumn('i.cart_id', 'c.id')
+                            ->where('i.origen_tipo', 'cliente_online')
+                            ->where('i.origen_id', $originId);
+                    })
+                    ->orderByDesc('c.id')
+                    ->value('c.id');
+            }
+
+            $cart = $cartId ? $this->cartById((int) $cartId) : null;
+            if (is_array($cart)) {
+                $storedAttemptId = strtolower(trim((string) data_get(
+                    collect((array) ($cart['items'] ?? []))
+                        ->first(fn (array $item): bool => strtolower((string) ($item['origen_tipo'] ?? '')) === 'cliente_online'),
+                    'resumen_origen.qr_attempt_id',
+                    ''
+                )));
+                $requestedAttemptId = strtolower((string) $v['qr_attempt_id']);
+                if ($storedAttemptId !== '' && $storedAttemptId !== $requestedAttemptId) {
+                    $cart = null;
+                }
+            }
+
+            return response()->json([
+                'ok' => true,
+                'cart' => $cart,
+            ]);
+        }
+
+        $perPage = (int) ($v['per_page'] ?? 20);
+        $page = (int) ($v['page'] ?? 1);
+        $total = (clone $base)->count();
+        $cartIds = $base
+            ->orderByDesc('c.updated_at')
+            ->orderByDesc('c.id')
+            ->forPage($page, $perPage)
+            ->pluck('c.id');
+
+        return response()->json([
+            'ok' => true,
+            'data' => [
+                'carts' => $cartIds
+                    ->map(function ($id): ?array {
+                        $cart = $this->cartById((int) $id);
+                        if (!$cart) {
+                            return null;
+                        }
+
+                        // The list only needs lookup/status metadata. Keep QR images and full
+                        // shipment data for the exact lookup endpoint used when opening one.
+                        $cart['respuesta_emision'] = [];
+                        $cart['items'] = array_map(function (array $item): array {
+                            $summary = (array) ($item['resumen_origen'] ?? []);
+                            $item['resumen_origen'] = array_intersect_key($summary, array_flip([
+                                'qr_attempt_id',
+                                'solicitud_cliente_id',
+                                'solicitud_codigo',
+                            ]));
+
+                            return $item;
+                        }, (array) ($cart['items'] ?? []));
+
+                        return $cart;
+                    })
+                    ->filter()
+                    ->values()
+                    ->all(),
+                'pagination' => [
+                    'total' => $total,
+                    'per_page' => $perPage,
+                    'current_page' => $page,
+                    'last_page' => (int) ceil(max($total, 1) / $perPage),
+                ],
+            ],
+        ]);
+    }
+
+    public function vincularSolicitudClienteOnline(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'origen_usuario_id' => 'required|string|max:60',
+            'qr_attempt_id' => 'required|uuid',
+            'origen_id' => 'required|integer|min:1',
+            'solicitud_cliente_id' => 'required|integer|min:1',
+            'codigo_solicitud' => 'required|string|max:120',
+        ]);
+        $attemptId = strtolower((string) $v['qr_attempt_id']);
+        $itemCode = 'SOLQR-'.strtoupper(str_replace('-', '', $attemptId));
+        $originId = (int) $v['origen_id'];
+
+        $result = DB::transaction(function () use ($v, $attemptId, $itemCode, $originId): array {
+            $itemQuery = DB::table('facturacion_cart_items as i')
+                ->join('facturacion_carts as c', 'c.id', '=', 'i.cart_id')
+                ->where('c.origen_usuario_id', (string) $v['origen_usuario_id'])
+                ->where('i.origen_tipo', 'cliente_online');
+            $item = (clone $itemQuery)
+                ->where('i.codigo', $itemCode)
+                ->lockForUpdate()
+                ->first(['i.id', 'i.cart_id', 'i.resumen_origen', 'c.estado_pago']);
+
+            if (!$item) {
+                $item = (clone $itemQuery)
+                    ->where('i.origen_id', $originId)
+                    ->lockForUpdate()
+                    ->first(['i.id', 'i.cart_id', 'i.resumen_origen', 'c.estado_pago']);
+            }
+
+            if (!$item) {
+                return ['missing' => true];
+            }
+            if (strtolower(trim((string) ($item->estado_pago ?? 'pendiente'))) !== 'pagado') {
+                return ['unpaid' => true];
+            }
+
+            $summary = $this->decode((string) ($item->resumen_origen ?? ''));
+            $storedAttemptId = strtolower(trim((string) ($summary['qr_attempt_id'] ?? '')));
+            if ($storedAttemptId !== '' && $storedAttemptId !== $attemptId) {
+                return ['conflict' => true];
+            }
+            $linkedRequestId = (int) ($summary['solicitud_cliente_id'] ?? 0);
+            if ($linkedRequestId > 0 && $linkedRequestId !== (int) $v['solicitud_cliente_id']) {
+                return ['conflict' => true];
+            }
+
+            $summary['qr_attempt_id'] = $attemptId;
+            $summary['solicitud_cliente_id'] = (int) $v['solicitud_cliente_id'];
+            $summary['solicitud_codigo'] = trim((string) $v['codigo_solicitud']);
+            DB::table('facturacion_cart_items')->where('id', (int) $item->id)->update([
+                'resumen_origen' => json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'updated_at' => now(),
+            ]);
+
+            return ['cart_id' => (int) $item->cart_id];
+        });
+
+        if (!empty($result['missing'])) {
+            return response()->json(['ok' => false, 'message' => 'No se encontro el intento QR solicitado.'], 404);
+        }
+        if (!empty($result['conflict'])) {
+            return response()->json(['ok' => false, 'message' => 'Este pago QR ya esta vinculado a otro envio.'], 409);
+        }
+        if (!empty($result['unpaid'])) {
+            return response()->json(['ok' => false, 'message' => 'El pago QR aun no figura como pagado.'], 409);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'cart' => $this->cartById((int) $result['cart_id']),
+        ]);
+    }
+
     private function findExistingCartItemForUpsert(int $cartId, array $payload): ?object
     {
         $query = DB::table('facturacion_cart_items')
