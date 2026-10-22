@@ -6825,6 +6825,9 @@ class VentaController extends Controller
     private function buildAnulacionGuardStatus($user): array
     {
         $isSupervisor = $this->isAnulacionSupervisor($user);
+        $hasAnnulPermission = $user && method_exists($user, 'hasPermission')
+            ? $user->hasPermission('ventas.void')
+            : false;
         $global = $this->globalAnulacionToggleData();
         $globalEnabled = is_array($global) && ($global['enabled'] ?? false) === true;
 
@@ -6837,11 +6840,14 @@ class VentaController extends Controller
 
         return [
             'requires_authorization' => true,
-            'allowed' => $isSupervisor || $globalEnabled || $unlockEnabled,
+            'allowed' => $isSupervisor || $hasAnnulPermission || $globalEnabled || $unlockEnabled,
             'allowed_by' => $isSupervisor
                 ? 'ROL_SUPERIOR'
-                : ($globalEnabled ? 'GLOBAL_SWITCH' : ($unlockEnabled ? 'SUPERVISOR_UNLOCK' : 'NONE')),
+                : ($hasAnnulPermission
+                    ? 'PERMISO_VENTAS_VOID'
+                    : ($globalEnabled ? 'GLOBAL_SWITCH' : ($unlockEnabled ? 'SUPERVISOR_UNLOCK' : 'NONE'))),
             'is_supervisor' => $isSupervisor,
+            'has_annul_permission' => $hasAnnulPermission,
             'global_enabled' => $globalEnabled,
             'global' => $globalEnabled ? $global : null,
             'user_unlock_enabled' => $unlockEnabled,

@@ -43,7 +43,7 @@ Route::middleware(['jwt.auth'])->group(function () {
    Route::post('/ventas/anulacion/autorizar', 'VentaController@autorizarAnulacion')->middleware('permission:ventas.read');
    Route::delete('/ventas/anulacion/autorizar', 'VentaController@revocarAutorizacionAnulacion')->middleware('permission:ventas.read');
    Route::post('/ventas/anulacion/guard/toggle', 'VentaController@toggleAnulacionGuard')->middleware('permission:rbac.manage');
-   Route::patch('/ventas/anular/{cuf}', 'VentaController@anularFactura')->middleware('permission:ventas.read');
+   Route::patch('/ventas/anular/{cuf}', 'VentaController@anularFactura')->middleware('permission:ventas.read,ventas.void');
    Route::post('/ventas/rechazadas/descartar', [FacturacionCartIntegrationController::class, 'discardRejected'])->middleware('permission:ventas.read');
    Route::get('/ventas/{venta}', 'VentaController@show')->middleware('permission:ventas.read');
 
