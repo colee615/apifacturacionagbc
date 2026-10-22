@@ -41,6 +41,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/cart/ver-qr', [FacturacionCartIntegrationController::class, 'verQr']);
     Route::post('/cart/descartar-rechazada', [FacturacionCartIntegrationController::class, 'discardRejected']);
     Route::get('/cart/ventas', [FacturacionCartIntegrationController::class, 'ventas']);
+    Route::post('/cart/cliente-online/pendientes', [FacturacionCartIntegrationController::class, 'listarPendientesClienteOnline']);
     Route::post('/cart/cliente-online', [FacturacionCartIntegrationController::class, 'clienteOnline']);
     Route::post('/cart/cliente-online/vincular', [FacturacionCartIntegrationController::class, 'vincularSolicitudClienteOnline']);
     Route::get('/cart/ventas/pdf', [FacturacionCartIntegrationController::class, 'ventasPdf']);

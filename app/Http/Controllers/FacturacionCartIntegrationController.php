@@ -183,12 +183,13 @@ class FacturacionCartIntegrationController extends Controller
             'origen_sucursal_nombre' => 'nullable|string|max:255',
             'origen_tipo' => 'required|string|max:120',
             'origen_id' => 'required|integer|min:1',
-            'codigo' => 'nullable|string|max:120',
+            'codigo' => 'required_if:origen_tipo,cliente_online|nullable|string|max:120',
             'titulo' => 'required|string|max:255',
             'nombre_servicio' => 'nullable|string|max:255',
             'nombre_destinatario' => 'nullable|string|max:255',
             'servicios_extra' => 'nullable|array',
             'resumen_origen' => 'nullable|array',
+            'resumen_origen.qr_attempt_id' => 'required_if:origen_tipo,cliente_online|uuid',
             'cantidad' => 'nullable|integer|min:1',
             'monto_base' => 'nullable|numeric|min:0',
             'monto_extras' => 'nullable|numeric|min:0',
@@ -206,13 +207,16 @@ class FacturacionCartIntegrationController extends Controller
             'resumen' => $this->summarizeResumenForLog((array) ($v['resumen_origen'] ?? [])),
         ]);
 
-        $cartId = $this->ensureDraft((string) $v['origen_usuario_id'], array_merge([
+        $cartUpdates = array_merge([
             'origen_usuario_nombre' => $this->nullBlank($v['origen_usuario_nombre'] ?? null),
             'origen_usuario_email' => $this->nullBlank($v['origen_usuario_email'] ?? null),
             'origen_sucursal_id' => $this->nullBlank($v['origen_sucursal_id'] ?? null),
             'origen_sucursal_codigo' => $this->nullBlank($v['origen_sucursal_codigo'] ?? null),
             'origen_sucursal_nombre' => $this->nullBlank($v['origen_sucursal_nombre'] ?? null),
-        ], $this->identityColumnsForCart($v)));
+        ], $this->identityColumnsForCart($v));
+        $cartId = strtolower(trim((string) $v['origen_tipo'])) === 'cliente_online'
+            ? $this->ensureClienteOnlineAttemptDraft((string) $v['origen_usuario_id'], $v, $cartUpdates)
+            : $this->ensureDraft((string) $v['origen_usuario_id'], $cartUpdates);
 
         $existing = $this->findExistingCartItemForUpsert($cartId, $v);
 
@@ -362,6 +366,126 @@ class FacturacionCartIntegrationController extends Controller
                 ],
             ],
         ]);
+    }
+
+    /**
+     * Minimal cross-customer queue used by Bolipost's scheduled payment
+     * reconciliation. It exposes only non-paid QR metadata, never billing or
+     * shipment personal data. The integration token protects this endpoint.
+     */
+    public function listarPendientesClienteOnline(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'per_page' => 'nullable|integer|min:1|max:100',
+            'after_id' => 'nullable|integer|min:0',
+        ]);
+
+        $perPage = (int) ($v['per_page'] ?? 100);
+        $afterId = (int) ($v['after_id'] ?? 0);
+        $cutoff = now()->subHours(48);
+
+        $base = DB::table('facturacion_carts as c')
+            ->where('c.canal_emision', 'qr')
+            ->where('c.metodo_pago', 'qr')
+            ->whereRaw("lower(coalesce(c.estado_pago, 'pendiente')) in ('pendiente', 'cancelado', 'fallido', 'failed', 'expired', 'rejected')")
+            ->where(function ($query): void {
+                $query->whereNotNull('c.qr_transaction_id')
+                    ->orWhereRaw("lower(coalesce(c.estado, '')) = 'pendiente_pago'");
+            })
+            ->whereExists(function ($items): void {
+                $items->selectRaw('1')
+                    ->from('facturacion_cart_items as i')
+                    ->whereColumn('i.cart_id', 'c.id')
+                    ->where('i.origen_tipo', 'cliente_online');
+            })
+            ->where(function ($query) use ($cutoff): void {
+                $query->where(function ($recent) use ($cutoff): void {
+                    $recent->where('c.created_at', '>=', $cutoff)
+                        ->whereRaw("lower(coalesce(c.estado_pago, 'pendiente')) = 'pendiente'");
+                })->orWhereExists(function ($items): void {
+                    // Retain older non-paid carts only while they still point
+                    // to a local request that needs the 48-hour decision.
+                    $items
+                        ->selectRaw('1')
+                        ->from('facturacion_cart_items as i')
+                        ->whereColumn('i.cart_id', 'c.id')
+                        ->where('i.origen_tipo', 'cliente_online');
+                    $this->whereClienteOnlineSolicitudLinked($items);
+                });
+            })
+            ->where('c.id', '>', $afterId);
+
+        $cartIds = (clone $base)
+            ->orderBy('c.id')
+            ->limit($perPage)
+            ->pluck('c.id');
+
+        $carts = $cartIds->map(function ($id): ?array {
+            $cart = DB::table('facturacion_carts')
+                ->where('id', (int) $id)
+                ->first([
+                    'id', 'origen_usuario_id', 'estado', 'metodo_pago', 'estado_pago',
+                    'qr_transaction_id', 'created_at', 'updated_at',
+                ]);
+            if (!$cart) {
+                return null;
+            }
+
+            $item = DB::table('facturacion_cart_items')
+                ->where('cart_id', (int) $id)
+                ->where('origen_tipo', 'cliente_online')
+                ->orderBy('id')
+                ->first(['origen_tipo', 'origen_id', 'codigo', 'resumen_origen']);
+            if (!$item) {
+                return null;
+            }
+
+            $summary = $this->decode((string) ($item->resumen_origen ?? ''));
+
+            return [
+                'id' => (int) $cart->id,
+                'origen_usuario_id' => (string) $cart->origen_usuario_id,
+                'estado' => (string) $cart->estado,
+                'metodo_pago' => (string) $cart->metodo_pago,
+                'estado_pago' => (string) $cart->estado_pago,
+                'qr_transaction_id' => $cart->qr_transaction_id,
+                'created_at' => $cart->created_at,
+                'updated_at' => $cart->updated_at,
+                'items' => [[
+                    'origen_tipo' => (string) $item->origen_tipo,
+                    'origen_id' => (int) $item->origen_id,
+                    'codigo' => (string) ($item->codigo ?? ''),
+                    'resumen_origen' => array_intersect_key((array) $summary, array_flip([
+                        'qr_attempt_id',
+                        'solicitud_cliente_id',
+                        'solicitud_codigo',
+                    ])),
+                ]],
+            ];
+        })->filter()->values()->all();
+
+        return response()->json([
+            'ok' => true,
+            'data' => [
+                'carts' => $carts,
+                'pagination' => [
+                    'per_page' => $perPage,
+                    'next_after_id' => $cartIds->isNotEmpty() ? (int) $cartIds->last() : $afterId,
+                ],
+            ],
+        ]);
+    }
+
+    private function whereClienteOnlineSolicitudLinked($query): void
+    {
+        $driver = DB::connection()->getDriverName();
+
+        match ($driver) {
+            'mysql', 'mariadb' => $query->whereRaw("NULLIF(JSON_UNQUOTE(JSON_EXTRACT(i.resumen_origen, '$.solicitud_cliente_id')), 'null') IS NOT NULL"),
+            'pgsql' => $query->whereRaw("(i.resumen_origen::jsonb ->> 'solicitud_cliente_id') IS NOT NULL"),
+            'sqlite' => $query->whereRaw("json_extract(i.resumen_origen, '$.solicitud_cliente_id') IS NOT NULL"),
+            default => $query->where('i.resumen_origen', 'like', '%"solicitud_cliente_id"%'),
+        };
     }
 
     public function vincularSolicitudClienteOnline(Request $request): JsonResponse
@@ -2852,6 +2976,56 @@ class FacturacionCartIntegrationController extends Controller
             return (int) $draft->id;
         }
         return (int) DB::table('facturacion_carts')->insertGetId(array_merge(['origen_usuario_id' => $userId, 'estado' => 'borrador', 'modalidad_facturacion' => 'con_datos', 'canal_emision' => 'factura_electronica', 'canal_operativo' => 'normal', 'contabiliza_en_caja' => true, 'es_cuenta_por_cobrar' => false, 'metodo_pago' => 'efectivo', 'estado_pago' => 'pendiente', 'cantidad_items' => 0, 'subtotal' => 0, 'total_extras' => 0, 'total' => 0, 'abierto_en' => now(), 'created_at' => now(), 'updated_at' => now()], $updates));
+    }
+
+    private function ensureClienteOnlineAttemptDraft(string $userId, array $payload, array $updates): int
+    {
+        $attemptId = strtolower(trim((string) data_get($payload, 'resumen_origen.qr_attempt_id')));
+        $code = trim((string) ($payload['codigo'] ?? ''));
+        $existing = DB::table('facturacion_cart_items as i')
+            ->join('facturacion_carts as c', 'c.id', '=', 'i.cart_id')
+            ->where('c.origen_usuario_id', $userId)
+            ->where('i.origen_tipo', 'cliente_online')
+            ->where('i.codigo', $code)
+            ->orderByDesc('c.id')
+            ->first(['c.id', 'c.estado', 'i.resumen_origen']);
+
+        if ($existing) {
+            $storedAttemptId = strtolower(trim((string) data_get(
+                $this->decode((string) ($existing->resumen_origen ?? '')),
+                'qr_attempt_id',
+                ''
+            )));
+            if ($storedAttemptId !== $attemptId) {
+                abort(409, 'El codigo del intento QR ya esta asociado a otros datos. Inicia una nueva solicitud.');
+            }
+            if (strtolower(trim((string) $existing->estado)) !== 'borrador') {
+                abort(409, 'Este intento QR ya fue emitido. Consulta su estado en Mis solicitudes.');
+            }
+
+            return (int) $existing->id;
+        }
+
+        // Cada envío online emite desde un carrito dedicado. El cliente contable puede ser
+        // el mismo, pero el QR nunca debe sumar líneas de otro intento o un borrador viejo.
+        return (int) DB::table('facturacion_carts')->insertGetId(array_merge([
+            'origen_usuario_id' => $userId,
+            'estado' => 'borrador',
+            'modalidad_facturacion' => 'con_datos',
+            'canal_emision' => 'factura_electronica',
+            'canal_operativo' => 'normal',
+            'contabiliza_en_caja' => true,
+            'es_cuenta_por_cobrar' => false,
+            'metodo_pago' => 'efectivo',
+            'estado_pago' => 'pendiente',
+            'cantidad_items' => 0,
+            'subtotal' => 0,
+            'total_extras' => 0,
+            'total' => 0,
+            'abierto_en' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], $updates));
     }
 
     private function recalc(int $cartId): void
