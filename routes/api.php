@@ -44,6 +44,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/cart/cliente-online/pendientes', [FacturacionCartIntegrationController::class, 'listarPendientesClienteOnline']);
     Route::post('/cart/cliente-online', [FacturacionCartIntegrationController::class, 'clienteOnline']);
     Route::post('/cart/cliente-online/vincular', [FacturacionCartIntegrationController::class, 'vincularSolicitudClienteOnline']);
+    Route::post('/cart/cliente-online/incidencia', [FacturacionCartIntegrationController::class, 'reportarIncidenciaClienteOnline']);
     Route::get('/cart/ventas/pdf', [FacturacionCartIntegrationController::class, 'ventasPdf']);
     Route::get('/cart/ventas/{cartId}', [FacturacionCartIntegrationController::class, 'show']);
     Route::get('/caja/estado', [CajaDiariaController::class, 'estado']);

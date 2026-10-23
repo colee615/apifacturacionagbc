@@ -4342,7 +4342,8 @@ class VentaController extends Controller
                         $cancelled->whereRaw("lower(coalesce(estado_pago, 'pendiente')) in ('cancelado', 'fallido')");
                     })->orWhere(function ($pending) {
                         $pending->whereRaw("lower(coalesce(estado_pago, 'pendiente')) not in ('pagado', 'cancelado', 'fallido')");
-                    });
+                    })->orWhereRaw("upper(coalesce(mensaje_emision, '')) like '%QR_MISSING_SHIPMENT_DATA%'")
+                      ->orWhereRaw("upper(coalesce(mensaje_emision, '')) like '%QR_AMOUNT_MISMATCH%'");
                 })
                 ->latest('created_at')
                 ->get([
@@ -4354,6 +4355,7 @@ class VentaController extends Controller
                     'created_at',
                     'estado_pago',
                     'estado_emision',
+                    'mensaje_emision',
                     'incidencia_revisada_at',
                     'incidencia_revisada_por',
                     'incidencia_revision_nota',
@@ -4364,11 +4366,16 @@ class VentaController extends Controller
                 ->map(function ($cart) {
                     $estadoPago = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
                     $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? 'NO_APLICA')));
-                    $type = 'qr_pendiente';
+                    $mensajeEmision = strtoupper((string) ($cart->mensaje_emision ?? ''));
+                    $type = str_contains($mensajeEmision, 'QR_AMOUNT_MISMATCH')
+                        ? 'qr_monto_inconsistente'
+                        : (str_contains($mensajeEmision, 'QR_MISSING_SHIPMENT_DATA')
+                            ? 'qr_pago_sin_datos_envio'
+                            : 'qr_pendiente');
 
-                    if ($estadoPago === 'pagado' && $estadoEmision !== 'FACTURADA') {
+                    if ($type === 'qr_pendiente' && $estadoPago === 'pagado' && $estadoEmision !== 'FACTURADA') {
                         $type = 'qr_pagado_sin_factura';
-                    } elseif (in_array($estadoPago, ['cancelado', 'fallido'], true)) {
+                    } elseif ($type === 'qr_pendiente' && in_array($estadoPago, ['cancelado', 'fallido'], true)) {
                         $type = 'qr_anulado';
                     }
 
@@ -4377,6 +4384,8 @@ class VentaController extends Controller
                         'type' => $type,
                         'title' => match ($type) {
                             'qr_pagado_sin_factura' => 'QR pagado sin factura',
+                            'qr_monto_inconsistente' => 'QR con monto discrepante',
+                            'qr_pago_sin_datos_envio' => 'QR pagado sin datos de envío',
                             'qr_anulado' => 'QR anulado',
                             default => 'QR pendiente',
                         },
@@ -4391,6 +4400,8 @@ class VentaController extends Controller
                         'reviewedBy' => $cart->incidencia_revisada_por,
                         'reviewNote' => $cart->incidencia_revision_nota,
                         'message' => match ($type) {
+                            'qr_monto_inconsistente' => trim((string) ($cart->mensaje_emision ?? 'El monto informado por Qhantuy difiere del solicitado; requiere revisión manual.')),
+                            'qr_pago_sin_datos_envio' => trim((string) ($cart->mensaje_emision ?? 'El pago fue confirmado, pero faltan datos para registrar el envío.')),
                             'qr_pagado_sin_factura' => 'El cobro QR fue confirmado, pero la factura aÃƒÆ’Ã‚Âºn no fue emitida.',
                             'qr_anulado' => 'El intento de cobro QR fue cancelado o fallÃƒÆ’Ã‚Â³.',
                             default => 'El cobro QR sigue pendiente de pago.',

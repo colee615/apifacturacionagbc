@@ -198,6 +198,20 @@ class FacturacionCartIntegrationController extends Controller
             : $this->ensureDraft((string) $v['origen_usuario_id'], $cartUpdates);
 
         $existing = $this->findExistingCartItemForUpsert($cartId, $v);
+        $incomingCode = trim((string) ($v['codigo'] ?? ''));
+        $incomingType = (string) ($v['origen_tipo'] ?? '');
+        if (!$existing && $incomingCode !== '' && !$this->isConceptoFacturacionOrigin($incomingType)) {
+            $duplicateCode = DB::table('facturacion_cart_items')
+                ->where('cart_id', $cartId)
+                ->where('codigo', $incomingCode)
+                ->exists();
+            if ($duplicateCode) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'Ya existe un item con ese codigo en el carrito.',
+                ], 422);
+            }
+        }
 
         $data = [
             'cart_id' => $cartId,
@@ -348,9 +362,9 @@ class FacturacionCartIntegrationController extends Controller
     }
 
     /**
-     * Minimal cross-customer queue used by Bolipost's scheduled payment
-     * reconciliation. It exposes only non-paid QR metadata, never billing or
-     * shipment personal data. The integration token protects this endpoint.
+     * Minimal cross-customer queue used by Bolipost's scheduled payment and
+     * paid-order reconciliation. It exposes QR identifiers only, never billing
+     * or shipment personal data. The integration token protects this endpoint.
      */
     public function listarPendientesClienteOnline(Request $request): JsonResponse
     {
@@ -362,11 +376,30 @@ class FacturacionCartIntegrationController extends Controller
         $perPage = (int) ($v['per_page'] ?? 100);
         $afterId = (int) ($v['after_id'] ?? 0);
         $cutoff = now()->subHours(48);
+        $stalePendingCutoff = now()->subHour();
 
         $base = DB::table('facturacion_carts as c')
             ->where('c.canal_emision', 'qr')
             ->where('c.metodo_pago', 'qr')
-            ->whereRaw("lower(coalesce(c.estado_pago, 'pendiente')) in ('pendiente', 'cancelado', 'fallido', 'failed', 'expired', 'rejected')")
+            ->whereRaw("upper(coalesce(c.mensaje_emision, '')) not like '%QR_AMOUNT_MISMATCH%'")
+            ->whereRaw("upper(coalesce(c.mensaje_emision, '')) not like '%QR_MISSING_SHIPMENT_DATA%'")
+            ->where(function ($paymentState): void {
+                $paymentState
+                    ->whereRaw("lower(coalesce(c.estado_pago, 'pendiente')) in ('pendiente', 'cancelado', 'fallido', 'failed', 'expired', 'rejected')")
+                    ->orWhere(function ($paid): void {
+                        $paid->whereRaw("lower(coalesce(c.estado_pago, '')) in ('pagado', 'paid', 'success', 'completed', 'approved', 'confirmed')")
+                            ->where(function ($needsWork): void {
+                                $needsWork->whereRaw("upper(coalesce(c.estado_emision, '')) not in ('FACTURADA', 'PROCESADA')")
+                                    ->orWhereNotExists(function ($items): void {
+                                        $items->selectRaw('1')
+                                            ->from('facturacion_cart_items as i')
+                                            ->whereColumn('i.cart_id', 'c.id')
+                                            ->where('i.origen_tipo', 'cliente_online');
+                                        $this->whereClienteOnlineSolicitudLinked($items);
+                                    });
+                            });
+                    });
+            })
             ->where(function ($query): void {
                 $query->whereNotNull('c.qr_transaction_id')
                     ->orWhereRaw("lower(coalesce(c.estado, '')) = 'pendiente_pago'");
@@ -377,11 +410,18 @@ class FacturacionCartIntegrationController extends Controller
                     ->whereColumn('i.cart_id', 'c.id')
                     ->where('i.origen_tipo', 'cliente_online');
             })
-            ->where(function ($query) use ($cutoff): void {
+            ->where(function ($query) use ($cutoff, $stalePendingCutoff): void {
                 $query->where(function ($recent) use ($cutoff): void {
                     $recent->where('c.created_at', '>=', $cutoff)
                         ->whereRaw("lower(coalesce(c.estado_pago, 'pendiente')) = 'pendiente'");
-                })->orWhereExists(function ($items): void {
+                })->orWhereRaw("lower(coalesce(c.estado_pago, '')) in ('pagado', 'paid', 'success', 'completed', 'approved', 'confirmed')")
+                ->orWhere(function ($stalePending) use ($cutoff, $stalePendingCutoff): void {
+                    $stalePending
+                        ->where('c.created_at', '<', $cutoff)
+                        ->where('c.updated_at', '<=', $stalePendingCutoff)
+                        ->whereRaw("lower(coalesce(c.estado_pago, 'pendiente')) = 'pendiente'");
+                })
+                ->orWhereExists(function ($items): void {
                     // Retain older non-paid carts only while they still point
                     // to a local request that needs the 48-hour decision.
                     $items
@@ -538,6 +578,89 @@ class FacturacionCartIntegrationController extends Controller
         return response()->json([
             'ok' => true,
             'cart' => $this->cartById((int) $result['cart_id']),
+        ]);
+    }
+
+    /**
+     * Persist a paid online QR that cannot be converted into a shipment because
+     * its original quote metadata is incomplete. Existing cart columns are
+     * used so this remains compatible with installations without migrations.
+     */
+    public function reportarIncidenciaClienteOnline(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'origen_usuario_id' => 'required|string|max:60',
+            'cart_id' => 'required|integer|min:1',
+            'qr_attempt_id' => 'required|uuid',
+            'missing_fields' => 'required|array|min:1|max:20',
+            'missing_fields.*' => 'required|string|max:80',
+        ]);
+        $attemptId = strtolower((string) $v['qr_attempt_id']);
+        $itemCode = 'SOLQR-'.strtoupper(str_replace('-', '', $attemptId));
+
+        $result = DB::transaction(function () use ($v, $attemptId, $itemCode): array {
+            $cart = DB::table('facturacion_carts')
+                ->where('id', (int) $v['cart_id'])
+                ->where('origen_usuario_id', (string) $v['origen_usuario_id'])
+                ->lockForUpdate()
+                ->first(['id', 'estado_pago', 'mensaje_emision']);
+            if (!$cart) {
+                return ['missing' => true];
+            }
+            if (!in_array(strtolower(trim((string) $cart->estado_pago)), ['pagado', 'paid', 'success', 'completed', 'approved', 'confirmed'], true)) {
+                return ['unpaid' => true];
+            }
+
+            $item = DB::table('facturacion_cart_items')
+                ->where('cart_id', (int) $cart->id)
+                ->where('origen_tipo', 'cliente_online')
+                ->where(function ($query) use ($itemCode, $attemptId): void {
+                    $query->where('codigo', $itemCode)
+                        ->orWhere('resumen_origen', 'like', '%'.$attemptId.'%');
+                })
+                ->first(['id', 'resumen_origen']);
+            if (!$item) {
+                return ['missing' => true];
+            }
+
+            $summary = $this->decode((string) ($item->resumen_origen ?? ''));
+            if (strtolower(trim((string) ($summary['qr_attempt_id'] ?? ''))) !== $attemptId) {
+                return ['conflict' => true];
+            }
+
+            $missing = array_values(array_unique(array_map(
+                static fn ($field): string => preg_replace('/[^a-zA-Z0-9_.-]/', '', (string) $field),
+                (array) $v['missing_fields']
+            )));
+            $marker = '[QR_MISSING_SHIPMENT_DATA]';
+            $details = $marker.' Intento '.$attemptId.'; faltan: '.implode(', ', $missing).'. Requiere revisión operativa.';
+            $currentMessage = trim((string) ($cart->mensaje_emision ?? ''));
+            $nextMessage = str_contains(strtoupper($currentMessage), $marker)
+                ? $currentMessage
+                : trim($details.($currentMessage !== '' ? ' | '.$currentMessage : ''));
+
+            DB::table('facturacion_carts')->where('id', (int) $cart->id)->update([
+                'mensaje_emision' => mb_substr($nextMessage, 0, 1000),
+                'updated_at' => now(),
+            ]);
+
+            return ['cart_id' => (int) $cart->id];
+        });
+
+        if (!empty($result['missing'])) {
+            return response()->json(['ok' => false, 'message' => 'No se encontro el pago QR asociado a este intento.'], 404);
+        }
+        if (!empty($result['conflict'])) {
+            return response()->json(['ok' => false, 'message' => 'El intento QR no coincide con los datos del carrito.'], 409);
+        }
+        if (!empty($result['unpaid'])) {
+            return response()->json(['ok' => false, 'message' => 'La incidencia solo puede registrarse después de confirmar el pago.'], 409);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'cart_id' => (int) $result['cart_id'],
+            'message' => 'Incidencia registrada para revisión operativa.',
         ]);
     }
 
@@ -1216,7 +1339,9 @@ class FacturacionCartIntegrationController extends Controller
             $qrTransactionId = trim((string) ($body['transaction_id'] ?? ''));
             $codigoSeguimientoEmitido = '';
             $body['estado'] = $this->mapQrPaymentStatusToEmissionState((string) ($body['payment_status'] ?? 'holding'));
-            $body['mensaje'] = (string) ($body['message'] ?? 'QR generado correctamente. Solo se confirmara el pago.');
+            $body['mensaje'] = ($body['code'] ?? null) === 'qr_amount_mismatch'
+                ? 'QR_AMOUNT_MISMATCH: '.(string) ($body['message'] ?? 'Diferencia de monto; requiere revisión manual.')
+                : (string) ($body['message'] ?? 'QR generado correctamente. Solo se confirmara el pago.');
             $qrPaymentState = $this->mapQrPaymentStatusToPaymentState((string) ($body['payment_status'] ?? 'holding'));
         }
         if ($codigoOrdenEmitido === '') {
@@ -1625,6 +1750,22 @@ class FacturacionCartIntegrationController extends Controller
         $body = json_decode($cRes->getContent(), true);
         if (!is_array($body)) $body = ['ok' => false, 'estado' => 'ERROR', 'mensaje' => 'Respuesta no valida'];
         $statusCode = $cRes->getStatusCode();
+        if ($shouldConsultQr && ($body['code'] ?? null) === 'qr_amount_mismatch') {
+            $body['mensaje'] = 'QR_AMOUNT_MISMATCH: '.(string) ($body['message'] ?? 'Diferencia de monto; requiere revisión manual.');
+            DB::table('facturacion_carts')->where('id', (int) $cart->id)->update([
+                'mensaje_emision' => $body['mensaje'],
+                'respuesta_emision' => json_encode($body, JSON_UNESCAPED_UNICODE),
+                'updated_at' => now(),
+            ]);
+            return response()->json([
+                'ok' => false,
+                'code' => 'qr_amount_mismatch',
+                'message' => (string) ($body['message'] ?? 'El QR tiene una diferencia de monto y requiere revisión manual.'),
+                'cart' => $this->cartById((int) $cart->id),
+                'respuesta' => $body,
+                'status_code' => 409,
+            ], 409);
+        }
         if ($statusCode >= 400 || strtoupper((string) ($body['estado'] ?? '')) === 'ERROR') {
             Log::warning('FacturacionCart consultar con respuesta no exitosa', [
                 'user_id' => $v['origen_usuario_id'],
@@ -2253,7 +2394,9 @@ class FacturacionCartIntegrationController extends Controller
                 $precio = $montoBase;
             }
             if ($precio <= 0) {
-                $precio = 1.00;
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'cart_id' => 'No se puede generar un QR porque uno de los artículos tiene un importe inválido.',
+                ]);
             }
 
             return [
@@ -2262,6 +2405,22 @@ class FacturacionCartIntegrationController extends Controller
                 'price' => $precio,
             ];
         })->values()->all();
+
+        $expectedAmount = round((float) ($cart->total ?? 0), 2);
+        $payloadAmount = round((float) collect($itemsPayload)->sum(
+            fn (array $item): float => (float) $item['quantity'] * (float) $item['price']
+        ), 2);
+        if ($expectedAmount <= 0 || abs($payloadAmount - $expectedAmount) >= 0.01) {
+            Log::warning('Se bloqueó la generación de QR por diferencia entre carrito y artículos.', [
+                'cart_id' => (int) ($cart->id ?? 0),
+                'cart_total' => $expectedAmount,
+                'payload_total' => $payloadAmount,
+            ]);
+
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'cart_id' => 'No se puede generar el QR: el total del carrito no coincide con sus artículos. Actualiza el carrito y vuelve a intentar.',
+            ]);
+        }
 
         $conceptCode = trim((string) data_get(collect($items)->first(), 'codigo', ''));
         if ($conceptCode === '') {

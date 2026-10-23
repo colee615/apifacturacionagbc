@@ -546,8 +546,11 @@ class QhantuyQrController extends Controller
                 ?? 'holding'
             );
             $payloadAmount = round((float) collect($payload['items'])->sum(fn ($i) => $i['quantity'] * $i['price']), 2);
-            $providerAmount = $this->parseCheckoutAmount(data_get($body, 'checkout_amount'));
-            $amount = $providerAmount !== null && $providerAmount > 0 ? $providerAmount : $payloadAmount;
+            $providerAmount = $this->parseCheckoutAmount(
+                data_get($body, 'checkout_amount')
+                ?? data_get($body, 'items.0.checkout_amount')
+            );
+            $amount = $providerAmount !== null ? $providerAmount : $payloadAmount;
             $currency = strtoupper((string) data_get($body, 'checkout_currency', $this->currencyCode()));
             $imageData = trim((string) (
                 data_get($body, 'image_data')
@@ -561,7 +564,9 @@ class QhantuyQrController extends Controller
                 ['internal_code' => $payload['internal_code']],
                 [
                     'transaction_id' => $transactionId !== null ? (int) $transactionId : null,
-                    'checkout_amount' => $amount,
+                    // Keep the amount SAFE asked Qhantuy to collect. The provider's
+                    // response is checked separately and must never replace this baseline.
+                    'checkout_amount' => $payloadAmount,
                     'checkout_currency' => $currency,
                     'customer_email' => $payload['customer_email'],
                     'customer_first_name' => $payload['customer_first_name'],
@@ -585,6 +590,52 @@ class QhantuyQrController extends Controller
                 'has_image_data' => $imageData !== '',
                 'elapsed_ms' => $elapsedMs,
             ]);
+
+            if ($providerAmount !== null && abs($providerAmount - $payloadAmount) >= 0.01) {
+                Log::critical('Qhantuy devolvió un monto QR distinto al solicitado.', [
+                    'internal_code' => $payload['internal_code'],
+                    'transaction_id' => $transactionId,
+                    'requested_amount' => $payloadAmount,
+                    'provider_amount' => $providerAmount,
+                ]);
+
+                $cancelled = false;
+                if ($transactionId !== null && (int) $transactionId > 0) {
+                    $cancelRequest = Request::create('/api/factura-venta/qr/cancel', 'POST', [
+                        'transaction_id' => (int) $transactionId,
+                        'internal_code' => $payload['internal_code'],
+                        'reason' => 'Monto del QR distinto al total de la venta.',
+                    ]);
+                    $cancelResponse = $this->cancelPayment($cancelRequest);
+                    $cancelBody = json_decode($cancelResponse->getContent(), true);
+                    $cancelled = $cancelResponse->isSuccessful()
+                        && (bool) data_get($cancelBody, 'ok', false);
+                }
+
+                if (!$cancelled) {
+                    DB::table('qhantuy_qr_payments')
+                        ->where('internal_code', $payload['internal_code'])
+                        ->update([
+                            'payment_status' => 'amount_mismatch',
+                            'last_message' => 'Monto QR distinto al total solicitado; cancelación no confirmada.',
+                            'updated_at' => now(),
+                        ]);
+                }
+
+                return response()->json([
+                    'ok' => false,
+                    'code' => 'qr_amount_mismatch',
+                    'message' => $cancelled
+                        ? 'Qhantuy devolvió un QR por un monto distinto. El QR fue cancelado; no se realizó ningún cobro. Intenta nuevamente.'
+                        : 'Qhantuy devolvió un QR por un monto distinto y no se pudo confirmar su cancelación. No pagues ese QR; contacta a soporte antes de reintentar.',
+                    'internal_code' => $payload['internal_code'],
+                    'transaction_id' => $transactionId !== null ? (int) $transactionId : null,
+                    'requested_amount' => $payloadAmount,
+                    'checkout_amount' => $providerAmount,
+                    'payment_status' => $cancelled ? 'cancelled' : $paymentStatus,
+                    'qr_cancel_confirmed' => $cancelled,
+                ], 409);
+            }
 
             return response()->json([
                 'ok' => true,
@@ -711,9 +762,22 @@ class QhantuyQrController extends Controller
             ]);
         }
 
+        if (strtolower(trim((string) ($row->payment_status ?? ''))) === 'amount_mismatch') {
+            Log::critical('Qhantuy callback rejected because payment is blocked for amount mismatch.', [
+                'internal_code' => $internalCode,
+                'transaction_id' => $validated['transaction_id'] ?? null,
+            ]);
+
+            return response()->json([
+                'ok' => false,
+                'code' => 'qr_amount_mismatch',
+                'message' => 'El pago está bloqueado por una diferencia de monto y requiere revisión manual.',
+            ], 409);
+        }
+
         $incomingAmount = round((float) $validated['checkout_amount'], 2);
         $storedAmount = round((float) ($row->checkout_amount ?? 0), 2);
-        if ($storedAmount > 0 && abs($incomingAmount - $storedAmount) > 0.00001) {
+        if ($storedAmount <= 0 || abs($incomingAmount - $storedAmount) > 0.00001) {
             Log::warning('Qhantuy callback rejected due to amount mismatch', [
                 'internal_code' => $internalCode,
                 'incoming_amount' => $incomingAmount,
@@ -741,6 +805,20 @@ class QhantuyQrController extends Controller
         }
 
         $status = $this->normalizeQrPaymentStatus((string) $validated['status']);
+        $currentStatus = $this->normalizeQrPaymentStatus((string) ($row->payment_status ?? 'holding'));
+        if ($currentStatus === 'success' && $status === 'cancelled') {
+            Log::warning('Qhantuy cancellation callback ignored because payment was already confirmed.', [
+                'internal_code' => $internalCode,
+                'transaction_id' => $incomingTxn,
+            ]);
+
+            return response()->json([
+                'ok' => true,
+                'payment_status' => 'success',
+                'message' => 'Se conservó el pago confirmado; se ignoró la cancelación tardía.',
+            ]);
+        }
+
         DB::table('qhantuy_qr_payments')
             ->where('id', $row->id)
             ->update([
@@ -780,8 +858,8 @@ class QhantuyQrController extends Controller
     public function checkPayments(Request $request)
     {
         $validated = $request->validate([
-            'payment_ids' => ['nullable', 'array', 'min:1'],
-            'payment_ids.*' => ['numeric'],
+            'payment_ids' => ['nullable', 'array', 'min:1', 'max:1'],
+            'payment_ids.*' => ['integer', 'min:1'],
             'internal_code' => ['nullable', 'string', 'max:120'],
         ]);
 
@@ -818,6 +896,18 @@ class QhantuyQrController extends Controller
             $row = DB::table('qhantuy_qr_payments')
                 ->where('transaction_id', (int) $paymentIds[0])
                 ->first();
+        }
+
+        if ($row && strtolower(trim((string) ($row->payment_status ?? ''))) === 'amount_mismatch') {
+            return response()->json([
+                'ok' => false,
+                'code' => 'qr_amount_mismatch',
+                'message' => 'El QR tiene una diferencia de monto y está bloqueado para cobro y facturación. Requiere revisión manual.',
+                'transaction_id' => (int) ($row->transaction_id ?? 0),
+                'internal_code' => (string) ($row->internal_code ?? ''),
+                'checkout_amount' => round((float) ($row->checkout_amount ?? 0), 2),
+                'payment_status' => 'amount_mismatch',
+            ], 409);
         }
 
         if ($paymentIds === []) {
@@ -876,6 +966,22 @@ class QhantuyQrController extends Controller
                 ?? data_get($body, 'id')
                 ?? $paymentIds[0]
             );
+            if (!in_array($transactionId, $paymentIds, true)) {
+                Log::critical('Qhantuy devolvió una transacción distinta a la consultada; no se actualizará ningún pago.', [
+                    'requested_payment_ids' => $paymentIds,
+                    'provider_transaction_id' => $transactionId,
+                    'internal_code' => $row->internal_code ?? ($validated['internal_code'] ?? null),
+                    'provider_status' => data_get($source, 'payment_status') ?? data_get($source, 'status'),
+                ]);
+
+                return response()->json([
+                    'ok' => false,
+                    'code' => 'qr_transaction_mismatch',
+                    'message' => 'Qhantuy respondió con una transacción distinta a la consultada. El estado no se actualizará automáticamente.',
+                    'transaction_id' => $transactionId,
+                    'payment_status' => 'unknown',
+                ], 502);
+            }
             $status = $this->normalizeQrPaymentStatus(
                 $source['payment_status']
                 ?? $source['payment_status ']
@@ -900,9 +1006,58 @@ class QhantuyQrController extends Controller
             ));
 
             $target = $row ?: DB::table('qhantuy_qr_payments')->where('transaction_id', $transactionId)->first();
+            if ($status === 'success' && $amountFromProvider === null) {
+                Log::critical('Qhantuy confirmó el pago sin devolver el importe; no se marcará como pagado.', [
+                    'internal_code' => $target->internal_code ?? ($validated['internal_code'] ?? null),
+                    'transaction_id' => $transactionId,
+                    'requested_amount' => round((float) ($target->checkout_amount ?? 0), 2),
+                    'provider_status' => $status,
+                ]);
+
+                return response()->json([
+                    'ok' => false,
+                    'code' => 'qr_amount_unverified',
+                    'message' => 'Qhantuy confirmó el pago, pero no informó el importe para validarlo. Se requiere revisión antes de facturar.',
+                    'transaction_id' => $transactionId,
+                    'internal_code' => $target->internal_code ?? ($validated['internal_code'] ?? null),
+                    'requested_amount' => round((float) ($target->checkout_amount ?? 0), 2),
+                    'checkout_amount' => null,
+                    'payment_status' => 'amount_unverified',
+                ], 409);
+            }
             $amount = $amountFromProvider !== null && $amountFromProvider > 0
                 ? $amountFromProvider
                 : round((float) ($target->checkout_amount ?? 0), 2);
+            $expectedAmount = round((float) ($target->checkout_amount ?? 0), 2);
+            if ($target && ($expectedAmount <= 0 || ($amountFromProvider !== null && abs($amountFromProvider - $expectedAmount) >= 0.01))) {
+                Log::critical('La consulta QR devolvió un monto distinto al solicitado; no se marcará el pago como confirmado.', [
+                    'internal_code' => $target->internal_code ?? null,
+                    'transaction_id' => $transactionId,
+                    'requested_amount' => $expectedAmount,
+                    'provider_amount' => $amountFromProvider,
+                    'provider_status' => $status,
+                ]);
+
+                DB::table('qhantuy_qr_payments')
+                    ->where('id', $target->id)
+                    ->update([
+                        'payment_status' => 'amount_mismatch',
+                        'raw_check_response' => json_encode($body, JSON_UNESCAPED_UNICODE),
+                        'last_message' => 'Qhantuy devolvió un importe distinto al solicitado; requiere revisión manual.',
+                        'updated_at' => now(),
+                    ]);
+
+                return response()->json([
+                    'ok' => false,
+                    'code' => 'qr_amount_mismatch',
+                    'message' => 'Qhantuy devolvió un importe distinto al de la venta. El pago no se conciliará automáticamente; requiere revisión.',
+                    'transaction_id' => $transactionId,
+                    'internal_code' => $target->internal_code ?? ($validated['internal_code'] ?? null),
+                    'requested_amount' => $expectedAmount,
+                    'checkout_amount' => $amountFromProvider,
+                    'payment_status' => 'amount_mismatch',
+                ], 409);
+            }
             if ($target) {
                 $resolvedImageData = trim((string) ($target->image_data ?? ''));
                 if ($resolvedImageData === '' && $qrUrl !== '') {
@@ -913,9 +1068,7 @@ class QhantuyQrController extends Controller
                     ->where('id', $target->id)
                     ->update([
                         'transaction_id' => $transactionId,
-                        'checkout_amount' => $amountFromProvider !== null && $amountFromProvider > 0
-                            ? $amountFromProvider
-                            : $target->checkout_amount,
+                        'checkout_amount' => $target->checkout_amount,
                         'checkout_currency' => $currency !== '' ? $currency : $target->checkout_currency,
                         'image_data' => $resolvedImageData !== '' ? $resolvedImageData : $target->image_data,
                         'payment_status' => $status,
@@ -1235,11 +1388,16 @@ class QhantuyQrController extends Controller
         $metodoPago = strtolower(trim((string) ($cart->metodo_pago ?? '')));
         $isQr = $canalEmision === 'qr' || $metodoPago === 'qr' || trim((string) ($cart->qr_transaction_id ?? '')) !== '';
         $isRejectedDiscarded = $estado === 'descartado' && $estadoEmision === 'RECHAZADA';
+        $isPaidShipmentIncident = $isQr
+            && in_array($estadoPago, ['pagado', 'paid', 'success', 'completed', 'approved', 'confirmed'], true)
+            && str_contains(strtoupper((string) ($cart->mensaje_emision ?? '')), 'QR_MISSING_SHIPMENT_DATA');
+        $isAmountMismatchIncident = $isQr
+            && str_contains(strtoupper((string) ($cart->mensaje_emision ?? '')), 'QR_AMOUNT_MISMATCH');
 
-        if (!(($isQr && in_array($estadoPago, ['cancelado', 'fallido'], true)) || $isRejectedDiscarded)) {
+        if (!(($isQr && in_array($estadoPago, ['cancelado', 'fallido'], true)) || $isRejectedDiscarded || $isPaidShipmentIncident || $isAmountMismatchIncident)) {
             return response()->json([
                 'ok' => false,
-                'message' => 'Solo se puede marcar como revisada una incidencia QR cancelada/fallida o una factura rechazada descartada.',
+                'message' => 'Solo se puede revisar una incidencia QR cancelada/fallida, un pago confirmado con datos de envío incompletos o una factura rechazada descartada.',
             ], 422);
         }
 
@@ -1268,7 +1426,9 @@ class QhantuyQrController extends Controller
             'ok' => true,
             'message' => $isRejectedDiscarded
                 ? 'La factura rechazada descartada fue marcada como revisada.'
-                : 'La incidencia QR fue marcada como revisada.',
+                : ($isPaidShipmentIncident
+                    ? 'La incidencia del pago confirmado fue marcada como revisada.'
+                    : 'La incidencia QR fue marcada como revisada.'),
             'cart' => DB::table('facturacion_carts')->where('id', (int) $cart->id)->first(),
         ]);
     }
