@@ -560,6 +560,34 @@ class QhantuyQrController extends Controller
                 ?? ''
             ));
 
+            // Qhantuy can return HTTP 200 when its bank provider failed. Such a
+            // response is not a usable checkout unless it has a transaction ID
+            // and a QR image; do not persist it as a pending/holding payment.
+            $providerRejected = data_get($body, 'process') === false;
+            if ($providerRejected || trim((string) $transactionId) === '' || $imageData === '') {
+                $providerMessage = trim((string) data_get($body, 'message', ''));
+                $message = $providerMessage !== ''
+                    ? $providerMessage
+                    : 'Qhantuy no devolvió un identificador de transacción y una imagen QR.';
+
+                Log::warning('Qhantuy respondió sin un checkout QR utilizable', [
+                    'internal_code' => $payload['internal_code'],
+                    'transaction_id' => $transactionId,
+                    'has_image_data' => $imageData !== '',
+                    'provider_process' => data_get($body, 'process'),
+                    'provider_message' => $message,
+                ]);
+
+                return response()->json([
+                    'ok' => false,
+                    'code' => 'qr_checkout_failed',
+                    'message' => $message,
+                    'provider_message' => $message,
+                    'internal_code' => $payload['internal_code'],
+                    'payment_status' => 'failed',
+                ], 502);
+            }
+
             DB::table('qhantuy_qr_payments')->updateOrInsert(
                 ['internal_code' => $payload['internal_code']],
                 [

@@ -95,6 +95,58 @@ class FacturaVentaApiController extends Controller
         }
     }
 
+    /**
+     * Cliente Online cobra el envío por QR antes de emitir. La venta pertenece a
+     * la sucursal regional para su contabilidad, pero no a una caja física de
+     * cajero que deba abrirse o cerrarse.
+     */
+    private function isPaidClienteOnlineQr(array $payload): bool
+    {
+        $usuarioId = trim((string) data_get($payload, 'origenUsuario.id', ''));
+        $origenTipo = strtolower(trim((string) data_get($payload, 'origenVenta.tipo', '')));
+        $origenId = trim((string) data_get($payload, 'origenVenta.id', ''));
+
+        if (
+            (int) ($payload['metodoPago'] ?? 0) !== 5
+            || $origenTipo !== 'facturacion_cart_remote'
+            || !preg_match('/^cliente_online_[1-9][0-9]*$/', $usuarioId)
+            || !preg_match('/^[1-9][0-9]*$/', $origenId)
+            || !Schema::hasTable('facturacion_carts')
+            || !Schema::hasTable('facturacion_cart_items')
+        ) {
+            return false;
+        }
+
+        $cart = DB::table('facturacion_carts')
+            ->where('id', (int) $origenId)
+            ->where('origen_usuario_id', $usuarioId)
+            ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
+            ->whereRaw("lower(coalesce(estado_pago, '')) = 'pagado'")
+            ->whereNotNull('qr_transaction_id')
+            ->where('qr_transaction_id', '<>', '')
+            ->first([
+                'id',
+                'origen_sucursal_codigo',
+                'origen_sucursal_id',
+                'total',
+            ]);
+
+        if (!$cart) {
+            return false;
+        }
+
+        $payloadTotal = round((float) ($payload['montoTotal'] ?? 0), 2);
+        $cartTotal = round((float) ($cart->total ?? 0), 2);
+        $sameBranch = (int) ($payload['codigoSucursal'] ?? -1) === (int) ($cart->origen_sucursal_codigo ?? -2)
+            && (int) ($payload['puntoVenta'] ?? -1) === (int) ($cart->origen_sucursal_id ?? -2);
+        $hasOnlineShipment = DB::table('facturacion_cart_items')
+            ->where('cart_id', (int) $cart->id)
+            ->where('origen_tipo', 'cliente_online')
+            ->exists();
+
+        return $sameBranch && $payloadTotal > 0 && $payloadTotal === $cartTotal && $hasOnlineShipment;
+    }
+
     private function addVentaToCaja(array $payload): void
     {
         $usuarioId = trim((string) data_get($payload, 'origenUsuario.id', ''));
@@ -1571,7 +1623,17 @@ class FacturaVentaApiController extends Controller
                 ]);
             }
             $this->assertFacturaVentaSector($validated);
-            $this->assertCajaAbierta($validated);
+            if ($this->isPaidClienteOnlineQr($validated)) {
+                Log::info('FacturaVentaApi emitir: validacion de caja omitida para QR Cliente Online pagado.', [
+                    'origen_venta_id' => data_get($validated, 'origenVenta.id'),
+                    'origen_usuario_id' => data_get($validated, 'origenUsuario.id'),
+                    'codigo_sucursal' => $validated['codigoSucursal'] ?? null,
+                    'punto_venta' => $validated['puntoVenta'] ?? null,
+                    'monto_total' => $validated['montoTotal'] ?? null,
+                ]);
+            } else {
+                $this->assertCajaAbierta($validated);
+            }
 
             $origenVentaId = trim((string) data_get($validated, 'origenVenta.id', ''));
             $origenVentaTipo = trim((string) data_get($validated, 'origenVenta.tipo', ''));

@@ -1343,6 +1343,19 @@ class FacturacionCartIntegrationController extends Controller
                 ? 'QR_AMOUNT_MISMATCH: '.(string) ($body['message'] ?? 'Diferencia de monto; requiere revisión manual.')
                 : (string) ($body['message'] ?? 'QR generado correctamente. Solo se confirmara el pago.');
             $qrPaymentState = $this->mapQrPaymentStatusToPaymentState((string) ($body['payment_status'] ?? 'holding'));
+            if (!$ok) {
+                $body['estado'] = 'ERROR';
+                if ((string) ($body['code'] ?? '') !== 'qr_amount_mismatch') {
+                    $providerCode = trim((string) ($body['code'] ?? ''));
+                    $body['provider_code'] = $providerCode !== '' ? $providerCode : null;
+                    $body['code'] = 'qr_checkout_failed';
+                    $providerMessage = trim((string) ($body['message'] ?? ''));
+                    $body['provider_message'] = $providerMessage !== '' ? $providerMessage : null;
+                    $body['mensaje'] = 'No se pudo generar o confirmar el QR en Qhantuy. La misma venta sigue guardada y la caja queda disponible. Reintenta el QR desde esta venta; no crees otra venta.';
+                    $body['message'] = $body['mensaje'];
+                }
+                $qrPaymentState = 'pendiente';
+            }
         }
         if ($codigoOrdenEmitido === '') {
             $ventaLocal = DB::table('ventas')
@@ -1398,7 +1411,9 @@ class FacturacionCartIntegrationController extends Controller
             && $canalEmision !== 'qr'
             && (!$ok || $emitStatusCode >= 400);
 
-        $hasAmbiguousEmissionResult = !$ok && $emitStatusCode >= 500;
+        // QR checkout failures belong to Qhantuy, not fiscal SAFE emission.
+        // Keep the cart as a retryable draft; fiscal 5xx responses stay ambiguous.
+        $hasAmbiguousEmissionResult = $canalEmision !== 'qr' && !$ok && $emitStatusCode >= 500;
         $resolvedEstadoEmision = $hasAmbiguousEmissionResult
             ? 'EMISION_INCIERTA'
             : (string) ($body['estado'] ?? (
