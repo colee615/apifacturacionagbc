@@ -186,6 +186,36 @@ class FacturacionCartIntegrationController extends Controller
             'resumen' => $this->summarizeResumenForLog((array) ($v['resumen_origen'] ?? [])),
         ]);
 
+        $origenTipo = strtolower(trim((string) ($v['origen_tipo'] ?? '')));
+        if ($origenTipo === strtolower('App\\Models\\SolicitudCliente')) {
+            $solicitudId = (int) ($v['origen_id'] ?? 0);
+            $solicitudCode = strtoupper(trim((string) ($v['codigo'] ?? '')));
+            $existingPaidOrInvoiced = $this->findPaidOrInvoicedCartForSolicitud($solicitudId, $solicitudCode);
+            if ($existingPaidOrInvoiced && !filter_var($v['confirmar_reagregar'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                Log::warning('facturacion_cart.upsert_item.solicitud_already_paid_or_invoiced', [
+                    'origen_usuario_id' => (string) ($v['origen_usuario_id'] ?? ''),
+                    'solicitud_id' => $solicitudId,
+                    'codigo_solicitud' => $solicitudCode,
+                    'existing_cart_id' => (int) $existingPaidOrInvoiced->cart_id,
+                    'existing_codigo_orden' => (string) ($existingPaidOrInvoiced->codigo_orden ?? ''),
+                    'existing_estado_pago' => (string) ($existingPaidOrInvoiced->estado_pago ?? ''),
+                    'existing_estado_emision' => (string) ($existingPaidOrInvoiced->estado_emision ?? ''),
+                ]);
+
+                return $this->solicitudAlreadyPaidResponse($existingPaidOrInvoiced, $solicitudCode);
+            }
+            if ($existingPaidOrInvoiced) {
+                Log::warning('facturacion_cart.upsert_item.solicitud_duplicate_confirmation_accepted', [
+                    'origen_usuario_id' => (string) ($v['origen_usuario_id'] ?? ''),
+                    'solicitud_id' => $solicitudId,
+                    'codigo_solicitud' => $solicitudCode,
+                    'existing_cart_id' => (int) $existingPaidOrInvoiced->cart_id,
+                    'existing_codigo_orden' => (string) ($existingPaidOrInvoiced->codigo_orden ?? ''),
+                    'existing_numero_factura' => (string) ($existingPaidOrInvoiced->numero_factura ?? ''),
+                ]);
+            }
+        }
+
         $cartUpdates = array_merge([
             'origen_usuario_nombre' => $this->nullBlank($v['origen_usuario_nombre'] ?? null),
             'origen_usuario_email' => $this->nullBlank($v['origen_usuario_email'] ?? null),
@@ -507,6 +537,105 @@ class FacturacionCartIntegrationController extends Controller
         };
     }
 
+    private function findPaidOrInvoicedCartForSolicitud(int $solicitudId, string $solicitudCode, int $excludeCartId = 0): ?object
+    {
+        if ($solicitudId <= 0 && $solicitudCode === '') {
+            return null;
+        }
+
+        $query = DB::table('facturacion_cart_items as i')
+            ->join('facturacion_carts as c', 'c.id', '=', 'i.cart_id')
+            ->where(function ($match) use ($solicitudId, $solicitudCode): void {
+                if ($solicitudId > 0) {
+                    $match->where(function ($source) use ($solicitudId): void {
+                        $source->whereRaw('lower(i.origen_tipo) = ?', [strtolower('App\\Models\\SolicitudCliente')])
+                            ->where('i.origen_id', $solicitudId);
+                    });
+
+                    $driver = DB::connection()->getDriverName();
+                    $idExpression = match ($driver) {
+                        'mysql', 'mariadb' => "JSON_UNQUOTE(JSON_EXTRACT(i.resumen_origen, '$.solicitud_cliente_id')) = ?",
+                        'pgsql' => "(i.resumen_origen::jsonb ->> 'solicitud_cliente_id') = ?",
+                        'sqlite' => "json_extract(i.resumen_origen, '$.solicitud_cliente_id') = ?",
+                        default => null,
+                    };
+                    if ($idExpression !== null) {
+                        $match->orWhereRaw($idExpression, [(string) $solicitudId]);
+                    }
+                }
+
+                if ($solicitudCode !== '') {
+                    $match->orWhereRaw('upper(trim(coalesce(i.codigo, ?))) = ?', ['', $solicitudCode]);
+
+                    $driver = DB::connection()->getDriverName();
+                    $codeExpression = match ($driver) {
+                        'mysql', 'mariadb' => "upper(trim(JSON_UNQUOTE(JSON_EXTRACT(i.resumen_origen, '$.solicitud_codigo')))) = ?",
+                        'pgsql' => "upper(btrim(coalesce(i.resumen_origen::jsonb ->> 'solicitud_codigo', ''))) = ?",
+                        'sqlite' => "upper(trim(coalesce(json_extract(i.resumen_origen, '$.solicitud_codigo'), ''))) = ?",
+                        default => null,
+                    };
+                    if ($codeExpression !== null) {
+                        $match->orWhereRaw($codeExpression, [$solicitudCode]);
+                    }
+                }
+            })
+            ->where(function ($state): void {
+                $state->whereRaw("lower(coalesce(c.estado_pago, '')) in ('pagado','paid','success','completed','approved','confirmed')")
+                    ->orWhereRaw("upper(coalesce(c.estado_emision, '')) in ('FACTURADA','PROCESADA','PENDIENTE','EMITIENDO','EMISION_INCIERTA','REGISTRADA_OFICIAL')")
+                    ->orWhereExists(function ($sales): void {
+                        $sales->selectRaw('1')
+                            ->from('ventas as v')
+                            ->whereIn('v.origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                            ->whereRaw('cast(v.origen_venta_id as varchar) = cast(c.id as varchar)')
+                            ->whereRaw("upper(coalesce(v.estado_sufe, '')) not in ('ANULADA','ANULADO','RECHAZADA')")
+                            ->where(function ($fiscal): void {
+                                $fiscal->whereRaw("upper(coalesce(v.estado_sufe, '')) in ('PROCESADA','REGISTRADA_OFICIAL')")
+                                    ->orWhereRaw("trim(coalesce(v.cuf, '')) <> ''");
+                            });
+                    });
+            });
+
+        if ($excludeCartId > 0) {
+            $query->where('c.id', '<>', $excludeCartId);
+        }
+
+        return $query
+            ->orderByDesc('c.id')
+            ->first([
+                'c.id as cart_id',
+                'c.codigo_orden',
+                'c.numero_factura',
+                'c.estado_pago',
+                'c.estado_emision',
+            ]);
+    }
+
+    private function solicitudAlreadyPaidResponse(object $existingCart, string $solicitudCode): JsonResponse
+    {
+        $reference = trim((string) ($existingCart->codigo_orden ?? ''));
+        $invoice = trim((string) ($existingCart->numero_factura ?? ''));
+        $details = array_values(array_filter([
+            $reference !== '' ? 'orden '.$reference : null,
+            $invoice !== '' ? 'factura '.$invoice : null,
+        ]));
+        $suffix = $details !== [] ? ' ('.implode(', ', $details).')' : '';
+
+        return response()->json([
+            'ok' => false,
+            'code' => 'solicitud_ya_pagada_o_facturada',
+            'message' => 'La solicitud '.$solicitudCode.' ya tiene un pago confirmado o una factura vinculada'.$suffix.'.',
+            'requires_confirmation' => true,
+            'solicitud_codigo' => $solicitudCode,
+            'existing' => [
+                'cart_id' => (int) ($existingCart->cart_id ?? 0),
+                'codigo_orden' => $reference !== '' ? $reference : null,
+                'numero_factura' => $invoice !== '' ? $invoice : null,
+                'estado_pago' => (string) ($existingCart->estado_pago ?? ''),
+                'estado_emision' => (string) ($existingCart->estado_emision ?? ''),
+            ],
+        ], 409);
+    }
+
     public function vincularSolicitudClienteOnline(Request $request): JsonResponse
     {
         $v = $request->validate([
@@ -528,13 +657,13 @@ class FacturacionCartIntegrationController extends Controller
             $item = (clone $itemQuery)
                 ->where('i.codigo', $itemCode)
                 ->lockForUpdate()
-                ->first(['i.id', 'i.cart_id', 'i.resumen_origen', 'c.estado_pago']);
+                ->first(['i.id', 'i.cart_id', 'i.resumen_origen', 'c.estado_pago', 'c.estado_emision']);
 
             if (!$item) {
                 $item = (clone $itemQuery)
                     ->where('i.origen_id', $originId)
                     ->lockForUpdate()
-                    ->first(['i.id', 'i.cart_id', 'i.resumen_origen', 'c.estado_pago']);
+                    ->first(['i.id', 'i.cart_id', 'i.resumen_origen', 'c.estado_pago', 'c.estado_emision']);
             }
 
             if (!$item) {
@@ -556,10 +685,30 @@ class FacturacionCartIntegrationController extends Controller
 
             $summary['qr_attempt_id'] = $attemptId;
             $summary['solicitud_cliente_id'] = (int) $v['solicitud_cliente_id'];
-            $summary['solicitud_codigo'] = trim((string) $v['codigo_solicitud']);
-            DB::table('facturacion_cart_items')->where('id', (int) $item->id)->update([
+            $solicitudCode = trim((string) $v['codigo_solicitud']);
+            $summary['solicitud_codigo'] = $solicitudCode;
+            $invoiceState = strtoupper(trim((string) ($item->estado_emision ?? '')));
+            $invoiceFinalized = in_array($invoiceState, ['FACTURADA', 'PROCESADA', 'PENDIENTE', 'EMITIENDO', 'EMISION_INCIERTA', 'REGISTRADA_OFICIAL'], true)
+                || $this->activeLinkedFiscalVentaForCart((int) $item->cart_id) !== null;
+            $itemUpdates = [
                 'resumen_origen' => json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 'updated_at' => now(),
+            ];
+            if (!$invoiceFinalized) {
+                $summary['codigo'] = $solicitudCode;
+                $summary['codigo_paquete'] = $solicitudCode;
+                $summary['codigo_detalle_enviado'] = $solicitudCode;
+                $itemUpdates['codigo'] = $solicitudCode;
+                $itemUpdates['resumen_origen'] = json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            }
+            DB::table('facturacion_cart_items')->where('id', (int) $item->id)->update($itemUpdates);
+
+            Log::info('facturacion_cart.cliente_online.solicitud_linked', [
+                'cart_id' => (int) $item->cart_id,
+                'cart_item_id' => (int) $item->id,
+                'solicitud_cliente_id' => (int) $v['solicitud_cliente_id'],
+                'solicitud_codigo' => $solicitudCode,
+                'invoice_detail_code_updated' => !$invoiceFinalized,
             ]);
 
             return ['cart_id' => (int) $item->cart_id];
@@ -739,6 +888,7 @@ class FacturacionCartIntegrationController extends Controller
             'monto_base' => 'nullable|numeric|min:0',
             'monto_extras' => 'nullable|numeric|min:0',
             'total_linea' => 'nullable|numeric|min:0',
+            'confirmar_reagregar' => 'sometimes|boolean',
             'actividad_economica' => 'nullable|string|max:20',
             'codigo_sin' => 'nullable|string|max:50',
             'codigo_producto' => 'nullable|string|max:50',
@@ -777,6 +927,27 @@ class FacturacionCartIntegrationController extends Controller
 
         $r = $this->decode((string) ($row->resumen_origen ?? ''));
         $resolvedCodigo = trim((string) ($v['codigo'] ?? ($r['codigo'] ?? '')));
+        if (strtolower(trim((string) ($row->origen_tipo ?? ''))) === strtolower('App\\Models\\SolicitudCliente')) {
+            $existingPaidOrInvoiced = $this->findPaidOrInvoicedCartForSolicitud(
+                (int) ($row->origen_id ?? 0),
+                strtoupper($resolvedCodigo),
+                (int) $row->cart_id_ref
+            );
+            if ($existingPaidOrInvoiced && !filter_var($v['confirmar_reagregar'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                return $this->solicitudAlreadyPaidResponse($existingPaidOrInvoiced, strtoupper($resolvedCodigo));
+            }
+            if ($existingPaidOrInvoiced) {
+                Log::warning('facturacion_cart.update_item.solicitud_duplicate_confirmation_accepted', [
+                    'item_id' => $itemId,
+                    'origen_usuario_id' => (string) $v['origen_usuario_id'],
+                    'solicitud_id' => (int) ($row->origen_id ?? 0),
+                    'codigo_solicitud' => strtoupper($resolvedCodigo),
+                    'existing_cart_id' => (int) $existingPaidOrInvoiced->cart_id,
+                    'existing_codigo_orden' => (string) ($existingPaidOrInvoiced->codigo_orden ?? ''),
+                    'existing_numero_factura' => (string) ($existingPaidOrInvoiced->numero_factura ?? ''),
+                ]);
+            }
+        }
         $r['codigo'] = $resolvedCodigo;
         $r['codigo_detalle_enviado'] = trim((string) ($v['codigo_detalle_enviado'] ?? ($resolvedCodigo !== '' ? $resolvedCodigo : ($r['codigo_detalle_enviado'] ?? ''))));
         $r['contenido'] = trim((string) ($v['contenido'] ?? ($r['contenido'] ?? '')));

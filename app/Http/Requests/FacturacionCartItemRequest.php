@@ -26,6 +26,7 @@ class FacturacionCartItemRequest extends FormRequest
             'origen_sucursal_nombre' => 'nullable|string|max:255',
             'origen_tipo' => 'required|string|max:120',
             'origen_id' => 'required|integer|min:1',
+            'confirmar_reagregar' => 'sometimes|boolean',
             'codigo' => 'required_if:origen_tipo,cliente_online|nullable|string|max:120',
             'titulo' => 'required|string|max:255',
             'nombre_servicio' => 'nullable|string|max:255',
