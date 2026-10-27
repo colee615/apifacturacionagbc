@@ -690,13 +690,7 @@ class FacturacionCartIntegrationController extends Controller
 
         return $query
             ->orderByDesc('c.id')
-            ->first([
-                'c.id as cart_id',
-                'c.codigo_orden',
-                'c.numero_factura',
-                'c.estado_pago',
-                'c.estado_emision',
-            ]);
+            ->first($this->paidCartSelectColumns());
     }
 
     private function internationalPackageReference(array $item): ?array
@@ -766,13 +760,20 @@ class FacturacionCartIntegrationController extends Controller
 
         return $query
             ->orderByDesc('c.id')
-            ->first([
-                'c.id as cart_id',
-                'c.codigo_orden',
-                'c.numero_factura',
-                'c.estado_pago',
-                'c.estado_emision',
-            ]);
+            ->first($this->paidCartSelectColumns());
+    }
+
+    private function paidCartSelectColumns(): array
+    {
+        return [
+            'c.id as cart_id',
+            'c.codigo_orden',
+            Schema::hasColumn('facturacion_carts', 'numero_factura')
+                ? 'c.numero_factura'
+                : DB::raw('NULL as numero_factura'),
+            'c.estado_pago',
+            'c.estado_emision',
+        ];
     }
 
     private function solicitudAlreadyPaidResponse(object $existingCart, string $solicitudCode): JsonResponse
