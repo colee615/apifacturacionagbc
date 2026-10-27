@@ -216,6 +216,95 @@ class FacturacionCartIntegrationController extends Controller
             }
         }
 
+        $packageLabels = [
+            strtolower('App\\Models\\PaqueteEms') => 'Paquete EMS',
+            strtolower('App\\Models\\PaqueteCerti') => 'Paquete certificado',
+            strtolower('App\\Models\\PaqueteOrdi') => 'Paquete ordinario',
+            strtolower('App\\Models\\PaqueteInt') => 'Paquete interno',
+            strtolower('App\\Models\\Recojo') => 'Paquete contrato',
+        ];
+        if (isset($packageLabels[$origenTipo])) {
+            $packageId = (int) ($v['origen_id'] ?? 0);
+            $packageCode = strtoupper(trim((string) ($v['codigo'] ?? '')));
+            $existingPaidOrInvoiced = $this->findPaidOrInvoicedCartForPackage(
+                (string) $v['origen_tipo'],
+                $packageId,
+                $packageCode
+            );
+
+            if ($existingPaidOrInvoiced && !filter_var($v['confirmar_reagregar'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                Log::warning('facturacion_cart.upsert_item.paquete_already_paid_or_invoiced', [
+                    'origen_usuario_id' => (string) ($v['origen_usuario_id'] ?? ''),
+                    'origen_tipo' => (string) $v['origen_tipo'],
+                    'paquete_id' => $packageId,
+                    'codigo_paquete' => $packageCode,
+                    'existing_cart_id' => (int) $existingPaidOrInvoiced->cart_id,
+                    'existing_codigo_orden' => (string) ($existingPaidOrInvoiced->codigo_orden ?? ''),
+                    'existing_estado_pago' => (string) ($existingPaidOrInvoiced->estado_pago ?? ''),
+                    'existing_estado_emision' => (string) ($existingPaidOrInvoiced->estado_emision ?? ''),
+                ]);
+
+                return $this->packageAlreadyPaidResponse($existingPaidOrInvoiced, $packageCode, $packageLabels[$origenTipo]);
+            }
+
+            if ($existingPaidOrInvoiced) {
+                Log::warning('facturacion_cart.upsert_item.package_duplicate_confirmation_accepted', [
+                    'origen_usuario_id' => (string) ($v['origen_usuario_id'] ?? ''),
+                    'origen_tipo' => (string) $v['origen_tipo'],
+                    'paquete_id' => $packageId,
+                    'codigo_paquete' => $packageCode,
+                    'existing_cart_id' => (int) $existingPaidOrInvoiced->cart_id,
+                    'existing_codigo_orden' => (string) ($existingPaidOrInvoiced->codigo_orden ?? ''),
+                    'existing_numero_factura' => (string) ($existingPaidOrInvoiced->numero_factura ?? ''),
+                ]);
+            }
+        }
+
+        $internationalPackage = $this->internationalPackageReference($v);
+        if ($internationalPackage !== null) {
+            $confirmedPackageCode = strtoupper(trim((string) ($v['confirmar_reagregar_codigo'] ?? '')));
+            $confirmsThisPackage = filter_var($v['confirmar_reagregar'] ?? false, FILTER_VALIDATE_BOOLEAN)
+                || in_array($confirmedPackageCode, [
+                    $internationalPackage['package_code'],
+                    $internationalPackage['item_code'],
+                ], true);
+            $existingPaidOrInvoiced = $this->findPaidOrInvoicedCartForPackage(
+                'App\\Models\\ConceptoFacturacion',
+                0,
+                $internationalPackage['item_code']
+            );
+
+            if ($existingPaidOrInvoiced && !$confirmsThisPackage) {
+                Log::warning('facturacion_cart.upsert_item.paquete_internacional_already_paid_or_invoiced', [
+                    'origen_usuario_id' => (string) ($v['origen_usuario_id'] ?? ''),
+                    'concepto_id' => (int) ($v['resumen_origen']['concepto_facturacion_id'] ?? 0),
+                    'codigo_paquete' => $internationalPackage['package_code'],
+                    'codigo_item' => $internationalPackage['item_code'],
+                    'existing_cart_id' => (int) $existingPaidOrInvoiced->cart_id,
+                    'existing_codigo_orden' => (string) ($existingPaidOrInvoiced->codigo_orden ?? ''),
+                    'existing_estado_pago' => (string) ($existingPaidOrInvoiced->estado_pago ?? ''),
+                    'existing_estado_emision' => (string) ($existingPaidOrInvoiced->estado_emision ?? ''),
+                ]);
+
+                return $this->packageAlreadyPaidResponse(
+                    $existingPaidOrInvoiced,
+                    $internationalPackage['package_code'],
+                    'Paquete internacional'
+                );
+            }
+
+            if ($existingPaidOrInvoiced) {
+                Log::warning('facturacion_cart.upsert_item.international_package_duplicate_confirmation_accepted', [
+                    'origen_usuario_id' => (string) ($v['origen_usuario_id'] ?? ''),
+                    'codigo_paquete' => $internationalPackage['package_code'],
+                    'codigo_item' => $internationalPackage['item_code'],
+                    'existing_cart_id' => (int) $existingPaidOrInvoiced->cart_id,
+                    'existing_codigo_orden' => (string) ($existingPaidOrInvoiced->codigo_orden ?? ''),
+                    'existing_numero_factura' => (string) ($existingPaidOrInvoiced->numero_factura ?? ''),
+                ]);
+            }
+        }
+
         $cartUpdates = array_merge([
             'origen_usuario_nombre' => $this->nullBlank($v['origen_usuario_nombre'] ?? null),
             'origen_usuario_email' => $this->nullBlank($v['origen_usuario_email'] ?? null),
@@ -610,6 +699,82 @@ class FacturacionCartIntegrationController extends Controller
             ]);
     }
 
+    private function internationalPackageReference(array $item): ?array
+    {
+        if (strtolower(trim((string) ($item['origen_tipo'] ?? ''))) !== strtolower('App\\Models\\ConceptoFacturacion')) {
+            return null;
+        }
+
+        $summary = (array) ($item['resumen_origen'] ?? []);
+        $serviceCode = strtoupper(trim((string) ($summary['codigo_servicio'] ?? '')));
+        $packageCode = strtoupper(trim((string) ($summary['codigo_paquete'] ?? '')));
+        $itemCode = strtoupper(trim((string) ($item['codigo'] ?? '')));
+        $internationalServiceCodes = ['SRVE-2', 'SRVE-3', 'SRVE-4', 'SRVE-11', 'SRVE-12'];
+
+        if (
+            !in_array($serviceCode, $internationalServiceCodes, true)
+            || $packageCode === ''
+            || $itemCode !== $serviceCode.'-'.$packageCode
+        ) {
+            return null;
+        }
+
+        return [
+            'package_code' => $packageCode,
+            'item_code' => $itemCode,
+        ];
+    }
+
+    private function findPaidOrInvoicedCartForPackage(string $originType, int $packageId, string $packageCode, int $excludeCartId = 0): ?object
+    {
+        $originType = strtolower(trim($originType));
+        $packageCode = strtoupper(trim($packageCode));
+        if ($originType === '' || ($packageId <= 0 && $packageCode === '')) {
+            return null;
+        }
+
+        $query = DB::table('facturacion_cart_items as i')
+            ->join('facturacion_carts as c', 'c.id', '=', 'i.cart_id')
+            ->whereRaw('lower(i.origen_tipo) = ?', [$originType])
+            ->where(function ($match) use ($packageId, $packageCode): void {
+                if ($packageId > 0) {
+                    $match->where('i.origen_id', $packageId);
+                }
+                if ($packageCode !== '') {
+                    $match->orWhereRaw('upper(trim(coalesce(i.codigo, ?))) = ?', ['', $packageCode]);
+                }
+            })
+            ->where(function ($state): void {
+                $state->whereRaw("lower(coalesce(c.estado_pago, '')) in ('pagado','paid','success','completed','approved','confirmed')")
+                    ->orWhereRaw("upper(coalesce(c.estado_emision, '')) in ('FACTURADA','PROCESADA','PENDIENTE','EMITIENDO','EMISION_INCIERTA','REGISTRADA_OFICIAL')")
+                    ->orWhereExists(function ($sales): void {
+                        $sales->selectRaw('1')
+                            ->from('ventas as v')
+                            ->whereIn('v.origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                            ->whereRaw('cast(v.origen_venta_id as varchar) = cast(c.id as varchar)')
+                            ->whereRaw("upper(coalesce(v.estado_sufe, '')) not in ('ANULADA','ANULADO','RECHAZADA')")
+                            ->where(function ($fiscal): void {
+                                $fiscal->whereRaw("upper(coalesce(v.estado_sufe, '')) in ('PROCESADA','REGISTRADA_OFICIAL')")
+                                    ->orWhereRaw("trim(coalesce(v.cuf, '')) <> ''");
+                            });
+                    });
+            });
+
+        if ($excludeCartId > 0) {
+            $query->where('c.id', '<>', $excludeCartId);
+        }
+
+        return $query
+            ->orderByDesc('c.id')
+            ->first([
+                'c.id as cart_id',
+                'c.codigo_orden',
+                'c.numero_factura',
+                'c.estado_pago',
+                'c.estado_emision',
+            ]);
+    }
+
     private function solicitudAlreadyPaidResponse(object $existingCart, string $solicitudCode): JsonResponse
     {
         $reference = trim((string) ($existingCart->codigo_orden ?? ''));
@@ -626,6 +791,33 @@ class FacturacionCartIntegrationController extends Controller
             'message' => 'La solicitud '.$solicitudCode.' ya tiene un pago confirmado o una factura vinculada'.$suffix.'.',
             'requires_confirmation' => true,
             'solicitud_codigo' => $solicitudCode,
+            'existing' => [
+                'cart_id' => (int) ($existingCart->cart_id ?? 0),
+                'codigo_orden' => $reference !== '' ? $reference : null,
+                'numero_factura' => $invoice !== '' ? $invoice : null,
+                'estado_pago' => (string) ($existingCart->estado_pago ?? ''),
+                'estado_emision' => (string) ($existingCart->estado_emision ?? ''),
+            ],
+        ], 409);
+    }
+
+    private function packageAlreadyPaidResponse(object $existingCart, string $packageCode, string $packageLabel): JsonResponse
+    {
+        $reference = trim((string) ($existingCart->codigo_orden ?? ''));
+        $invoice = trim((string) ($existingCart->numero_factura ?? ''));
+        $details = array_values(array_filter([
+            $reference !== '' ? 'orden '.$reference : null,
+            $invoice !== '' ? 'factura '.$invoice : null,
+        ]));
+        $suffix = $details !== [] ? ' ('.implode(', ', $details).')' : '';
+
+        return response()->json([
+            'ok' => false,
+            'code' => 'paquete_ya_pagado_o_facturado',
+            'message' => 'El '.$packageLabel.' '.$packageCode.' ya tiene un pago confirmado o una factura vinculada'.$suffix.'.',
+            'requires_confirmation' => true,
+            'item_codigo' => $packageCode,
+            'item_tipo' => $packageLabel,
             'existing' => [
                 'cart_id' => (int) ($existingCart->cart_id ?? 0),
                 'codigo_orden' => $reference !== '' ? $reference : null,
