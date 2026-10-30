@@ -81,6 +81,215 @@ class CajaDiariaController extends Controller
         ]);
     }
 
+    public function bloqueadas(Request $request)
+    {
+        $umbralMinutos = max(5, min(1440, (int) $request->query('minutos', 5)));
+        $corteEmitiendo = now()->copy()->subMinutes($umbralMinutos);
+        $cortePendiente = now()->copy()->subMinutes(15);
+
+        $emisiones = DB::table('facturacion_carts')
+            ->where(function ($query) use ($corteEmitiendo, $cortePendiente) {
+                $query->where(function ($emitiendo) use ($corteEmitiendo) {
+                    $emitiendo->whereRaw("upper(coalesce(estado_emision, '')) = 'EMITIENDO'")
+                        ->where('updated_at', '<=', $corteEmitiendo);
+                })->orWhere(function ($pendiente) use ($cortePendiente) {
+                    $pendiente->whereRaw("upper(coalesce(estado_emision, '')) in ('EMISION_INCIERTA','PENDIENTE')")
+                        ->where('updated_at', '<=', $cortePendiente);
+                });
+            })
+            ->orderBy('updated_at')
+            ->limit(200)
+            ->get([
+                'id', 'origen_usuario_id', 'origen_usuario_nombre', 'origen_sucursal_codigo',
+                'origen_sucursal_nombre', 'estado', 'estado_emision', 'estado_pago', 'metodo_pago',
+                'codigo_orden', 'numero_factura', 'codigo_seguimiento', 'qr_transaction_id', 'total', 'mensaje_emision',
+                'updated_at', 'incidencia_revision_nota',
+            ]);
+
+        $resueltasManualmente = collect();
+        if (Schema::hasColumn('facturacion_carts', 'incidencia_revision_nota')) {
+            $resueltasManualmente = DB::table('facturacion_carts')
+                ->where('incidencia_revision_nota', 'like', '%LIBERACION_MANUAL_FACTURADA%')
+                ->where('incidencia_revisada_at', '>=', now()->copy()->subDays(30))
+                ->orderByDesc('incidencia_revisada_at')
+                ->limit(50)
+                ->get([
+                    'id', 'origen_usuario_id', 'origen_usuario_nombre', 'origen_sucursal_codigo',
+                    'origen_sucursal_nombre', 'estado', 'estado_emision', 'estado_pago', 'metodo_pago',
+                    'codigo_orden', 'numero_factura', 'codigo_seguimiento', 'qr_transaction_id', 'total', 'mensaje_emision',
+                    'updated_at', 'incidencia_revision_nota',
+                ]);
+        }
+
+        $cartRows = $emisiones->concat($resueltasManualmente)->unique('id')->values();
+        $cartIds = $cartRows->pluck('id')->map(fn ($id) => (string) $id)->all();
+        $orderCodes = $cartRows->pluck('codigo_orden')->filter()->map(fn ($code) => (string) $code)->all();
+
+        $sales = collect();
+        if ($cartIds !== []) {
+            $sales = DB::table('ventas')
+                ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                ->whereIn('origen_venta_id', $cartIds)
+                ->orderByDesc('id')
+                ->get(['id', 'origen_venta_id', 'codigoOrden', 'numero_factura', 'codigoSeguimiento', 'estado_sufe', 'cuf', 'total']);
+        }
+        $salesByCart = $sales->groupBy(fn ($sale) => (string) $sale->origen_venta_id)->map(fn ($rows) => $rows->first());
+        $salesByOrder = collect();
+        if ($orderCodes !== []) {
+            $salesByOrder = DB::table('ventas')
+                ->whereIn('codigoOrden', $orderCodes)
+                ->orderByDesc('id')
+                ->get(['id', 'origen_venta_id', 'codigoOrden', 'numero_factura', 'codigoSeguimiento', 'estado_sufe', 'cuf', 'total'])
+                ->groupBy(fn ($sale) => (string) $sale->codigoOrden)
+                ->map(fn ($rows) => $rows->first());
+        }
+
+        $itemsByCart = collect();
+        if ($cartIds !== [] && Schema::hasTable('facturacion_cart_items')) {
+            $itemsByCart = DB::table('facturacion_cart_items')
+                ->whereIn('cart_id', $cartIds)
+                ->orderBy('id')
+                ->get(['cart_id', 'codigo', 'titulo', 'total_linea'])
+                ->groupBy(fn ($item) => (string) $item->cart_id);
+        }
+
+        $todayBoxes = DB::table('cajas_diarias')
+            ->whereDate('fecha_operacion', now()->toDateString())
+            ->get(['id', 'usuario_id', 'codigo_sucursal', 'punto_venta', 'estado']);
+        $todayBoxesByContext = $todayBoxes->keyBy(fn ($box) => implode('|', [
+            (string) $box->usuario_id,
+            (int) $box->codigo_sucursal,
+            (int) $box->punto_venta,
+        ]));
+
+        $incidencias = $cartRows->map(function ($cart) use ($salesByCart, $salesByOrder, $itemsByCart, $todayBoxesByContext, $umbralMinutos) {
+            $cartId = (string) $cart->id;
+            $sale = $salesByCart->get($cartId) ?? $salesByOrder->get((string) ($cart->codigo_orden ?? ''));
+            $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+            $manual = str_contains((string) ($cart->incidencia_revision_nota ?? ''), 'LIBERACION_MANUAL_FACTURADA');
+            $sucursalCodigo = (int) ($cart->origen_sucursal_codigo ?? 0);
+            $box = $todayBoxesByContext->get(implode('|', [
+                (string) $cart->origen_usuario_id,
+                $sucursalCodigo,
+                0,
+            ]));
+            $linkedNumero = trim((string) ($sale->numero_factura ?? $cart->numero_factura ?? ''));
+            $linkedCuf = trim((string) ($sale->cuf ?? ''));
+            $qrReference = trim((string) ($cart->qr_transaction_id ?? $cart->codigo_seguimiento ?? ''));
+            $noConsolidada = $manual
+                && $sale === null
+                && $linkedNumero === ''
+                && $linkedCuf === ''
+                && strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
+                && $qrReference === '';
+            $ventaFiscalProcesada = $sale !== null
+                && strtoupper(trim((string) ($sale->estado_sufe ?? ''))) === 'PROCESADA'
+                && $linkedNumero !== ''
+                && $linkedCuf !== '';
+
+            if (!$manual && $ventaFiscalProcesada) {
+                return null;
+            }
+
+            return [
+                'tipo' => $noConsolidada
+                    ? 'NO_CONSOLIDADA'
+                    : (in_array($estadoEmision, ['EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE'], true)
+                        ? 'EMISION_REQUIERE_REVISION'
+                        : ($manual ? 'FACTURA_MANUAL' : 'EMISION_REQUIERE_REVISION')),
+                'id' => (int) $cart->id,
+                'cartId' => (int) $cart->id,
+                'cajaId' => $box ? (int) $box->id : null,
+                'usuario' => (string) ($cart->origen_usuario_nombre ?? ''),
+                'usuarioId' => (string) $cart->origen_usuario_id,
+                'sucursal' => (string) ($cart->origen_sucursal_nombre ?? 'Sin sucursal'),
+                'codigoSucursal' => $sucursalCodigo,
+                'puntoVenta' => 0,
+                'estadoCaja' => $box->estado ?? 'SIN_CAJA_HOY',
+                'estadoCarrito' => (string) ($cart->estado ?? ''),
+                'estadoEmision' => $estadoEmision,
+                'metodoPago' => (string) ($cart->metodo_pago ?? ''),
+                'estadoPago' => (string) ($cart->estado_pago ?? ''),
+                'codigoOrden' => (string) ($sale->codigoOrden ?? $cart->codigo_orden ?? ''),
+                'numeroFactura' => $linkedNumero,
+                'codigoSeguimiento' => (string) ($sale->codigoSeguimiento ?? $cart->codigo_seguimiento ?? ''),
+                'estadoFiscal' => (string) ($sale->estado_sufe ?? ''),
+                'cuf' => $linkedCuf,
+                'ventaId' => $sale ? (int) $sale->id : null,
+                'ventaLocalVinculada' => $sale !== null,
+                'requiereSincronizacionFiscal' => $manual && $linkedNumero === '' && $linkedCuf === '',
+                'total' => (float) ($cart->total ?? 0),
+                'actualizadoEn' => $cart->updated_at,
+                'minutosSinCambio' => max(0, \Carbon\Carbon::parse($cart->updated_at)->diffInMinutes(now())),
+                'umbralMinutos' => $manual ? null : ($estadoEmision === 'EMITIENDO' ? $umbralMinutos : 15),
+                'mensaje' => $noConsolidada
+                    ? 'Carrito devuelto a revisión; sin factura ni venta local vinculada y sin referencia verificable del pago QR.'
+                    : (string) ($cart->mensaje_emision ?? $cart->incidencia_revision_nota ?? ''),
+                'items' => $itemsByCart->get($cartId, collect())->map(fn ($item) => [
+                    'codigo' => (string) ($item->codigo ?? ''),
+                    'detalle' => (string) ($item->titulo ?? ''),
+                    'total' => (float) ($item->total_linea ?? 0),
+                ])->values()->all(),
+            ];
+        })->filter()->values();
+
+        $cajasAntiguas = DB::table('cajas_diarias')
+            ->where('estado', 'ABIERTA')
+            ->whereDate('fecha_operacion', '<', now()->toDateString())
+            ->orderBy('fecha_operacion')
+            ->limit(200)
+            ->get(['id', 'usuario_id', 'usuario_nombre', 'codigo_sucursal', 'punto_venta', 'fecha_operacion', 'abierta_en', 'updated_at', 'estado', 'monto_ventas'])
+            ->map(fn ($box) => [
+                'tipo' => 'CAJA_ANTERIOR_ABIERTA',
+                'id' => (int) $box->id,
+                'cartId' => null,
+                'cajaId' => (int) $box->id,
+                'usuario' => (string) $box->usuario_nombre,
+                'usuarioId' => (string) $box->usuario_id,
+                'sucursal' => 'Código ' . (int) $box->codigo_sucursal,
+                'codigoSucursal' => (int) $box->codigo_sucursal,
+                'puntoVenta' => (int) $box->punto_venta,
+                'estadoCaja' => (string) $box->estado,
+                'estadoCarrito' => '',
+                'estadoEmision' => '',
+                'metodoPago' => '',
+                'estadoPago' => '',
+                'codigoOrden' => '',
+                'numeroFactura' => '',
+                'codigoSeguimiento' => '',
+                'estadoFiscal' => '',
+                'cuf' => '',
+                'ventaId' => null,
+                'ventaLocalVinculada' => false,
+                'requiereSincronizacionFiscal' => false,
+                'total' => (float) ($box->monto_ventas ?? 0),
+                'fechaOperacion' => (string) $box->fecha_operacion,
+                'actualizadoEn' => $box->updated_at,
+                'minutosSinCambio' => max(0, \Carbon\Carbon::parse($box->updated_at)->diffInMinutes(now())),
+                'umbralMinutos' => null,
+                'mensaje' => 'Caja abierta de un día anterior; requiere revisión del cierre.',
+                'items' => [],
+            ]);
+
+        $allIncidencias = $incidencias->concat($cajasAntiguas)->sortBy('actualizadoEn')->values();
+
+        return response()->json([
+            'ok' => true,
+            'generadoEn' => now()->toIso8601String(),
+            'umbralEmitiendoMinutos' => $umbralMinutos,
+            'umbralPendienteMinutos' => 15,
+            'resumen' => [
+                'emisionesAtascadas' => $incidencias->where('tipo', 'EMISION_ATASCADA')->count(),
+                'emisionesRequierenRevision' => $incidencias->where('tipo', 'EMISION_REQUIERE_REVISION')->count(),
+                'liberadasManualmente' => $incidencias->where('tipo', 'FACTURA_MANUAL')->count(),
+                'noConsolidadas' => $incidencias->where('tipo', 'NO_CONSOLIDADA')->count(),
+                'liberadasSinDatosFiscales' => $incidencias->where('requiereSincronizacionFiscal', true)->count(),
+                'cajasAnterioresAbiertas' => $cajasAntiguas->count(),
+            ],
+            'incidencias' => $allIncidencias,
+        ]);
+    }
+
     public function abrir(Request $request)
     {
         [$usuarioId, $usuarioNombre, $usuarioEmail] = $this->resolveActor($request);

@@ -48,6 +48,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/cart/ventas/pdf', [FacturacionCartIntegrationController::class, 'ventasPdf']);
     Route::get('/cart/ventas/{cartId}', [FacturacionCartIntegrationController::class, 'show']);
     Route::get('/caja/estado', [CajaDiariaController::class, 'estado']);
+    Route::get('/caja/bloqueadas', [CajaDiariaController::class, 'bloqueadas']);
     Route::post('/caja/abrir', [CajaDiariaController::class, 'abrir']);
     Route::post('/caja/cerrar', [CajaDiariaController::class, 'cerrar']);
     Route::get('/caja/fichas/stock', [CajaDiariaController::class, 'fichasStock']);

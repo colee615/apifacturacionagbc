@@ -1408,7 +1408,34 @@ class FacturacionCartIntegrationController extends Controller
             });
         }
 
-        $cart = $cartQuery->latest('id')->first();
+        if ($cartId > 0) {
+            $cart = $cartQuery->latest('id')->first();
+        } else {
+            $blockedCart = DB::table('facturacion_carts')
+                ->where('origen_usuario_id', $userId)
+                ->whereRaw("upper(coalesce(estado_emision, '')) in ('EMITIENDO','EMISION_INCIERTA','PENDIENTE')")
+                ->orderByDesc('updated_at')
+                ->first(['id', 'codigo_orden', 'estado_emision']);
+
+            if ($blockedCart) {
+                return response()->json([
+                    'ok' => false,
+                    'estado' => strtoupper(trim((string) $blockedCart->estado_emision)),
+                    'message' => 'Hay una emisión en curso o pendiente. No se elegirá otro borrador; consulta el estado o envía su cart_id exacto.',
+                    'cart_id' => (int) $blockedCart->id,
+                    'codigo_orden' => $blockedCart->codigo_orden,
+                ], 409);
+            }
+
+            $candidates = (clone $cartQuery)->orderByDesc('id')->limit(2)->get();
+            if ($candidates->count() > 1) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'Hay varios borradores activos. Envía el cart_id del carrito que quieres emitir.',
+                ], 409);
+            }
+            $cart = $candidates->first();
+        }
         if (!$cart) {
             $blockedQuery = DB::table('facturacion_carts')->where('origen_usuario_id', $userId);
             if ($cartId > 0) {
