@@ -75,10 +75,6 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/qr/check-payments', [QhantuyQrController::class, 'checkPayments']);
     Route::post('/qr/cancel-payment', [QhantuyQrController::class, 'cancelPayment']);
     Route::post('/qr/incidencia/revisar', [QhantuyQrController::class, 'markIncidentReviewed']);
-    Route::post('/pagos/checkout', [QhantuyQrController::class, 'checkout']);
-    Route::post('/pagos/simular-pago', [QhantuyQrController::class, 'simulatePayment']);
-    Route::post('/pagos/check-payments', [QhantuyQrController::class, 'checkPayments']);
-    Route::post('/pagos/cancel-payment', [QhantuyQrController::class, 'cancelPayment']);
 });
 
 Route::middleware('factura.auth')->prefix('facturacion')->group(function () {

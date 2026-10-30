@@ -41,7 +41,6 @@ return [
         'integration_usuario_id' => env('FACTURACION_INTEGRATION_USUARIO_ID'),
     ],
     'qhantuy_checkout' => [
-        'manual_simulation' => env('QHANTUY_MANUAL_SIMULATION', false),
         'base_url' => env('QHANTUY_CHECKOUT_BASE_URL', 'https://testingcheckout.qhantuy.com/external-api/v2'),
         'check_payments_url' => env('QHANTUY_CHECK_PAYMENTS_URL', 'https://testingcheckout.qhantuy.com/external-api/check-payments'),
         'cancel_payment_url' => env('QHANTUY_CANCEL_PAYMENT_URL', 'https://testingcheckout.qhantuy.com/external-api/cancel-payment'),
@@ -49,7 +48,6 @@ return [
         'appkey' => env('QHANTUY_CHECKOUT_APPKEY'),
         'profile_code' => env('QHANTUY_CHECKOUT_PROFILE_CODE'),
         'callback_url' => env('QHANTUY_CHECKOUT_CALLBACK_URL'),
-        'return_url' => env('QHANTUY_CHECKOUT_RETURN_URL'),
         'image_method' => env('QHANTUY_CHECKOUT_IMAGE_METHOD', 'URL'),
         'currency_code' => env('QHANTUY_CHECKOUT_CURRENCY_CODE', 'BOB'),
         'connect_timeout' => env('QHANTUY_CHECKOUT_CONNECT_TIMEOUT', 20),

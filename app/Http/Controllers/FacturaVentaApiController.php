@@ -873,7 +873,7 @@ class FacturaVentaApiController extends Controller
             'ANULADA' => 'Factura anulada correctamente.',
             'ANULACION_SOLICITADA' => 'AnulaciÃ³n solicitada correctamente.',
             'RECEPCIONADA' => 'La venta fue recibida y estÃ¡ pendiente de confirmaciÃ³n.',
-            'CONTINGENCIA_CREADA' => 'La venta quedó pendiente por contingencia.',
+            'CONTINGENCIA_CREADA' => 'La venta quedÃ³ pendiente por contingencia.',
             'OBSERVADA', 'RECHAZADA' => 'No se pudo emitir la factura.',
             'ANULACION_OBSERVADA' => 'No se pudo anular la factura.',
             default => 'La venta estÃ¡ en proceso de validaciÃ³n.',

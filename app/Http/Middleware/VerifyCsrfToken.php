@@ -12,9 +12,6 @@ class VerifyCsrfToken extends Middleware
      * @var array<int, string>
      */
     protected $except = [
-        // Callbacks servidor a servidor: SEFE no utiliza la sesion del navegador.
-        'notificacion/*',
-        'dev/notificacion/*',
-        'dev/notificaciones/*',
+        //
     ];
 }
