@@ -4224,6 +4224,298 @@ class VentaController extends Controller
             'detalle'=>[], 'meta'=>$report['meta'], 'version'=>$report['version']]);
     }
 
+    public function reporteAnulaciones(Request $request)
+    {
+        $request->validate([
+            'fechaInicio' => ['nullable', 'date'],
+            'fechaFin' => ['nullable', 'date', 'after_or_equal:fechaInicio'],
+            'tipo' => ['nullable', 'in:all,factura,qr'],
+            'q' => ['nullable', 'string', 'max:120'],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'perPage' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $fechaInicio = $request->query('fechaInicio');
+        $fechaFin = $request->query('fechaFin');
+        $tipo = strtolower(trim((string) $request->query('tipo', 'all')));
+        $queryText = mb_strtolower(trim((string) $request->query('q', '')));
+        $page = max(1, (int) $request->query('page', 1));
+        $perPage = max(1, min(100, (int) $request->query('perPage', 25)));
+        $grammar = DB::connection()->getQueryGrammar();
+
+        $dateExpression = static function (string $table, array $columns) use ($grammar): string {
+            $qualified = array_map(
+                fn ($column) => $grammar->wrap($table.'.'.$column),
+                $columns
+            );
+
+            return 'COALESCE('.implode(', ', $qualified).')';
+        };
+        $applyDateFilters = static function ($query, string $expression) use ($fechaInicio, $fechaFin): void {
+            if ($fechaInicio) {
+                $query->whereDate(DB::raw($expression), '>=', $fechaInicio);
+            }
+            if ($fechaFin) {
+                $query->whereDate(DB::raw($expression), '<=', $fechaFin);
+            }
+        };
+        $applyTextSearch = static function ($query, string $table, array $columns, array $numericColumns = []) use ($queryText, $grammar): void {
+            if ($queryText === '' || ($columns === [] && $numericColumns === [])) {
+                return;
+            }
+
+            $query->where(function ($search) use ($table, $columns, $numericColumns, $queryText, $grammar) {
+                foreach ($columns as $column) {
+                    $wrapped = $grammar->wrap($table.'.'.$column);
+                    $search->orWhereRaw("LOWER(COALESCE({$wrapped}, '')) LIKE ?", ['%'.$queryText.'%']);
+                }
+                if (ctype_digit($queryText)) {
+                    foreach ($numericColumns as $column) {
+                        $search->orWhere($table.'.'.$column, (int) $queryText);
+                    }
+                }
+            });
+        };
+        $existingColumns = static fn (string $table, array $columns): array => array_values(array_filter(
+            $columns,
+            fn ($column) => Schema::hasColumn($table, $column)
+        ));
+
+        $invoiceRows = collect();
+        if (Schema::hasTable('ventas')) {
+            $hasInvoiceAnnulledAt = Schema::hasColumn('ventas', 'anulada_at');
+            $hasInvoiceFiscalState = Schema::hasColumn('ventas', 'estado_sufe');
+            $invoiceQuery = DB::table('ventas');
+            if ($hasInvoiceAnnulledAt || $hasInvoiceFiscalState) {
+                $invoiceQuery->where(function ($annulled) use ($hasInvoiceAnnulledAt, $hasInvoiceFiscalState) {
+                    if ($hasInvoiceAnnulledAt) {
+                        $annulled->whereNotNull('anulada_at');
+                    }
+                    if ($hasInvoiceFiscalState) {
+                        $method = $hasInvoiceAnnulledAt ? 'orWhereRaw' : 'whereRaw';
+                        $annulled->{$method}("upper(coalesce(estado_sufe, '')) in ('ANULADA', 'ANULADO')");
+                    }
+                });
+
+                $invoiceDateColumns = $existingColumns('ventas', array_filter([
+                    $hasInvoiceAnnulledAt ? 'anulada_at' : null,
+                    'updated_at',
+                    'created_at',
+                ]));
+                $invoiceDateSql = $dateExpression('ventas', $invoiceDateColumns);
+                $applyDateFilters($invoiceQuery, $invoiceDateSql);
+
+                $invoiceSearchColumns = $existingColumns('ventas', [
+                    'codigoOrden', 'codigoSeguimiento', 'numero_factura', 'cuf', 'razonSocial',
+                    'origen_usuario_nombre', 'origen_usuario_alias', 'origen_usuario_email',
+                    'origen_sucursal_nombre', 'origen_sucursal_codigo', 'departamento', 'municipio', 'anulacion_motivo',
+                ]);
+                $applyTextSearch($invoiceQuery, 'ventas', $invoiceSearchColumns, $existingColumns('ventas', ['codigoSucursal', 'puntoVenta']));
+                $invoiceRows = $invoiceQuery
+                    ->orderByRaw($invoiceDateSql.' DESC')
+                    ->get($existingColumns('ventas', [
+                        'id', 'codigoOrden', 'codigoSeguimiento', 'numero_factura', 'cuf', 'total',
+                        'created_at', 'updated_at', 'estado_sufe', 'codigoSucursal', 'puntoVenta',
+                        'municipio', 'departamento', 'razonSocial', 'origen_usuario_nombre',
+                        'origen_usuario_alias', 'origen_usuario_email', 'anulada_at',
+                        'anulada_por_nombre', 'anulada_por_email', 'anulacion_motivo', 'anulacion_tipo',
+                        'motivo', 'origen_sucursal_codigo', 'origen_sucursal_nombre',
+                    ]));
+            }
+        }
+
+        $qrRows = collect();
+        if (Schema::hasTable('facturacion_carts')) {
+            $hasQrCancelledAt = Schema::hasColumn('facturacion_carts', 'qr_cancelado_at');
+            $hasPaymentState = Schema::hasColumn('facturacion_carts', 'estado_pago');
+            $qrQuery = DB::table('facturacion_carts');
+            if ($hasQrCancelledAt || $hasPaymentState) {
+                $qrQuery->where(function ($cancelled) use ($hasQrCancelledAt, $hasPaymentState) {
+                    if ($hasQrCancelledAt) {
+                        $cancelled->whereNotNull('qr_cancelado_at');
+                    }
+                    if ($hasPaymentState) {
+                        $method = $hasQrCancelledAt ? 'orWhereRaw' : 'whereRaw';
+                        $cancelled->{$method}("lower(coalesce(estado_pago, '')) = 'cancelado'");
+                    }
+                });
+            } else {
+                $qrQuery->whereRaw('1 = 0');
+            }
+
+            $qrIdentificationColumns = $existingColumns('facturacion_carts', [
+                'metodo_pago', 'canal_emision', 'codigo_orden', 'qr_transaction_id',
+            ]);
+            if ($qrIdentificationColumns !== []) {
+                $qrQuery->where(function ($isQr) use ($qrIdentificationColumns) {
+                    foreach ($qrIdentificationColumns as $column) {
+                        if ($column === 'codigo_orden') {
+                            $isQr->orWhereRaw("upper(coalesce(codigo_orden, '')) like 'VQ-%' or upper(coalesce(codigo_orden, '')) like 'VQC-%'");
+                        } elseif ($column === 'qr_transaction_id') {
+                            $isQr->orWhereNotNull($column);
+                        } else {
+                            $isQr->orWhereRaw('lower(coalesce('.$column.", '')) = 'qr'");
+                        }
+                    }
+                });
+            } else {
+                $qrQuery->whereRaw('1 = 0');
+            }
+
+            $qrDateColumns = $existingColumns('facturacion_carts', array_filter([
+                $hasQrCancelledAt ? 'qr_cancelado_at' : null,
+                'updated_at',
+                'created_at',
+            ]));
+            $qrDateSql = $dateExpression('facturacion_carts', $qrDateColumns);
+            $applyDateFilters($qrQuery, $qrDateSql);
+
+            $qrSearchColumns = $existingColumns('facturacion_carts', [
+                'codigo_orden', 'codigo_seguimiento', 'qr_transaction_id', 'razon_social',
+                'origen_usuario_nombre', 'origen_usuario_alias', 'origen_usuario_email',
+                'origen_sucursal_nombre', 'origen_sucursal_codigo', 'origen_sucursal_id',
+                'qr_cancelacion_motivo', 'qr_cancelacion_mensaje',
+            ]);
+            $applyTextSearch($qrQuery, 'facturacion_carts', $qrSearchColumns);
+            $qrRows = $qrQuery
+                ->orderByRaw($qrDateSql.' DESC')
+                ->get($existingColumns('facturacion_carts', [
+                    'id', 'codigo_orden', 'codigo_seguimiento', 'qr_transaction_id', 'total',
+                    'created_at', 'updated_at', 'estado_pago', 'origen_sucursal_codigo',
+                    'origen_sucursal_nombre', 'origen_sucursal_id', 'origen_usuario_nombre',
+                    'origen_usuario_alias', 'origen_usuario_email', 'qr_cancelado_at',
+                    'qr_cancelado_por_nombre', 'qr_cancelado_por_email', 'qr_cancelacion_motivo',
+                    'qr_cancelacion_origen', 'qr_cancelacion_transaction_id', 'qr_cancelacion_mensaje',
+                    'departamento', 'municipio',
+                ]));
+        }
+
+        $regionalRows = $invoiceRows->concat($qrRows);
+        $regionalMap = $this->kardexRegionalMap($regionalRows)->mapWithKeys(function ($regional, $code) {
+            $normalized = is_numeric($code)
+                ? str_pad((string) max(0, (int) $code), 3, '0', STR_PAD_LEFT)
+                : trim((string) $code);
+
+            return [$normalized => $regional];
+        });
+        $resolveLocation = function ($row, string $codeColumn, string $nameColumn, string $pointColumn, string $departmentColumn) use ($regionalMap): array {
+            $codigoSucursal = trim((string) (
+                data_get($row, 'origen_sucursal_codigo')
+                ?: data_get($row, $codeColumn, '')
+            ));
+            $normalizedCode = is_numeric($codigoSucursal)
+                ? str_pad((string) max(0, (int) $codigoSucursal), 3, '0', STR_PAD_LEFT)
+                : $codigoSucursal;
+            $branch = $regionalMap->get($normalizedCode);
+            $sucursal = trim((string) (
+                data_get($row, $nameColumn)
+                ?: data_get($branch, 'nombre')
+                ?: ($codigoSucursal !== '' ? 'Sucursal '.$codigoSucursal : 'Sucursal sin dato')
+            ));
+            $regional = trim((string) (
+                data_get($branch, 'departamento')
+                ?: data_get($row, $departmentColumn)
+                ?: data_get($branch, 'municipio')
+                ?: data_get($branch, 'nombre')
+                ?: 'Sin regional'
+            ));
+            $puntoVenta = trim((string) (data_get($row, $pointColumn) ?? ''));
+            if ($puntoVenta === '' && is_numeric(data_get($row, 'origen_sucursal_id'))) {
+                $puntoVenta = (string) data_get($row, 'origen_sucursal_id');
+            }
+
+            return [
+                'regional' => mb_strtoupper($regional),
+                'sucursal' => mb_strtoupper($sucursal),
+                'caja' => $puntoVenta !== '' ? 'Punto de venta '.$puntoVenta : 'Punto de venta sin dato',
+            ];
+        };
+
+        $invoiceItems = $invoiceRows->map(function ($venta) use ($resolveLocation) {
+            $location = $resolveLocation($venta, 'codigoSucursal', 'origen_sucursal_nombre', 'puntoVenta', 'departamento');
+            $cashier = trim((string) ($venta->origen_usuario_nombre ?? $venta->origen_usuario_alias ?? $venta->origen_usuario_email ?? ''));
+            $cancelledBy = trim((string) ($venta->anulada_por_nombre ?? $venta->anulada_por_email ?? ''));
+            $status = strtoupper(trim((string) ($venta->estado_sufe ?? 'ANULADA')));
+            $cancelReason = trim((string) ($venta->anulacion_motivo ?? $venta->motivo ?? $venta->anulacion_tipo ?? ''));
+
+            return array_merge([
+                'id' => 'factura-'.(int) $venta->id,
+                'tipo' => 'factura',
+                'tipoLabel' => 'Factura anulada',
+                'fecha' => $venta->anulada_at ?? $venta->updated_at ?? $venta->created_at,
+                'estado' => $status !== '' ? $status : 'ANULADA',
+                'codigoOrden' => trim((string) ($venta->codigoOrden ?? '')),
+                'numeroFactura' => trim((string) ($venta->numero_factura ?? '')),
+                'cuf' => trim((string) ($venta->cuf ?? '')),
+                'transactionId' => '',
+                'cajero' => $cashier !== '' ? $cashier : 'Sin usuario registrado',
+                'anuladoPor' => $cancelledBy !== '' ? $cancelledBy : 'No registrado',
+                'monto' => (float) ($venta->total ?? 0),
+                'motivo' => $cancelReason,
+            ], $location);
+        });
+
+        $qrItems = $qrRows->map(function ($cart) use ($resolveLocation) {
+            $location = $resolveLocation($cart, 'origen_sucursal_codigo', 'origen_sucursal_nombre', 'puntoVenta', 'departamento');
+            $cashier = trim((string) ($cart->origen_usuario_nombre ?? $cart->origen_usuario_alias ?? $cart->origen_usuario_email ?? ''));
+            $cancelledBy = trim((string) ($cart->qr_cancelado_por_nombre ?? $cart->qr_cancelado_por_email ?? ''));
+            $status = strtoupper(trim((string) ($cart->estado_pago ?? 'CANCELADO')));
+            $cancelReason = trim((string) ($cart->qr_cancelacion_motivo ?? $cart->qr_cancelacion_mensaje ?? ''));
+
+            return array_merge([
+                'id' => 'qr-'.(int) $cart->id,
+                'tipo' => 'qr',
+                'tipoLabel' => 'QR anulado',
+                'fecha' => $cart->qr_cancelado_at ?? $cart->updated_at ?? $cart->created_at,
+                'estado' => $status !== '' ? $status : 'CANCELADO',
+                'codigoOrden' => trim((string) ($cart->codigo_orden ?? '')),
+                'numeroFactura' => '',
+                'cuf' => '',
+                'transactionId' => trim((string) ($cart->qr_cancelacion_transaction_id ?? $cart->qr_transaction_id ?? '')),
+                'cajero' => $cashier !== '' ? $cashier : 'Sin usuario registrado',
+                'anuladoPor' => $cancelledBy !== '' ? $cancelledBy : 'No registrado',
+                'monto' => (float) ($cart->total ?? 0),
+                'motivo' => $cancelReason,
+            ], $location);
+        });
+
+        $allItems = $invoiceItems->concat($qrItems)->sortByDesc(function ($item) {
+            try {
+                return $item['fecha'] ? Carbon::parse($item['fecha'])->timestamp : 0;
+            } catch (\Throwable) {
+                return 0;
+            }
+        })->values();
+        $filteredItems = $allItems->when($tipo === 'factura', fn ($items) => $items->where('tipo', 'factura'))
+            ->when($tipo === 'qr', fn ($items) => $items->where('tipo', 'qr'))
+            ->values();
+        $summary = [
+            'total' => $filteredItems->count(),
+            'facturas' => $filteredItems->where('tipo', 'factura')->count(),
+            'qrs' => $filteredItems->where('tipo', 'qr')->count(),
+        ];
+        $total = $filteredItems->count();
+        $totalPages = max(1, (int) ceil($total / $perPage));
+        $page = min($page, $totalPages);
+
+        return response()->json([
+            'rows' => $filteredItems->slice(($page - 1) * $perPage, $perPage)->values(),
+            'summary' => $summary,
+            'pagination' => [
+                'page' => $page,
+                'perPage' => $perPage,
+                'total' => $total,
+                'totalPages' => $totalPages,
+            ],
+            'filters' => [
+                'fechaInicio' => $fechaInicio,
+                'fechaFin' => $fechaFin,
+                'tipo' => $tipo !== '' ? $tipo : 'all',
+                'q' => $queryText,
+            ],
+        ]);
+    }
+
     public function reporteSucursalesUsuarios(Request $request)
     {
         $request->validate(['codigoSucursal'=>['required','integer','min:0'], 'puntoVenta'=>['required','integer','min:0']]);

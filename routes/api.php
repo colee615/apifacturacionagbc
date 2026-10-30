@@ -67,6 +67,7 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::get('/ventas/reportes/auditoria-financiera', [VentaController::class, 'auditoriaFinanciera']);
     Route::get('/ventas/reportes/sucursales/usuarios', [VentaController::class, 'reporteSucursalesUsuarios']);
     Route::get('/ventas/reportes/sucursales/incidencias', [VentaController::class, 'reporteSucursalesIncidencias']);
+    Route::get('/ventas/reportes/anulaciones', [VentaController::class, 'reporteAnulaciones']);
     Route::get('/ventas/reportes/trazabilidad-tarifas', [VentaController::class, 'trazabilidadTarifas']);
     Route::get('/ventas/consultar/{codigoSeguimiento}', [VentaController::class, 'consultarVenta']);
     Route::get('/ventas/{venta}', [VentaController::class, 'show']);
