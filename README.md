@@ -66,6 +66,8 @@ Accede a la aplicación en tu navegador en `http://localhost:8000`.
 
 ## Rutas Agetic
 
+La integración de pagos QR y tarjeta utiliza Qhantuy. Ver [configuración y pruebas de Qhantuy](docs/pagos-qhantuy.md). AGETIC se utiliza para facturación.
+
 - `https://sefe.demo.agetic.gob.bo/facturacion/`: Base Url.
 - `/emision/individual`: Realizar la emision de la factura.
 - `/consulta/{codigo_seguimientp}`: Consulta del la venta.

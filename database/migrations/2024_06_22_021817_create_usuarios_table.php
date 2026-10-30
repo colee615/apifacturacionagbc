@@ -15,7 +15,10 @@ return new class extends Migration
          $table->string('password');
          $table->integer('codigo_confirmacion')->nullable();
          $table->string('confirmation_token')->nullable();
-         $table->foreignId('sucursale_id')->nullable()->constrained('sucursales');
+         $table->foreignId('sucursale_id')->nullable();
+         if (Schema::hasTable('sucursales')) {
+            $table->foreign('sucursale_id')->references('id')->on('sucursales');
+         }
          $table->integer('estado')->default(1);
          $table->timestamps();
       });
