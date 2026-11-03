@@ -787,6 +787,85 @@ class FacturaVentaApiBridgeTest extends TestCase
             ->assertJsonPath('data.carts.0.status.emit_payload.preserve_paid_qr_payment', true);
     }
 
+    public function test_simulacion_qr_pagado_y_factura_confirmada(): void
+    {
+        $this->simulatePaymentAndInvoice('QRSIMPLE', 5);
+    }
+
+    public function test_simulacion_tarjeta_pagada_y_factura_confirmada(): void
+    {
+        $this->simulatePaymentAndInvoice('CYBERSOURCE', 2);
+    }
+
+    private function simulatePaymentAndInvoice(string $method, int $fiscalMethod): void
+    {
+        Http::preventStrayRequests();
+        config([
+            'services.qhantuy_checkout.token' => 'simulation-only',
+            'services.qhantuy_checkout.appkey' => 'simulation-only',
+            'services.qhantuy_checkout.profile_code' => 'simulation-profile',
+            'services.qhantuy_checkout.callback_url' => 'https://merchant.example/api/qhantuy/callback',
+            'services.qhantuy_checkout.base_url' => 'https://testingcheckout.qhantuy.com/external-api/v2',
+            'services.qhantuy_checkout.check_payments_url' => 'https://testingcheckout.qhantuy.com/external-api/check-payments',
+        ]);
+        $order = 'SIM-'.Str::upper(Str::random(10));
+        $transaction = random_int(100000, 999999);
+        $tracking = (string) random_int(1000000000000, 9999999999999);
+        $cuf = 'CUF-SIMULADO-'.$transaction;
+        Http::fake([
+            '*/v2/checkout' => Http::response([
+                'process' => true, 'transaction_id' => $transaction,
+                'checkout_amount' => 70, 'checkout_currency' => 'BOB',
+                'image_data' => $method === 'QRSIMPLE' ? 'https://merchant.example/qr-simulado.png' : null,
+                'payment_url' => $method === 'CYBERSOURCE' ? 'https://merchant.example/tarjeta-simulada' : null,
+                'payment_status' => 'holding', 'internal_code' => $order,
+            ]),
+            '*/check-payments' => Http::response(['process' => true, 'items' => [[
+                'id' => $transaction, 'checkout_amount' => '70.00', 'checkout_currency' => 'BOB',
+                'internal_code' => $order, 'payment_status' => 'success',
+            ]]]),
+            '*/facturacion/emision/individual' => Http::response([
+                'finalizado' => true, 'mensaje' => 'Solicitud simulada recibida',
+                'datos' => ['codigoSeguimiento' => $tracking],
+            ], 202),
+            '*/consulta/*' => Http::response(['estado' => 'PROCESADO', 'cuf' => $cuf, 'nroFactura' => '45']),
+        ]);
+        $this->withToken('test-bridge-token');
+        $this->postJson('/api/factura-venta/pagos/checkout', [
+            'internal_code' => $order, 'payment_method' => $method, 'detail' => 'Simulacion sin dinero real',
+            'items' => [['name' => 'Servicio simulado', 'quantity' => 1, 'price' => 70]],
+        ])->assertOk()->assertJsonPath('payment_status', 'holding');
+        $this->getJson('/api/qhantuy/callback?'.http_build_query([
+            'transaction_id' => $transaction, 'profile_code' => 'simulation-profile',
+            'internal_code' => $order, 'checkout_amount' => 70, 'checkout_currency' => 'BOB', 'status' => 'success',
+        ]))->assertOk()->assertJsonPath('payment_status', 'success');
+        $this->assertDatabaseHas('qhantuy_qr_payments', [
+            'internal_code' => $order, 'payment_status' => 'success', 'payment_method' => $method,
+        ]);
+        // Explicit invoice request after payment; payment callbacks never trigger SEFE themselves.
+        $invoice = $this->validPayload($order);
+        $invoice['metodoPago'] = $fiscalMethod;
+        if ($fiscalMethod === 2) {
+            $invoice['numeroTarjeta'] = '4111111111111111'; // Fictitious data, sent only to Http::fake.
+        }
+        $this->postJson('/api/factura-venta/emitir', $invoice)->assertStatus(202)
+            ->assertJsonPath('facturada', false)->assertJsonPath('estado', 'PENDIENTE');
+        $this->postJson('/notificacion/'.$tracking, [
+            'finalizado' => true, 'fuente' => 'SUFE', 'estado' => 'EXITO', 'codigoSeguimiento' => $tracking,
+            'fecha' => now()->format('d/m/Y h:i:s A'), 'mensaje' => 'Factura simulada procesada',
+            'detalle' => ['tipoEmision' => 'EMISION', 'nit' => '355701027', 'cuf' => $cuf,
+                'nroFactura' => '45', 'codigoEstadoImpuestos' => 908,
+                'urlPdf' => 'https://merchant.example/factura-simulada.pdf',
+                'urlXml' => 'https://merchant.example/factura-simulada.xml'],
+        ])->assertOk();
+        $this->getJson('/api/factura-venta/consultar/'.$tracking)->assertOk()
+            ->assertJsonPath('facturada', true)->assertJsonPath('estado', 'FACTURADA')
+            ->assertJsonPath('factura.cuf', $cuf);
+        $this->assertDatabaseHas('ventas', ['codigoOrden' => $order, 'estado_sufe' => 'PROCESADA',
+            'metodoPago' => $fiscalMethod, 'cuf' => $cuf]);
+        Http::assertSentCount(4);
+    }
+
     private function insertProcessedVenta(string $codigoOrden, string $codigoSeguimiento, string $cuf): int
     {
         return (int) DB::table('ventas')->insertGetId([
