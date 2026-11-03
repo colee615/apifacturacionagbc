@@ -82,6 +82,7 @@ class PaqueteFacturaController extends Controller
                 'v.codigoSeguimiento as codigo_seguimiento',
                 'v.numero_factura',
                 'v.cuf',
+                'v.url_pdf',
                 'v.estado_sufe',
                 'v.tipo_emision_sufe',
                 'v.estado as estado_venta',
@@ -95,17 +96,14 @@ class PaqueteFacturaController extends Controller
                 'v.origen_sistema',
             ]);
 
-        $numeroFacturaPorSeguimiento = $this->buscarNumerosFactura($rows);
+        $datosFacturaPorSeguimiento = $this->buscarDatosFacturaPorSeguimiento($rows);
         $filasPorCodigo = $rows->groupBy(fn ($row) => mb_strtoupper(trim((string) $row->codigo_paquete)));
 
-        $resultados = $codigos->map(function (string $codigo) use ($filasPorCodigo, $numeroFacturaPorSeguimiento) {
+        $resultados = $codigos->map(function (string $codigo) use ($filasPorCodigo, $datosFacturaPorSeguimiento) {
             $filas = $filasPorCodigo->get($codigo, collect());
             $coincidencias = $filas
                 ->groupBy('venta_id')
-                ->map(fn (Collection $detalleVenta) => $this->formatearVenta(
-                    $detalleVenta,
-                    $numeroFacturaPorSeguimiento
-                ))
+                ->map(fn (Collection $detalleVenta) => $this->formatearVenta($detalleVenta, $datosFacturaPorSeguimiento))
                 ->values();
 
             $facturasVigentes = $coincidencias->filter(fn (array $item) => $item['es_factura_vigente']);
@@ -145,18 +143,31 @@ class PaqueteFacturaController extends Controller
         ]);
     }
 
-    private function formatearVenta(Collection $detalleVenta, array $numeroFacturaPorSeguimiento): array
+    private function formatearVenta(Collection $detalleVenta, array $datosFacturaPorSeguimiento): array
     {
         $venta = $detalleVenta->first();
         $estadoSufe = mb_strtoupper(trim((string) ($venta->estado_sufe ?? '')));
         $numeroFactura = trim((string) ($venta->numero_factura ?? ''));
         $seguimiento = trim((string) ($venta->codigo_seguimiento ?? ''));
+        $datosSeguimiento = $seguimiento !== ''
+            ? ($datosFacturaPorSeguimiento[$seguimiento] ?? [])
+            : [];
 
         if ($numeroFactura === '' && $seguimiento !== '') {
-            $numeroFactura = (string) ($numeroFacturaPorSeguimiento[$seguimiento] ?? '');
+            $numeroFactura = (string) ($datosSeguimiento['numero'] ?? '');
         }
 
         $cuf = trim((string) ($venta->cuf ?? ''));
+        $pdfUrl = trim((string) ($venta->url_pdf ?? ''));
+        if ($pdfUrl === '') {
+            $pdfUrl = trim((string) ($datosSeguimiento['pdf_url'] ?? ''));
+        }
+        if ($pdfUrl === '' && $cuf !== '') {
+            $pdfUrl = $this->urlPdfPublicoPorCuf($cuf);
+        } else {
+            $pdfUrl = $this->normalizarUrlPdf($pdfUrl);
+        }
+
         $anulada = in_array($estadoSufe, self::FACTURA_ANULADA, true)
             || ! empty($venta->anulada_at);
         $estadoEnEspera = in_array($estadoSufe, self::EMISION_NO_CONFIRMADA, true);
@@ -192,6 +203,8 @@ class PaqueteFacturaController extends Controller
                 'numero' => $numeroFactura !== '' ? $numeroFactura : null,
                 'cuf' => $cuf !== '' ? $cuf : null,
                 'fecha' => $venta->fecha_venta,
+                'pdf_url' => $pdfUrl,
+                'descargable' => $pdfUrl !== '',
             ],
             'tipo_emision' => $venta->tipo_emision_sufe,
             'tipo_origen' => $venta->origen_venta_tipo ?: $venta->origen_sistema,
@@ -206,7 +219,7 @@ class PaqueteFacturaController extends Controller
         ];
     }
 
-    private function buscarNumerosFactura(Collection $rows): array
+    private function buscarDatosFacturaPorSeguimiento(Collection $rows): array
     {
         if ($rows->isEmpty()) {
             return [];
@@ -229,34 +242,80 @@ class PaqueteFacturaController extends Controller
             ->get(['codigo_seguimiento', 'detalle'])
             ->each(function ($notificacion) use (&$mapa) {
                 $seguimiento = trim((string) $notificacion->codigo_seguimiento);
-                if ($seguimiento === '' || isset($mapa[$seguimiento])) {
+                if ($seguimiento === '') {
                     return;
                 }
 
                 $detalle = is_array($notificacion->detalle)
                     ? $notificacion->detalle
                     : json_decode((string) $notificacion->detalle, true);
-                if (! is_array($detalle)) {
-                    return;
+                if (! isset($mapa[$seguimiento])) {
+                    $mapa[$seguimiento] = ['numero' => null, 'pdf_url' => null];
                 }
 
-                foreach ([
-                    data_get($detalle, 'nroFactura'),
-                    data_get($detalle, 'numeroFactura'),
-                    data_get($detalle, 'factura.nroFactura'),
-                    data_get($detalle, 'factura.numeroFactura'),
-                    data_get($detalle, 'consultaSefe.nroFactura'),
-                    data_get($detalle, 'consultaSefe.numeroFactura'),
-                    data_get($detalle, 'datos.nroFactura'),
-                ] as $candidato) {
-                    $numero = trim((string) $candidato);
-                    if ($numero !== '') {
-                        $mapa[$seguimiento] = $numero;
-                        break;
+                if (is_array($detalle)) {
+                    if (empty($mapa[$seguimiento]['numero'])) {
+                        foreach ([
+                            data_get($detalle, 'nroFactura'),
+                            data_get($detalle, 'numeroFactura'),
+                            data_get($detalle, 'factura.nroFactura'),
+                            data_get($detalle, 'factura.numeroFactura'),
+                            data_get($detalle, 'consultaSefe.nroFactura'),
+                            data_get($detalle, 'consultaSefe.numeroFactura'),
+                            data_get($detalle, 'datos.nroFactura'),
+                        ] as $candidato) {
+                            $numero = trim((string) $candidato);
+                            if ($numero !== '') {
+                                $mapa[$seguimiento]['numero'] = $numero;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (empty($mapa[$seguimiento]['pdf_url'])) {
+                        foreach ([
+                            data_get($detalle, 'urlPdf'),
+                            data_get($detalle, 'pdfUrl'),
+                            data_get($detalle, 'factura.urlPdf'),
+                            data_get($detalle, 'factura.pdfUrl'),
+                            data_get($detalle, 'datos.urlPdf'),
+                        ] as $candidato) {
+                            $url = trim((string) $candidato);
+                            if ($url !== '') {
+                                $mapa[$seguimiento]['pdf_url'] = $url;
+                                break;
+                            }
+                        }
                     }
                 }
             });
 
         return $mapa;
+    }
+
+    private function normalizarUrlPdf(string $url): string
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return '';
+        }
+
+        $path = (string) parse_url($url, PHP_URL_PATH);
+        if ($path !== '' && str_starts_with($path, '/public/')) {
+            return rtrim((string) config('services.agetic.public_base_url', 'https://sefe.agetic.gob.bo'), '/') . $path;
+        }
+
+        return $url;
+    }
+
+    private function urlPdfPublicoPorCuf(string $cuf): string
+    {
+        $cuf = trim($cuf);
+        if ($cuf === '') {
+            return '';
+        }
+
+        return rtrim((string) config('services.agetic.public_base_url', 'https://sefe.agetic.gob.bo'), '/')
+            . '/public/facturas_pdf/' . rawurlencode($cuf) . '.pdf';
     }
 }

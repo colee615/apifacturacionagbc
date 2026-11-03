@@ -38,4 +38,19 @@ trait FinancialReports
         return response()->json(['filters'=>$filters,'generadoEn'=>now()->toIso8601String(),
             'alcance'=>'Estado actual de las operaciones registradas en el período. Los cierres históricos y los extractos bancarios se contrastan por separado.'] + $report);
     }
+
+    public function dashboardVentas(Request $request)
+    {
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        $report = $this->financialReportSnapshot($filters, 0);
+
+        return response()->json([
+            'filters' => $filters,
+            'generadoEn' => now()->toIso8601String(),
+            'resumen' => $report['resumen'],
+            'porFecha' => $report['porFecha'],
+            'sucursales' => $report['sucursales'],
+            'version' => $report['version'],
+        ]);
+    }
 }
