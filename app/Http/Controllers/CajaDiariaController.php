@@ -6,6 +6,7 @@ use App\Models\CajaDiaria;
 use App\Support\FichaPostalStockService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -102,7 +103,8 @@ class CajaDiariaController extends Controller
             ->get([
                 'id', 'origen_usuario_id', 'origen_usuario_nombre', 'origen_sucursal_codigo',
                 'origen_sucursal_nombre', 'estado', 'estado_emision', 'estado_pago', 'metodo_pago',
-                'codigo_orden', 'numero_factura', 'codigo_seguimiento', 'qr_transaction_id', 'total', 'mensaje_emision',
+                'canal_emision', 'codigo_orden', 'numero_factura', 'codigo_seguimiento', 'codigo_seguimiento_fiscal',
+                'qr_transaction_id', 'respuesta_emision', 'total', 'mensaje_emision',
                 'updated_at', 'incidencia_revision_nota',
             ]);
 
@@ -116,7 +118,8 @@ class CajaDiariaController extends Controller
                 ->get([
                     'id', 'origen_usuario_id', 'origen_usuario_nombre', 'origen_sucursal_codigo',
                     'origen_sucursal_nombre', 'estado', 'estado_emision', 'estado_pago', 'metodo_pago',
-                    'codigo_orden', 'numero_factura', 'codigo_seguimiento', 'qr_transaction_id', 'total', 'mensaje_emision',
+                    'canal_emision', 'codigo_orden', 'numero_factura', 'codigo_seguimiento', 'codigo_seguimiento_fiscal',
+                    'qr_transaction_id', 'respuesta_emision', 'total', 'mensaje_emision',
                     'updated_at', 'incidencia_revision_nota',
                 ]);
         }
@@ -162,7 +165,17 @@ class CajaDiariaController extends Controller
             (int) $box->punto_venta,
         ]));
 
-        $incidencias = $cartRows->map(function ($cart) use ($salesByCart, $salesByOrder, $itemsByCart, $todayBoxesByContext, $umbralMinutos) {
+        $qrPaymentsByOrder = collect();
+        if ($orderCodes !== [] && Schema::hasTable('qhantuy_qr_payments')) {
+            $qrPaymentsByOrder = DB::table('qhantuy_qr_payments')
+                ->whereIn('internal_code', $orderCodes)
+                ->orderByDesc('id')
+                ->get(['internal_code', 'transaction_id', 'payment_status', 'image_data'])
+                ->groupBy(fn ($payment) => (string) $payment->internal_code)
+                ->map(fn ($rows) => $rows->first());
+        }
+
+        $incidencias = $cartRows->map(function ($cart) use ($salesByCart, $salesByOrder, $itemsByCart, $todayBoxesByContext, $qrPaymentsByOrder, $umbralMinutos) {
             $cartId = (string) $cart->id;
             $sale = $salesByCart->get($cartId) ?? $salesByOrder->get((string) ($cart->codigo_orden ?? ''));
             $estadoEmision = strtoupper(trim((string) ($cart->estado_emision ?? '')));
@@ -176,6 +189,9 @@ class CajaDiariaController extends Controller
             $linkedNumero = trim((string) ($sale->numero_factura ?? $cart->numero_factura ?? ''));
             $linkedCuf = trim((string) ($sale->cuf ?? ''));
             $qrReference = trim((string) ($cart->qr_transaction_id ?? $cart->codigo_seguimiento ?? ''));
+            $qrPayment = $qrPaymentsByOrder->get((string) ($cart->codigo_orden ?? ''));
+            $qrPaymentStatus = strtolower(trim((string) ($qrPayment->payment_status ?? '')));
+            $minutosSinCambio = max(0, \Carbon\Carbon::parse($cart->updated_at)->diffInMinutes(now()));
             $noConsolidada = $manual
                 && $sale === null
                 && $linkedNumero === ''
@@ -191,12 +207,45 @@ class CajaDiariaController extends Controller
                 return null;
             }
 
-            return [
-                'tipo' => $noConsolidada
-                    ? 'NO_CONSOLIDADA'
-                    : (in_array($estadoEmision, ['EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE'], true)
+            $tipo = $noConsolidada
+                ? 'NO_CONSOLIDADA'
+                : ($estadoEmision === 'EMITIENDO'
+                    ? 'EMISION_ATASCADA'
+                    : (in_array($estadoEmision, ['EMISION_INCIERTA', 'PENDIENTE'], true)
                         ? 'EMISION_REQUIERE_REVISION'
-                        : ($manual ? 'FACTURA_MANUAL' : 'EMISION_REQUIERE_REVISION')),
+                        : ($manual ? 'FACTURA_MANUAL' : 'EMISION_REQUIERE_REVISION')));
+            $tieneReferenciaFiscal = $linkedNumero !== ''
+                || $linkedCuf !== ''
+                || trim((string) ($sale->codigoSeguimiento ?? $cart->codigo_seguimiento ?? '')) !== ''
+                || trim((string) ($cart->codigo_seguimiento_fiscal ?? '')) !== '';
+            $tieneReferenciaQr = $qrReference !== ''
+                || trim((string) ($qrPayment->transaction_id ?? '')) !== ''
+                || trim((string) ($qrPayment->image_data ?? '')) !== ''
+                || in_array($qrPaymentStatus, ['success', 'holding'], true);
+            $respuestaEmision = trim((string) ($cart->respuesta_emision ?? ''));
+            $tieneRespuestaEmision = $respuestaEmision !== '' && ! in_array($respuestaEmision, ['[]', '{}', 'null'], true);
+            $esQr = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
+                || strtolower(trim((string) ($cart->canal_emision ?? ''))) === 'qr';
+            $puedeLiberar = $estadoEmision === 'EMITIENDO'
+                && strtolower(trim((string) ($cart->estado ?? ''))) === 'borrador'
+                && $minutosSinCambio >= 15
+                && $sale === null
+                && ! $tieneReferenciaFiscal
+                && ! $tieneReferenciaQr
+                && (! $esQr || ! $tieneRespuestaEmision);
+
+            $solucion = match ($tipo) {
+                'EMISION_ATASCADA' => $puedeLiberar
+                    ? 'No hay factura ni pago QR vinculado y lleva más de 15 minutos sin cambio. Un usuario con permiso puede liberar el borrador para reintentar.'
+                    : 'Consulta el estado fiscal o QR. No reintentes mientras haya una emisión o referencia de pago activa.',
+                'EMISION_REQUIERE_REVISION' => 'Consulta el código de seguimiento con el proveedor fiscal antes de reemitir. Si no hay respuesta, registra la incidencia para revisión.',
+                'NO_CONSOLIDADA' => 'No tiene una factura local ni referencia verificable de pago QR. Confirma el cobro con caja antes de iniciar un nuevo intento.',
+                'FACTURA_MANUAL' => 'Revisa el comprobante fiscal y concilia el pago. Conserva esta incidencia como historial.',
+                default => 'Revisa la caja y concilia efectivo, QR y fichas antes del cierre.',
+            };
+
+            return [
+                'tipo' => $tipo,
                 'id' => (int) $cart->id,
                 'cartId' => (int) $cart->id,
                 'cajaId' => $box ? (int) $box->id : null,
@@ -220,8 +269,10 @@ class CajaDiariaController extends Controller
                 'requiereSincronizacionFiscal' => $manual && $linkedNumero === '' && $linkedCuf === '',
                 'total' => (float) ($cart->total ?? 0),
                 'actualizadoEn' => $cart->updated_at,
-                'minutosSinCambio' => max(0, \Carbon\Carbon::parse($cart->updated_at)->diffInMinutes(now())),
+                'minutosSinCambio' => $minutosSinCambio,
                 'umbralMinutos' => $manual ? null : ($estadoEmision === 'EMITIENDO' ? $umbralMinutos : 15),
+                'puedeLiberar' => $puedeLiberar,
+                'solucion' => $solucion,
                 'mensaje' => $noConsolidada
                     ? 'Carrito devuelto a revisión; sin factura ni venta local vinculada y sin referencia verificable del pago QR.'
                     : (string) ($cart->mensaje_emision ?? $cart->incidencia_revision_nota ?? ''),
@@ -288,6 +339,159 @@ class CajaDiariaController extends Controller
             ],
             'incidencias' => $allIncidencias,
         ]);
+    }
+
+    public function liberarEmisionAtascada(Request $request, int $cartId)
+    {
+        $validated = $request->validate([
+            'nota' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $cart = DB::table('facturacion_carts')->where('id', $cartId)->first();
+        if (! $cart) {
+            return response()->json(['ok' => false, 'message' => 'No se encontro el borrador.'], 404);
+        }
+
+        $ownerId = trim((string) ($cart->origen_usuario_id ?? ''));
+        if ($ownerId === '') {
+            return response()->json(['ok' => false, 'message' => 'El borrador no tiene un cajero de origen verificable.'], 409);
+        }
+
+        $lock = Cache::lock('facturacion-cart-emitir:' . $ownerId, 300);
+        if (! $lock->get()) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'La emisión aún tiene un proceso activo. Espera y actualiza el panel antes de liberar.',
+            ], 409);
+        }
+
+        try {
+            return DB::transaction(function () use ($request, $validated, $cartId) {
+                $cart = DB::table('facturacion_carts')->where('id', $cartId)->lockForUpdate()->first();
+                if (! $cart) {
+                    return response()->json(['ok' => false, 'message' => 'El borrador ya no existe.'], 404);
+                }
+
+                if (strtoupper(trim((string) ($cart->estado_emision ?? ''))) !== 'EMITIENDO') {
+                    return response()->json([
+                        'ok' => false,
+                        'message' => 'El carrito ya no está marcado EMITIENDO. Actualiza el panel para ver su estado actual.',
+                    ], 409);
+                }
+                if (strtolower(trim((string) ($cart->estado ?? ''))) !== 'borrador') {
+                    return response()->json([
+                        'ok' => false,
+                        'message' => 'Solo se pueden liberar borradores. Esta venta requiere revisión manual.',
+                    ], 409);
+                }
+                if (\Carbon\Carbon::parse($cart->updated_at)->diffInMinutes(now()) < 15) {
+                    return response()->json([
+                        'ok' => false,
+                        'message' => 'La emisión lleva menos de 15 minutos. Espera a que termine y consulta nuevamente.',
+                    ], 409);
+                }
+
+                $fiscalReference = trim((string) ($cart->numero_factura ?? '')) !== ''
+                    || trim((string) ($cart->codigo_seguimiento_fiscal ?? '')) !== ''
+                    || trim((string) ($cart->codigo_seguimiento ?? '')) !== '';
+                $linkedSaleQuery = DB::table('ventas')
+                    ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+                    ->where(function ($query) use ($cart) {
+                        $query->where('origen_venta_id', (string) $cart->id);
+                        if (trim((string) ($cart->codigo_orden ?? '')) !== '') {
+                            $query->orWhere('codigoOrden', (string) $cart->codigo_orden);
+                        }
+                    });
+                $linkedSale = $linkedSaleQuery->orderByDesc('id')->first([
+                    'id', 'numero_factura', 'codigoSeguimiento', 'estado_sufe', 'cuf',
+                ]);
+                $fiscalReference = $fiscalReference
+                    || $linkedSale !== null
+                    || trim((string) ($linkedSale->numero_factura ?? '')) !== ''
+                    || trim((string) ($linkedSale->codigoSeguimiento ?? '')) !== ''
+                    || trim((string) ($linkedSale->cuf ?? '')) !== ''
+                    || strtoupper(trim((string) ($linkedSale->estado_sufe ?? ''))) === 'PROCESADA';
+
+                if ($fiscalReference) {
+                    return response()->json([
+                        'ok' => false,
+                        'message' => 'Hay datos o una venta fiscal vinculada. Consulta su estado; el borrador no se liberó.',
+                    ], 409);
+                }
+
+                $isQr = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
+                    || strtolower(trim((string) ($cart->canal_emision ?? ''))) === 'qr';
+                $qrPayment = null;
+                if ($isQr) {
+                    if (trim((string) ($cart->qr_transaction_id ?? '')) !== '') {
+                        return response()->json([
+                            'ok' => false,
+                            'message' => 'El carrito tiene un identificador QR. Consulta el pago antes de liberarlo.',
+                        ], 409);
+                    }
+                    if (Schema::hasTable('qhantuy_qr_payments') && trim((string) ($cart->codigo_orden ?? '')) !== '') {
+                        $qrPayment = DB::table('qhantuy_qr_payments')
+                            ->where('internal_code', (string) $cart->codigo_orden)
+                            ->orderByDesc('id')
+                            ->first(['transaction_id', 'payment_status', 'image_data']);
+                    }
+                    if (
+                        trim((string) ($qrPayment->transaction_id ?? '')) !== ''
+                        || trim((string) ($qrPayment->image_data ?? '')) !== ''
+                        || in_array(strtolower(trim((string) ($qrPayment->payment_status ?? ''))), ['success', 'holding'], true)
+                    ) {
+                        return response()->json([
+                            'ok' => false,
+                            'message' => 'Existe una referencia QR o un pago abierto. Consulta Qhantuy antes de liberar.',
+                        ], 409);
+                    }
+
+                    $response = trim((string) ($cart->respuesta_emision ?? ''));
+                    if ($response !== '' && ! in_array($response, ['[]', '{}', 'null'], true)) {
+                        return response()->json([
+                            'ok' => false,
+                            'message' => 'El carrito conserva una respuesta de emisión. Requiere revisión antes de liberarse.',
+                        ], 409);
+                    }
+                }
+
+                $actor = $request->user() ?? Auth::user();
+                $actorLabel = trim((string) ($actor?->email ?? $actor?->name ?? $actor?->id ?? 'supervisor'));
+                $note = trim((string) ($validated['nota'] ?? ''));
+                $audit = trim((string) ($cart->incidencia_revision_nota ?? ''));
+                $audit .= ($audit !== '' ? ' | ' : '') . 'LIBERACION_SEGURA por ' . $actorLabel . ': sin referencia fiscal ni pago activo; estado EMITIENDO liberado.';
+                if ($note !== '') {
+                    $audit .= ' Nota: ' . $note;
+                }
+                $updates = [
+                    'estado' => 'borrador',
+                    'estado_emision' => 'NO_APLICA',
+                    'mensaje_emision' => $isQr
+                        ? 'Liberado para reintentar QR. No se encontró factura ni referencia de pago QR activa.'
+                        : 'Liberado para reintentar facturación. No se encontró factura fiscal vinculada.',
+                    'incidencia_revision_nota' => $audit,
+                    'incidencia_revisada_at' => now(),
+                    'incidencia_revisada_por' => $actorLabel,
+                    'updated_at' => now(),
+                ];
+                if ($isQr) {
+                    $updates['estado_pago'] = 'pendiente';
+                    $updates['metodo_pago'] = 'qr';
+                }
+
+                DB::table('facturacion_carts')->where('id', $cartId)->update($updates);
+
+                return response()->json([
+                    'ok' => true,
+                    'message' => $isQr
+                        ? 'Borrador liberado para iniciar un nuevo QR.'
+                        : 'Borrador liberado para reintentar la facturación.',
+                    'cart' => DB::table('facturacion_carts')->where('id', $cartId)->first(),
+                ]);
+            });
+        } finally {
+            $lock->release();
+        }
     }
 
     public function abrir(Request $request)

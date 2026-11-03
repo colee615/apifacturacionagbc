@@ -3,6 +3,7 @@
 use App\Http\Controllers\FacturaVentaApiController;
 use App\Http\Controllers\FacturacionCartIntegrationController;
 use App\Http\Controllers\CajaDiariaController;
+use App\Http\Controllers\PaqueteFacturaController;
 use App\Http\Controllers\QhantuyQrController;
 use App\Http\Controllers\VentaController;
 use Illuminate\Http\Request;
@@ -29,6 +30,8 @@ Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::patch('/anular/{cuf}', [FacturaVentaApiController::class, 'anular']);
     Route::get('/consultar/{codigoSeguimiento}', [FacturaVentaApiController::class, 'consultar']);
     Route::get('/pdf/{codigoSeguimiento}', [FacturaVentaApiController::class, 'pdf']);
+    Route::post('/paquetes/consultar-facturas', [PaqueteFacturaController::class, 'consultar']);
+    Route::get('/paquetes/{codigoPaquete}/facturas', [PaqueteFacturaController::class, 'consultarUno']);
     Route::get('/cart/context', [FacturacionCartIntegrationController::class, 'context']);
     Route::put('/cart/billing', [FacturacionCartIntegrationController::class, 'updateBilling']);
     Route::post('/cart/items/upsert', [FacturacionCartIntegrationController::class, 'upsertItem']);

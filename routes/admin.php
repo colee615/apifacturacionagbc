@@ -50,6 +50,7 @@ Route::middleware(['jwt.auth'])->group(function () {
 
    Route::get('/caja/estado', [CajaDiariaController::class, 'estado'])->middleware('permission:ventas.read');
    Route::get('/caja/bloqueadas', [CajaDiariaController::class, 'bloqueadas'])->middleware('permission:ventas.read');
+   Route::post('/caja/bloqueadas/{cartId}/liberar', [CajaDiariaController::class, 'liberarEmisionAtascada'])->whereNumber('cartId')->middleware('permission:ventas.write');
    Route::post('/caja/abrir', [CajaDiariaController::class, 'abrir'])->middleware('permission:ventas.write');
    Route::post('/caja/cerrar', [CajaDiariaController::class, 'cerrar'])->middleware('permission:ventas.write');
    Route::get('/caja/fichas/stock', [CajaDiariaController::class, 'fichasStock'])->middleware('permission:ventas.read');
