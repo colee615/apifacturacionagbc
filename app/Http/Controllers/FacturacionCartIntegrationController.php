@@ -80,6 +80,48 @@ class FacturacionCartIntegrationController extends Controller
             ]);
         }
 
+        $cartState = strtolower(trim((string) ($draft->estado ?? '')));
+        $emissionState = strtoupper(trim((string) ($draft->estado_emision ?? '')));
+        $hasLinkedFiscalInvoice = Venta::query()
+            ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
+            ->where('origen_venta_id', (string) $draft->id)
+            ->where(function ($query) {
+                $query->where('estado_sufe', 'PROCESADA')
+                    ->orWhere(function ($invoiceQuery) {
+                        $invoiceQuery->whereNotNull('numero_factura')
+                            ->where('numero_factura', '<>', '');
+                    })
+                    ->orWhere(function ($cufQuery) {
+                        $cufQuery->whereNotNull('cuf')
+                            ->where('cuf', '<>', '');
+                    });
+            })
+            ->exists();
+        $billingLocked = $cartState !== 'borrador'
+            || in_array($emissionState, ['FACTURADA', 'PROCESADA', 'EMITIENDO', 'EMISION_INCIERTA'], true)
+            || trim((string) ($draft->numero_factura ?? '')) !== ''
+            || $hasLinkedFiscalInvoice;
+
+        if ($billingLocked) {
+            Log::warning('facturacion_cart.billing_update.blocked_locked_cart', [
+                'cart_id' => (int) $draft->id,
+                'origen_usuario_id' => (string) $v['origen_usuario_id'],
+                'cart_state' => $cartState,
+                'emission_state' => $emissionState,
+                'has_linked_fiscal_invoice' => $hasLinkedFiscalInvoice,
+                'actor_id' => $request->user()?->getAuthIdentifier(),
+                'request_id' => $request->header('X-Request-ID'),
+                'ip' => $request->ip(),
+                'provided_fields' => array_values(array_diff(array_keys($v), ['origen_usuario_id', 'cart_id'])),
+            ]);
+
+            return response()->json([
+                'ok' => false,
+                'code' => 'cart_billing_locked',
+                'message' => 'Este carrito ya fue cerrado o tiene una factura vinculada. Sus datos no se pueden modificar; inicia un nuevo carrito.',
+            ], 409);
+        }
+
         $mode = array_key_exists('modalidad_facturacion', $v)
             ? (in_array((string) $v['modalidad_facturacion'], ['con_datos', 'sin_cliente'], true) ? (string) $v['modalidad_facturacion'] : 'con_datos')
             : (string) ($draft->modalidad_facturacion ?? 'con_datos');
@@ -159,14 +201,40 @@ class FacturacionCartIntegrationController extends Controller
         ], $this->identityColumnsForCart($v));
 
         if (!empty($v['cart_id'])) {
-            DB::table('facturacion_carts')
+            $updated = DB::table('facturacion_carts')
                 ->where('id', (int) $draft->id)
+                ->where('origen_usuario_id', (string) $v['origen_usuario_id'])
+                ->where('estado', 'borrador')
+                ->whereRaw("upper(coalesce(estado_emision, '')) not in ('FACTURADA', 'PROCESADA', 'EMITIENDO', 'EMISION_INCIERTA')")
+                ->where(function ($query) {
+                    $query->whereNull('numero_factura')
+                        ->orWhere('numero_factura', '');
+                })
                 ->update(array_merge($updates, ['updated_at' => now()]));
+
+            if ($updated !== 1) {
+                Log::warning('facturacion_cart.billing_update.blocked_cart_changed_during_request', [
+                    'cart_id' => (int) $draft->id,
+                    'origen_usuario_id' => (string) $v['origen_usuario_id'],
+                    'actor_id' => $request->user()?->getAuthIdentifier(),
+                    'request_id' => $request->header('X-Request-ID'),
+                    'ip' => $request->ip(),
+                ]);
+
+                return response()->json([
+                    'ok' => false,
+                    'code' => 'cart_billing_locked',
+                    'message' => 'El carrito cambió de estado y ya no se puede editar. Actualiza la pantalla e inicia un nuevo carrito.',
+                ], 409);
+            }
+
+            $this->logBillingUpdate($request, (int) $draft->id, $draft, $v, $razon, $numero);
 
             return response()->json(['ok' => true, 'cart' => $this->cartById((int) $draft->id)]);
         }
 
         $cartId = $this->ensureDraft((string) $v['origen_usuario_id'], $updates);
+        $this->logBillingUpdate($request, $cartId, $draft, $v, $razon, $numero);
 
         return response()->json(['ok' => true, 'cart' => $this->cartById($cartId)]);
     }
@@ -3122,6 +3190,34 @@ class FacturacionCartIntegrationController extends Controller
         return $row ? $this->cartById((int) $row->id) : null;
     }
 
+    private function logBillingUpdate(Request $request, int $cartId, object $draft, array $validated, ?string $razon, ?string $numero): void
+    {
+        $providedFields = array_values(array_diff(array_keys($validated), ['origen_usuario_id', 'cart_id']));
+
+        Log::info('facturacion_cart.billing_update.persisted', [
+            'cart_id' => $cartId,
+            'origen_usuario_id' => (string) ($validated['origen_usuario_id'] ?? ''),
+            'actor_id' => $request->user()?->getAuthIdentifier(),
+            'request_id' => $request->header('X-Request-ID'),
+            'ip' => $request->ip(),
+            'provided_fields' => $providedFields,
+            'razon_social_before' => $draft->razon_social ?? null,
+            'razon_social_after' => $razon,
+            'documento_before_masked' => $this->maskBillingDocument($draft->numero_documento ?? null),
+            'documento_after_masked' => $this->maskBillingDocument($numero),
+        ]);
+    }
+
+    private function maskBillingDocument(?string $document): ?string
+    {
+        $normalized = trim((string) $document);
+        if ($normalized === '') {
+            return null;
+        }
+
+        return str_repeat('*', max(0, strlen($normalized) - 4)) . substr($normalized, -4);
+    }
+
     private function cartById(int $id): ?array
     {
         $c = DB::table('facturacion_carts')->where('id', $id)->first();
@@ -3205,6 +3301,11 @@ class FacturacionCartIntegrationController extends Controller
             && $linkedCodigoOrden !== ''
             && $responseCodigoOrden !== $linkedCodigoOrden;
         $linkedVentaStatus = strtoupper(trim((string) ($linkedVenta->estado_sufe ?? '')));
+        $hasLinkedFiscalSnapshot = $linkedVenta && (
+            trim((string) ($linkedVenta->numero_factura ?? '')) !== ''
+            || trim((string) ($linkedVenta->cuf ?? '')) !== ''
+            || $linkedVentaStatus === 'PROCESADA'
+        );
         $allowLinkedFiscalFallback = !in_array($linkedVentaStatus, ['ANULADA', 'ANULADO'], true);
         if (!$allowLinkedFiscalFallback) {
             unset($respuestaEmision['cuf'], $respuestaEmision['pdfUrl'], $respuestaEmision['xmlUrl'], $respuestaEmision['codigoSeguimiento']);
@@ -3223,9 +3324,15 @@ class FacturacionCartIntegrationController extends Controller
             $respuestaEmision['facturada'] = false;
             $respuestaEmision['estado'] = 'NO_APLICA';
         }
-        $resolvedTipoDocumento = $c->tipo_documento ?? ($linkedVenta->tipoDocumentoIdentidad ?? null);
-        $resolvedNumeroDocumento = $c->numero_documento ?? ($linkedVenta->documentoIdentidad ?? null);
-        $resolvedRazonSocial = $c->razon_social ?? ($linkedVenta->razonSocial ?? null);
+        $resolvedTipoDocumento = $hasLinkedFiscalSnapshot
+            ? ($linkedVenta->tipoDocumentoIdentidad ?? $c->tipo_documento)
+            : ($c->tipo_documento ?? ($linkedVenta->tipoDocumentoIdentidad ?? null));
+        $resolvedNumeroDocumento = $hasLinkedFiscalSnapshot
+            ? ($linkedVenta->documentoIdentidad ?? $c->numero_documento)
+            : ($c->numero_documento ?? ($linkedVenta->documentoIdentidad ?? null));
+        $resolvedRazonSocial = $hasLinkedFiscalSnapshot
+            ? ($linkedVenta->razonSocial ?? $c->razon_social)
+            : ($c->razon_social ?? ($linkedVenta->razonSocial ?? null));
         $resolvedNumeroFactura = trim((string) (
             ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.nroFactura'))
             ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'nroFactura'))
