@@ -1722,6 +1722,52 @@ class VentaController extends Controller
             }
         }
 
+        // Fiscal rows linked to a facturation cart are initially streamed from
+        // `ventas`. Their `detalle_ventas` payload does not carry the cart's
+        // postal snapshot (weight, destination and package references), while
+        // the personal Kardex obtains those fields from `facturacion_cart_items`.
+        // Reattach that same source detail so the branch Kardex uses identical
+        // service and package data without adding a duplicate sale row.
+        if (Schema::hasTable('facturacion_carts') && Schema::hasTable('facturacion_cart_items')) {
+            $cartIds = collect($detail)
+                ->filter(fn (array $row): bool => in_array(
+                    trim((string) ($row['origenVentaTipo'] ?? $row['origen_venta_tipo'] ?? '')),
+                    ['facturacion_cart', 'facturacion_cart_remote'],
+                    true
+                ))
+                ->map(fn (array $row): int => (int) (
+                    $row['cartId']
+                    ?? $row['origenVentaId']
+                    ?? $row['origen_venta_id']
+                    ?? 0
+                ))
+                ->filter(fn (int $id): bool => $id > 0)
+                ->unique()
+                ->values();
+
+            if ($cartIds->isNotEmpty()) {
+                $cartRows = DB::table('facturacion_carts')
+                    ->whereIn('id', $cartIds->all())
+                    ->get(['id']);
+                $itemsByCart = $this->serviceReportCartItemsMapFromRows($cartRows);
+
+                $detail = array_map(function (array $row) use ($itemsByCart): array {
+                    $cartId = (int) (
+                        $row['cartId']
+                        ?? $row['origenVentaId']
+                        ?? $row['origen_venta_id']
+                        ?? 0
+                    );
+                    $cartItems = $itemsByCart[$cartId] ?? [];
+                    if ($cartItems !== []) {
+                        $row['items'] = $cartItems;
+                    }
+
+                    return $row;
+                }, $detail);
+            }
+        }
+
         $responseFilters = $filters;
         unset(
             $responseFilters['origen_usuario_ids'],
