@@ -98,6 +98,9 @@ class VentaController extends Controller
     private function enrichCartItemPayload(array $payload, string $origenTipo = '', int $origenId = 0): array
     {
         $payload['resumen_origen'] = is_array($payload['resumen_origen'] ?? null) ? $payload['resumen_origen'] : [];
+        if ($origenId > 0 && (int) ($payload['origen_id'] ?? 0) <= 0) {
+            $payload['origen_id'] = $origenId;
+        }
 
         $reference = $this->resolvePackageReferenceFromPayload($payload, $origenTipo, $origenId);
         if ($reference === '') {
