@@ -1154,6 +1154,8 @@ class VentaController extends Controller
             $query->whereRaw("upper(replace(coalesce(origen_usuario_carnet, ''), ' ', '')) = ?", [(string) $filters['origen_usuario_carnet']]);
         }
 
+        $this->applyKardexIdentitySetFilter($query, $filters, 'ventas');
+
         if (array_key_exists('codigoSucursal', $filters) && $filters['codigoSucursal'] !== null) {
             $query->where('codigoSucursal', (int) $filters['codigoSucursal']);
         }
@@ -1191,6 +1193,49 @@ class VentaController extends Controller
         }
 
         return $query;
+    }
+
+    /** Apply a safely scoped OR-filter for the identities in a branch Kardex request. */
+    private function applyKardexIdentitySetFilter($query, array $filters, string $table): void
+    {
+        if (empty($filters['origen_usuario_ids'])
+            && empty($filters['origen_usuario_emails'])
+            && empty($filters['origen_usuario_aliases'])
+            && empty($filters['origen_usuario_carnets'])) {
+            return;
+        }
+
+        $identityColumns = [
+            'origen_usuario_id' => array_values(array_filter((array) ($filters['origen_usuario_ids'] ?? []))),
+            'origen_usuario_email' => array_values(array_filter((array) ($filters['origen_usuario_emails'] ?? []))),
+            'origen_usuario_alias' => array_values(array_filter((array) ($filters['origen_usuario_aliases'] ?? []))),
+            'origen_usuario_carnet' => array_values(array_filter((array) ($filters['origen_usuario_carnets'] ?? []))),
+        ];
+        $available = array_filter(
+            $identityColumns,
+            fn (array $values, string $column) => $values !== [] && Schema::hasColumn($table, $column),
+            ARRAY_FILTER_USE_BOTH
+        );
+
+        // Fail closed if the request contains no identity this table can match.
+        $query->where(function ($scope) use ($available): void {
+            if ($available === []) {
+                $scope->whereRaw('1 = 0');
+                return;
+            }
+
+            foreach ($available as $column => $values) {
+                if ($column === 'origen_usuario_email' || $column === 'origen_usuario_alias') {
+                    $normalized = array_values(array_unique(array_map(fn ($value) => mb_strtolower(trim((string) $value)), $values)));
+                    $scope->orWhereIn(DB::raw('lower('.$column.')'), $normalized);
+                } elseif ($column === 'origen_usuario_carnet') {
+                    $normalized = array_values(array_unique(array_map(fn ($value) => preg_replace('/\\s+/', '', mb_strtoupper(trim((string) $value))), $values)));
+                    $scope->orWhereIn(DB::raw("upper(replace(coalesce({$column}, ''), ' ', ''))"), $normalized);
+                } else {
+                    $scope->orWhereIn($column, $values);
+                }
+            }
+        });
     }
 
     private function requestIdentityFilters(Request $request): array
@@ -1629,6 +1674,68 @@ class VentaController extends Controller
             'ventas'=>$report['resumen']['facturadas'], 'ventasAnuladas'=>$report['resumen']['facturasAnuladas'],
             'totalAnulado'=>$report['resumen']['totalFacturasAnuladas'], 'totalImporteRegistros'=>$report['resumen']['totalRegistros']],
             'usuarios'=>$users, 'detalle'=>$detail, 'version'=>$report['version']]);
+    }
+
+    /**
+     * Return the Kardex rows for multiple cashier identities in one database
+     * pass. SITRA consumes this endpoint for branch reports instead of issuing
+     * separate Kardex and cart requests for every cashier.
+     */
+    public function kardexSucursal(Request $request)
+    {
+        $validated = $request->validate([
+            'fechaInicio' => ['nullable', 'date_format:Y-m-d'],
+            'fechaFin' => ['nullable', 'date_format:Y-m-d'],
+            'origen_usuario_ids' => ['required', 'array', 'min:1', 'max:200'],
+            'origen_usuario_ids.*' => ['required', 'string', 'max:100', 'distinct'],
+            'origen_usuario_emails' => ['sometimes', 'array', 'max:200'],
+            'origen_usuario_emails.*' => ['nullable', 'string', 'max:120', 'distinct'],
+            'origen_usuario_aliases' => ['sometimes', 'array', 'max:200'],
+            'origen_usuario_aliases.*' => ['nullable', 'string', 'max:80', 'distinct'],
+            'origen_usuario_carnets' => ['sometimes', 'array', 'max:200'],
+            'origen_usuario_carnets.*' => ['nullable', 'string', 'max:40', 'distinct'],
+            'estado_sufe' => ['nullable', 'string', 'max:50'],
+            'q' => ['nullable', 'string', 'max:100'],
+            'limite' => ['nullable', 'integer', 'min:1', 'max:5000'],
+        ]);
+        $filters = $this->normalizeVentaReportPeriodFilters($validated);
+        $filters['origen_usuario_ids'] = array_values(array_unique(array_filter(array_map(
+            fn ($value) => trim((string) $value),
+            (array) ($validated['origen_usuario_ids'] ?? [])
+        ))));
+        foreach (['origen_usuario_emails', 'origen_usuario_aliases', 'origen_usuario_carnets'] as $field) {
+            $filters[$field] = array_values(array_unique(array_filter(array_map(
+                fn ($value) => trim((string) $value),
+                (array) ($validated[$field] ?? [])
+            ))));
+        }
+
+        $limit = min(5000, max(1, (int) ($validated['limite'] ?? 500)));
+        $detail = [];
+        foreach ($this->financialReportRows($filters) as $row) {
+            $detail[] = $row;
+            if (count($detail) >= $limit) {
+                break;
+            }
+        }
+
+        $responseFilters = $filters;
+        unset(
+            $responseFilters['origen_usuario_ids'],
+            $responseFilters['origen_usuario_emails'],
+            $responseFilters['origen_usuario_aliases'],
+            $responseFilters['origen_usuario_carnets']
+        );
+
+        return response()->json([
+            'filters' => array_merge($responseFilters, ['limite' => $limit]),
+            'detalle' => $detail,
+            'meta' => [
+                'detalleLimitado' => count($detail) >= $limit,
+                'limite' => $limit,
+                'alcance' => 'Ventas de los cajeros cuyas identidades fueron enviadas, incluidas las identidades históricas de correo, alias y carnet.',
+            ],
+        ]);
     }
 
     public function kardexRegionales(Request $request)
@@ -4817,6 +4924,8 @@ class VentaController extends Controller
         if (! empty($filters['origen_usuario_carnet']) && $this->hasCartOrigenUsuarioCarnetColumn()) {
             $query->whereRaw("upper(replace(coalesce(origen_usuario_carnet, ''), ' ', '')) = ?", [(string) $filters['origen_usuario_carnet']]);
         }
+
+        $this->applyKardexIdentitySetFilter($query, $filters, 'facturacion_carts');
 
         if (array_key_exists('codigoSucursal', $filters) && $filters['codigoSucursal'] !== null && $this->hasCartOrigenSucursalCodigoColumn()) {
             $query->where('origen_sucursal_codigo', (string) $filters['codigoSucursal']);
