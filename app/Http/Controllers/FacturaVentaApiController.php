@@ -1024,16 +1024,41 @@ class FacturaVentaApiController extends Controller
             $currentStatus = (string) ($lastVenta->estado_sufe ?? 'RECEPCIONADA');
             $resolvedStatus = $this->resolveBridgeStatus($currentStatus, $lastNotification, $lastConsulta);
 
-            if ($lastVenta && $resolvedStatus !== $currentStatus) {
+            $resolvedNumeroFactura = trim((string) (
+                data_get($lastConsulta, 'nroFactura')
+                ?: data_get($lastConsulta, 'numeroFactura')
+                ?: ($lastVenta->numero_factura ?? '')
+            ));
+            $resolvedCuf = trim((string) (
+                data_get($lastConsulta, 'cuf')
+                ?: ($lastVenta->cuf ?? '')
+            ));
+            $resolvedObservacion = data_get($lastConsulta, 'observacion') ?: ($lastVenta->observacion_sufe ?? null);
+            $invoiceNumberChanged = $resolvedNumeroFactura !== trim((string) ($lastVenta->numero_factura ?? ''));
+            $fiscalDataChanged = $invoiceNumberChanged
+                || $resolvedCuf !== trim((string) ($lastVenta->cuf ?? ''))
+                || (string) ($resolvedObservacion ?? '') !== (string) ($lastVenta->observacion_sufe ?? '');
+
+            if ($lastVenta && ($resolvedStatus !== $currentStatus || $fiscalDataChanged)) {
                 DB::table('ventas')
                     ->where('id', $lastVenta->id)
                     ->update([
                         'estado_sufe' => $resolvedStatus,
-                        'cuf' => data_get($lastConsulta, 'cuf', $lastVenta->cuf),
-                        'numero_factura' => data_get($lastConsulta, 'nroFactura', $lastVenta->numero_factura ?? null),
-                        'observacion_sufe' => data_get($lastConsulta, 'observacion', $lastVenta->observacion_sufe),
+                        'cuf' => $resolvedCuf !== '' ? $resolvedCuf : $lastVenta->cuf,
+                        'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : $lastVenta->numero_factura,
+                        'observacion_sufe' => $resolvedObservacion,
                         'updated_at' => now(),
                     ]);
+
+                if ($invoiceNumberChanged && $resolvedNumeroFactura !== '') {
+                    Log::info('FacturaVentaApi número de factura recuperado en consulta de emisión.', [
+                        'venta_id' => (int) $lastVenta->id,
+                        'codigo_seguimiento' => $venta['codigoSeguimiento'],
+                        'numero_factura' => $resolvedNumeroFactura,
+                        'estado_sufe' => $resolvedStatus,
+                        'estado_previo' => $currentStatus,
+                    ]);
+                }
 
                 $lastVenta = $this->ventaByCodigoSeguimiento($venta['codigoSeguimiento']) ?: $lastVenta;
                 if ($lastVenta) {
@@ -1080,14 +1105,25 @@ class FacturaVentaApiController extends Controller
             $currentStatus = (string) ($lastVenta->estado_sufe ?? 'ANULACION_SOLICITADA');
             $resolvedStatus = $this->resolveBridgeStatus($currentStatus, $lastNotification, $lastConsulta);
 
-            if ($resolvedStatus !== $currentStatus) {
+            $resolvedNumeroFactura = trim((string) (
+                data_get($lastConsulta, 'nroFactura')
+                ?: data_get($lastConsulta, 'numeroFactura')
+                ?: ($lastVenta->numero_factura ?? '')
+            ));
+            $resolvedCuf = trim((string) (data_get($lastConsulta, 'cuf') ?: ($lastVenta->cuf ?? '')));
+            $resolvedObservacion = data_get($lastConsulta, 'observacion') ?: ($lastVenta->observacion_sufe ?? null);
+            $fiscalDataChanged = $resolvedNumeroFactura !== trim((string) ($lastVenta->numero_factura ?? ''))
+                || $resolvedCuf !== trim((string) ($lastVenta->cuf ?? ''))
+                || (string) ($resolvedObservacion ?? '') !== (string) ($lastVenta->observacion_sufe ?? '');
+
+            if ($resolvedStatus !== $currentStatus || $fiscalDataChanged) {
                 DB::table('ventas')
                     ->where('id', $lastVenta->id)
                     ->update([
                         'estado_sufe' => $resolvedStatus,
-                        'cuf' => data_get($lastConsulta, 'cuf', $lastVenta->cuf),
-                        'numero_factura' => data_get($lastConsulta, 'nroFactura', $lastVenta->numero_factura ?? null),
-                        'observacion_sufe' => data_get($lastConsulta, 'observacion', $lastVenta->observacion_sufe),
+                        'cuf' => $resolvedCuf !== '' ? $resolvedCuf : $lastVenta->cuf,
+                        'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : $lastVenta->numero_factura,
+                        'observacion_sufe' => $resolvedObservacion,
                         'updated_at' => now(),
                     ]);
 
@@ -1171,6 +1207,14 @@ class FacturaVentaApiController extends Controller
             'respuesta_emision' => json_encode($response, JSON_UNESCAPED_UNICODE),
             'updated_at' => now(),
         ];
+        $numeroFactura = trim((string) ($venta->numero_factura ?? ''));
+        if (
+            $numeroFactura !== ''
+            && !in_array($resolvedBridgeStatus, ['ANULADA', 'ANULADO'], true)
+            && Schema::hasColumn('facturacion_carts', 'numero_factura')
+        ) {
+            $updates['numero_factura'] = $numeroFactura;
+        }
 
         if ($isPaidQrCart && in_array($resolvedBridgeStatus, ['ANULADA', 'ANULADO'], true)) {
             $response = $this->stripFiscalDataFromQrAnnulledResponse($response);

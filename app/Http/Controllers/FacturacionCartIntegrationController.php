@@ -3333,25 +3333,50 @@ class FacturacionCartIntegrationController extends Controller
         $resolvedRazonSocial = $hasLinkedFiscalSnapshot
             ? ($linkedVenta->razonSocial ?? $c->razon_social)
             : ($c->razon_social ?? ($linkedVenta->razonSocial ?? null));
-        $resolvedNumeroFactura = trim((string) (
-            ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.nroFactura'))
-            ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'nroFactura'))
-            ?: ($allowLinkedFiscalFallback ? ($linkedVenta->numero_factura ?? '') : '')
+        $codigoSeguimientoFiscal = trim((string) (
+            ($c->codigo_seguimiento_fiscal ?? null)
+            ?: ($c->codigo_seguimiento ?? null)
+            ?: ($allowLinkedFiscalFallback ? ($linkedVenta->codigoSeguimiento ?? '') : '')
         ));
+        $detalleNotificacionFiscal = $allowLinkedFiscalFallback && $codigoSeguimientoFiscal !== ''
+            ? $this->latestNotificationDetailBySeguimiento($codigoSeguimientoFiscal)
+            : [];
+        $facturaRespuesta = trim((string) (
+            ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.nroFactura'))
+            ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.numeroFactura'))
+            ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'nroFactura'))
+            ?: ''
+        ));
+        $facturaCart = trim((string) ($c->numero_factura ?? ''));
+        $facturaVenta = trim((string) ($allowLinkedFiscalFallback ? ($linkedVenta->numero_factura ?? '') : ''));
+        $facturaNotificacion = trim((string) (
+            data_get($detalleNotificacionFiscal, 'nroFactura')
+            ?: data_get($detalleNotificacionFiscal, 'numeroFactura')
+            ?: ''
+        ));
+        $resolvedNumeroFactura = $facturaRespuesta ?: $facturaCart ?: $facturaVenta ?: $facturaNotificacion;
+        $numeroFacturaFuente = $facturaRespuesta !== ''
+            ? 'respuesta_emision'
+            : ($facturaCart !== ''
+                ? 'facturacion_carts'
+                : ($facturaVenta !== '' ? 'venta' : ($facturaNotificacion !== '' ? 'notificacion_sefe' : 'sin_dato')));
         $resolvedCuf = trim((string) (
             ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.cuf'))
             ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'cuf'))
             ?: ($allowLinkedFiscalFallback ? ($linkedVenta->cuf ?? '') : '')
+            ?: data_get($detalleNotificacionFiscal, 'cuf')
         ));
         $resolvedPdfUrl = trim((string) (
             ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.pdfUrl'))
             ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'pdfUrl'))
             ?: ($allowLinkedFiscalFallback ? ($linkedVenta->url_pdf ?? '') : '')
+            ?: data_get($detalleNotificacionFiscal, 'urlPdf')
         ));
         $resolvedXmlUrl = trim((string) (
             ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'factura.xmlUrl'))
             ?: ($respuestaEmisionDesalineada ? null : data_get($respuestaEmision, 'xmlUrl'))
             ?: ($allowLinkedFiscalFallback ? ($linkedVenta->url_xml ?? '') : '')
+            ?: data_get($detalleNotificacionFiscal, 'urlXml')
         ));
         $qrReemision = data_get($respuestaEmision, 'qr_reemision');
         $historialQr = [];
@@ -3382,6 +3407,14 @@ class FacturacionCartIntegrationController extends Controller
         }
         Log::info('facturacion_cart.cart_by_id.payload', [
             'cart_id' => $id,
+            'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null,
+            'codigo_seguimiento_fiscal_final' => $codigoSeguimientoFiscal !== '' ? substr($codigoSeguimientoFiscal, -5) : null,
+            'estado_emision' => strtoupper(trim((string) ($c->estado_emision ?? ''))),
+            'estado_sufe_venta' => $linkedVentaStatus !== '' ? $linkedVentaStatus : null,
+            'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : null,
+            'numero_factura_fuente' => $numeroFacturaFuente,
+            'tiene_cuf' => $resolvedCuf !== '',
+            'tiene_pdf' => $resolvedPdfUrl !== '',
             'db_cantidad_items' => (int) ($c->cantidad_items ?? 0),
             'db_total' => (float) ($c->total ?? 0),
             'items' => collect($items)->map(function ($item) {
@@ -3395,6 +3428,26 @@ class FacturacionCartIntegrationController extends Controller
                 ];
             })->values()->all(),
         ]);
+
+        if (
+            $resolvedNumeroFactura === ''
+            && (
+                strtoupper(trim((string) ($c->estado_emision ?? ''))) === 'FACTURADA'
+                || $linkedVentaStatus === 'PROCESADA'
+                || $resolvedCuf !== ''
+            )
+        ) {
+            Log::warning('facturacion_cart.invoice_number_missing_on_processed_sale', [
+                'cart_id' => $id,
+                'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null,
+                'codigo_seguimiento_fiscal_final' => $codigoSeguimientoFiscal !== '' ? substr($codigoSeguimientoFiscal, -5) : null,
+                'estado_emision' => strtoupper(trim((string) ($c->estado_emision ?? ''))),
+                'estado_sufe_venta' => $linkedVentaStatus !== '' ? $linkedVentaStatus : null,
+                'tiene_cuf' => $resolvedCuf !== '',
+                'tiene_pdf' => $resolvedPdfUrl !== '',
+                'notificacion_trae_numero' => $facturaNotificacion !== '',
+            ]);
+        }
 
         return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $resolvedTipoDocumento, 'numero_documento' => $resolvedNumeroDocumento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $resolvedRazonSocial, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $respuestaEmision, 'respuesta_emision_desalineada' => $respuestaEmisionDesalineada, 'codigo_orden_respuesta' => $responseCodigoOrden !== '' ? $responseCodigoOrden : null, 'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : null, 'cuf' => $resolvedCuf !== '' ? $resolvedCuf : null, 'pdf_url' => $resolvedPdfUrl !== '' ? $resolvedPdfUrl : null, 'xml_url' => $resolvedXmlUrl !== '' ? $resolvedXmlUrl : null, 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'historial_qr' => $historialQr, 'items' => $items];
     }

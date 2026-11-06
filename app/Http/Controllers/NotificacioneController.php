@@ -162,6 +162,13 @@ class NotificacioneController extends Controller
       $observacion = $validated['observacion'] ?? data_get($validated, 'detalle.observacion');
       $tipoEmision = (string) data_get($validated, 'detalle.tipoEmision', '');
       $estadoSufe = $this->resolveVentaEstadoSufe($validated);
+      $numeroFactura = trim((string) (
+         data_get($validated, 'detalle.nroFactura')
+         ?: data_get($validated, 'detalle.numeroFactura')
+         ?: data_get($validated, 'nroFactura')
+         ?: data_get($validated, 'numeroFactura')
+         ?: ''
+      ));
       $updates = [
          'estado_sufe' => $estadoSufe,
          'tipo_emision_sufe' => $tipoEmision,
@@ -177,6 +184,10 @@ class NotificacioneController extends Controller
       if ($tipoEmision !== 'ANULACION') {
          $updates['url_pdf'] = data_get($validated, 'detalle.urlPdf');
          $updates['url_xml'] = data_get($validated, 'detalle.urlXml');
+
+         if ($numeroFactura !== '' && Schema::hasColumn('ventas', 'numero_factura')) {
+            $updates['numero_factura'] = $numeroFactura;
+         }
       }
 
       Venta::query()
@@ -192,6 +203,7 @@ class NotificacioneController extends Controller
             'codigoSeguimiento',
             'estado_sufe',
             'cuf',
+            'numero_factura',
             'origen_usuario_id',
             'metodoPago',
             'origen_venta_tipo',
@@ -203,7 +215,37 @@ class NotificacioneController extends Controller
          ]);
 
       if (!$venta) {
+         if ($tipoEmision === 'EMISION' && $estadoSufe === 'PROCESADA' && $numeroFactura === '') {
+            Log::warning('SEFE notificó emisión procesada sin número de factura y no se encontró la venta local.', [
+               'codigo_seguimiento' => $codigoSeguimiento,
+               'estado_sufe' => $estadoSufe,
+               'tiene_cuf' => filled(data_get($validated, 'detalle.cuf')),
+               'tiene_pdf' => filled(data_get($validated, 'detalle.urlPdf')),
+            ]);
+         }
+
          return;
+      }
+
+      if ($tipoEmision === 'EMISION' && $estadoSufe === 'PROCESADA') {
+         if ($numeroFactura !== '') {
+            Log::info('SEFE número de factura sincronizado desde notificación.', [
+               'codigo_seguimiento' => $codigoSeguimiento,
+               'venta_id' => (int) $venta->id,
+               'cart_id' => (int) ($venta->origen_venta_id ?? 0) ?: null,
+               'numero_factura' => $numeroFactura,
+               'numero_factura_persistido' => Schema::hasColumn('ventas', 'numero_factura'),
+            ]);
+         } else {
+            Log::warning('SEFE notificó emisión procesada sin número de factura.', [
+               'codigo_seguimiento' => $codigoSeguimiento,
+               'venta_id' => (int) $venta->id,
+               'cart_id' => (int) ($venta->origen_venta_id ?? 0) ?: null,
+               'estado_sufe' => $estadoSufe,
+               'tiene_cuf' => filled($venta->cuf ?? null),
+               'tiene_pdf' => filled(data_get($validated, 'detalle.urlPdf')),
+            ]);
+         }
       }
 
       $origenVentaTipo = (string) ($venta->origen_venta_tipo ?? '');
@@ -230,15 +272,18 @@ class NotificacioneController extends Controller
          default => 'Estado de facturacion actualizado desde la notificacion de SEFE.',
       };
 
-      DB::table('facturacion_carts')
-         ->where('id', $cartId)
-         ->update([
-            'estado_emision' => $estadoEmision,
-            'mensaje_emision' => $mensajeEmision,
-            'codigo_seguimiento' => $venta->codigoSeguimiento,
-            'codigo_seguimiento_fiscal' => $venta->codigoSeguimiento,
-            'updated_at' => now(),
-         ]);
+      $cartUpdates = [
+         'estado_emision' => $estadoEmision,
+         'mensaje_emision' => $mensajeEmision,
+         'codigo_seguimiento' => $venta->codigoSeguimiento,
+         'codigo_seguimiento_fiscal' => $venta->codigoSeguimiento,
+         'updated_at' => now(),
+      ];
+      if ($numeroFactura !== '' && Schema::hasColumn('facturacion_carts', 'numero_factura')) {
+         $cartUpdates['numero_factura'] = $numeroFactura;
+      }
+
+      DB::table('facturacion_carts')->where('id', $cartId)->update($cartUpdates);
 
       $this->reverseVentaFromCajaIfNeeded($venta, $estadoSufe);
    }
