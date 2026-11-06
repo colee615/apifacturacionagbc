@@ -1658,6 +1658,30 @@ class VentaController extends Controller
     public function kardexUsuarios(Request $request)
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+
+        // SITRA only needs detailed rows for the Kardex. Skip the full
+        // financial snapshot so the same records are not scanned twice.
+        if ($request->boolean('soloDetalle')) {
+            $limit = min(500, max(1, (int) ($filters['limite'] ?? 500)));
+            $detail = [];
+            foreach ($this->financialReportRows($filters) as $row) {
+                $detail[] = $row;
+                if (count($detail) >= $limit) {
+                    break;
+                }
+            }
+
+            return response()->json([
+                'filters' => $filters,
+                'detalle' => $detail,
+                'meta' => [
+                    'soloDetalle' => true,
+                    'detalleLimitado' => count($detail) >= $limit,
+                    'limite' => $limit,
+                ],
+            ]);
+        }
+
         $report = $this->financialReportSnapshot($filters, 0);
         $users = array_map(fn($row) => $row + [
             'usuarioId'=>data_get($row,'usuario.id'), 'usuarioNombre'=>data_get($row,'usuario.nombre'),
