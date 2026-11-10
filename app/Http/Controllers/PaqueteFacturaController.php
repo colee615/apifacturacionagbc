@@ -66,10 +66,23 @@ class PaqueteFacturaController extends Controller
             ], 422);
         }
 
-        // Una sola consulta busca todos los códigos exactos y conserva cada venta/factura asociada.
+        // El detalle fiscal puede guardar el código del paquete dentro de una
+        // referencia de servicio, por ejemplo SRVE-3-EE000747787BO.
         $rows = DB::table('detalle_ventas as dv')
             ->join('ventas as v', 'v.id', '=', 'dv.venta_id')
-            ->whereIn('dv.codigo', $codigos->all())
+            ->where(function ($query) use ($codigos) {
+                $query->whereIn('dv.codigo', $codigos->all());
+
+                foreach ($codigos as $codigo) {
+                    // Package codes are alphanumeric (and may contain dashes);
+                    // excluding LIKE metacharacters keeps this suffix match exact.
+                    if (preg_match('/^[A-Z0-9-]+$/D', $codigo) !== 1) {
+                        continue;
+                    }
+
+                    $query->orWhereRaw('UPPER(TRIM(dv.codigo)) LIKE ?', ['SRVE-%-'.$codigo]);
+                }
+            })
             ->orderBy('dv.codigo')
             ->orderByDesc('v.id')
             ->get([
@@ -97,7 +110,12 @@ class PaqueteFacturaController extends Controller
             ]);
 
         $datosFacturaPorSeguimiento = $this->buscarDatosFacturaPorSeguimiento($rows);
-        $filasPorCodigo = $rows->groupBy(fn ($row) => mb_strtoupper(trim((string) $row->codigo_paquete)));
+        $filasPorCodigo = $rows->groupBy(function ($row) use ($codigos) {
+            $codigoDetalle = mb_strtoupper(trim((string) $row->codigo_paquete));
+            $codigoPaquete = mb_strtoupper($this->extractPackageCodeFromServiceReference($codigoDetalle));
+
+            return $codigos->contains($codigoPaquete) ? $codigoPaquete : $codigoDetalle;
+        });
 
         $resultados = $codigos->map(function (string $codigo) use ($filasPorCodigo, $datosFacturaPorSeguimiento) {
             $filas = $filasPorCodigo->get($codigo, collect());
@@ -141,6 +159,16 @@ class PaqueteFacturaController extends Controller
             'cantidad_codigos' => $resultados->count(),
             'resultados' => $resultados,
         ]);
+    }
+
+    private function extractPackageCodeFromServiceReference(string $reference): string
+    {
+        $reference = trim($reference);
+        if (preg_match('/^SRVE-\d+\s*-\s*(.+)$/i', $reference, $matches) === 1) {
+            return trim($matches[1]);
+        }
+
+        return $reference;
     }
 
     private function formatearVenta(Collection $detalleVenta, array $datosFacturaPorSeguimiento): array
