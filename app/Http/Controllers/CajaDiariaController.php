@@ -1273,18 +1273,21 @@ class CajaDiariaController extends Controller
             'ok' => true,
             'fecha' => $fecha,
             'conciliaciones' => $rows->map(function ($row) use ($fecha) {
+                $alcance = (string) ($row->alcance ?? 'sucursal');
                 $snapshot = $this->buildConciliacionSnapshot(
                     $fecha,
                     (int) $row->codigo_sucursal,
                     (int) $row->punto_venta,
-                    (string) ($row->sucursal_nombre ?? '')
+                    (string) ($row->sucursal_nombre ?? ''),
+                    $alcance
                 );
 
                 $freshRow = $this->readConciliacionRow(
                     $fecha,
                     (int) $row->codigo_sucursal,
                     (int) $row->punto_venta,
-                    $snapshot
+                    $snapshot,
+                    $alcance
                 );
 
                 return $this->conciliacionPayload($freshRow);
@@ -1298,17 +1301,25 @@ class CajaDiariaController extends Controller
             'fecha' => ['required', 'date_format:Y-m-d'],
             'codigoSucursal' => ['required', 'integer', 'min:0'],
             'puntoVenta' => ['nullable', 'integer', 'min:0'],
+            'alcance' => ['nullable', 'in:sucursal,la-paz-el-alto'],
         ]);
 
         $fecha = (string) $validated['fecha'];
         $codigoSucursal = (int) $validated['codigoSucursal'];
         $puntoVenta = (int) ($validated['puntoVenta'] ?? 0);
+        $alcance = (string) ($validated['alcance'] ?? 'sucursal');
+        if ($alcance === 'la-paz-el-alto' && ($codigoSucursal !== 0 || $puntoVenta !== 0)) {
+            throw ValidationException::withMessages([
+                'alcance' => ['La conciliación conjunta corresponde a La Paz y El Alto, punto 0.'],
+            ]);
+        }
 
         $row = $this->readConciliacionRow(
             $fecha,
             $codigoSucursal,
             $puntoVenta,
-            $this->buildConciliacionSnapshot($fecha, $codigoSucursal, $puntoVenta)
+            $this->buildConciliacionSnapshot($fecha, $codigoSucursal, $puntoVenta, null, $alcance),
+            $alcance
         );
         $receipts = $this->conciliacionReceipts($row->id);
 
@@ -1328,6 +1339,7 @@ class CajaDiariaController extends Controller
             'fecha' => ['required', 'date_format:Y-m-d'],
             'codigoSucursal' => ['required', 'integer', 'min:0'],
             'puntoVenta' => ['nullable', 'integer', 'min:0'],
+            'alcance' => ['nullable', 'in:sucursal,la-paz-el-alto'],
             'sucursalNombre' => ['nullable', 'string', 'max:180'],
             'totalEfectivoSistema' => ['nullable', 'numeric', 'min:0'],
             'totalQrSistema' => ['nullable', 'numeric', 'min:0'],
@@ -1353,9 +1365,16 @@ class CajaDiariaController extends Controller
         $fecha = (string) $validated['fecha'];
         $codigoSucursal = (int) $validated['codigoSucursal'];
         $puntoVenta = (int) ($validated['puntoVenta'] ?? 0);
+        $alcance = (string) ($validated['alcance'] ?? 'sucursal');
+        if ($alcance === 'la-paz-el-alto' && ($codigoSucursal !== 0 || $puntoVenta !== 0)) {
+            throw ValidationException::withMessages([
+                'alcance' => ['La conciliación conjunta corresponde a La Paz y El Alto, punto 0.'],
+            ]);
+        }
 
         $row = $this->findOrCreateConciliacionRow($fecha, $codigoSucursal, $puntoVenta,
-            $this->buildConciliacionSnapshot($fecha, $codigoSucursal, $puntoVenta, $validated['sucursalNombre'] ?? null));
+            $this->buildConciliacionSnapshot($fecha, $codigoSucursal, $puntoVenta, $validated['sucursalNombre'] ?? null, $alcance),
+            $alcance);
 
         $file = $validated['archivo'];
         $folderRelative = 'uploads/conciliaciones/' . now()->format('Y/m');
@@ -1368,7 +1387,8 @@ class CajaDiariaController extends Controller
         $originalName = $file->getClientOriginalName();
         $originalMime = $file->getClientMimeType();
         $originalSize = (int) ($file->getSize() ?: 0);
-        $filename = 'comp-' . $fecha . '-s' . str_pad((string) $codigoSucursal, 3, '0', STR_PAD_LEFT) . '-pv' . $puntoVenta . '-' . now()->format('His') . '-' . Str::random(8) . '.' . $extension;
+        $scopeFileSuffix = $alcance === 'la-paz-el-alto' ? '-lp-ea' : '';
+        $filename = 'comp-' . $fecha . '-s' . str_pad((string) $codigoSucursal, 3, '0', STR_PAD_LEFT) . '-pv' . $puntoVenta . $scopeFileSuffix . '-' . now()->format('His') . '-' . Str::random(8) . '.' . $extension;
         $file->move($folder, $filename);
 
         $storedPath = $folder . DIRECTORY_SEPARATOR . $filename;
@@ -1487,8 +1507,42 @@ class CajaDiariaController extends Controller
         return [$cents / 100, $rows->count()];
     }
 
-    private function buildConciliacionSnapshot(string $fecha, int $codigoSucursal, int $puntoVenta, ?string $sucursalNombre = null): array
+    private function buildConciliacionSnapshot(
+        string $fecha,
+        int $codigoSucursal,
+        int $puntoVenta,
+        ?string $sucursalNombre = null,
+        string $alcance = 'sucursal'
+    ): array
     {
+        if ($alcance === 'la-paz-el-alto') {
+            $reports = [0, 10];
+            $totals = [
+                'totalEfectivoFacturado' => 0,
+                'totalQrFacturado' => 0,
+                'totalVendido' => 0,
+            ];
+
+            foreach ($reports as $branchCode) {
+                $report = app(VentaController::class)->financialReportSnapshot([
+                    'fechaInicio' => $fecha,
+                    'fechaFin' => $fecha,
+                    'codigoSucursal' => $branchCode,
+                    'puntoVenta' => $puntoVenta,
+                ], 0);
+                foreach (array_keys($totals) as $field) {
+                    $totals[$field] += \App\Support\FinancialSale::cents($report['resumen'][$field] ?? 0);
+                }
+            }
+
+            return [
+                'sucursal_nombre' => $sucursalNombre ?: 'LA PAZ + EL ALTO',
+                'total_efectivo_sistema' => $totals['totalEfectivoFacturado'] / 100,
+                'total_qr_sistema' => $totals['totalQrFacturado'] / 100,
+                'total_general_sistema' => $totals['totalVendido'] / 100,
+            ];
+        }
+
         $report = app(VentaController::class)->financialReportSnapshot(['fechaInicio'=>$fecha,'fechaFin'=>$fecha,
             'codigoSucursal'=>$codigoSucursal,'puntoVenta'=>$puntoVenta], 0);
         return ['sucursal_nombre'=>$sucursalNombre,
@@ -1497,12 +1551,22 @@ class CajaDiariaController extends Controller
             'total_general_sistema'=>$report['resumen']['totalVendido']];
     }
 
-    private function readConciliacionRow(string $fecha, int $codigoSucursal, int $puntoVenta, array $snapshot): object
+    private function readConciliacionRow(
+        string $fecha,
+        int $codigoSucursal,
+        int $puntoVenta,
+        array $snapshot,
+        string $alcance = 'sucursal'
+    ): object
     {
         $row = Schema::hasTable('cierre_diario_sucursales') ? DB::table('cierre_diario_sucursales')
-            ->whereDate('fecha_operacion', $fecha)->where('codigo_sucursal', $codigoSucursal)->where('punto_venta', $puntoVenta)->first() : null;
+            ->whereDate('fecha_operacion', $fecha)
+            ->where('codigo_sucursal', $codigoSucursal)
+            ->where('punto_venta', $puntoVenta)
+            ->where('alcance', $alcance)
+            ->first() : null;
         $row ??= (object)['id'=>0,'fecha_operacion'=>$fecha,'codigo_sucursal'=>$codigoSucursal,'punto_venta'=>$puntoVenta,
-            'sucursal_nombre'=>null,'total_comprobantes'=>0,'observacion_general'=>null,'created_at'=>null,'updated_at'=>null];
+            'alcance'=>$alcance,'sucursal_nombre'=>null,'total_comprobantes'=>0,'observacion_general'=>null,'created_at'=>null,'updated_at'=>null];
         foreach ($snapshot as $key=>$value) if ($value!==null) $row->$key=$value;
         $row->diferencia=round((float)$row->total_comprobantes-(float)$row->total_efectivo_sistema,2);
         $row->estado=$this->resolveConciliacionEstado((float)$row->total_efectivo_sistema,(float)$row->total_comprobantes);
@@ -1520,7 +1584,13 @@ class CajaDiariaController extends Controller
         return DB::table('ventas')->whereIn('id', $ids)->orderBy('id')->get();
     }
 
-    private function findOrCreateConciliacionRow(string $fecha, int $codigoSucursal, int $puntoVenta, array $snapshot): object
+    private function findOrCreateConciliacionRow(
+        string $fecha,
+        int $codigoSucursal,
+        int $puntoVenta,
+        array $snapshot,
+        string $alcance = 'sucursal'
+    ): object
     {
         if (!Schema::hasTable('cierre_diario_sucursales')) {
             throw ValidationException::withMessages([
@@ -1532,6 +1602,7 @@ class CajaDiariaController extends Controller
             ->whereDate('fecha_operacion', $fecha)
             ->where('codigo_sucursal', $codigoSucursal)
             ->where('punto_venta', $puntoVenta)
+            ->where('alcance', $alcance)
             ->first();
 
         if ($existing) {
@@ -1554,6 +1625,7 @@ class CajaDiariaController extends Controller
             'fecha_operacion' => $fecha,
             'codigo_sucursal' => $codigoSucursal,
             'punto_venta' => $puntoVenta,
+            'alcance' => $alcance,
             'sucursal_nombre' => $snapshot['sucursal_nombre'] ?? null,
             'total_efectivo_sistema' => round((float) ($snapshot['total_efectivo_sistema'] ?? 0), 2),
             'total_qr_sistema' => round((float) ($snapshot['total_qr_sistema'] ?? 0), 2),
@@ -1624,6 +1696,7 @@ class CajaDiariaController extends Controller
             'fecha' => (string) $row->fecha_operacion,
             'codigoSucursal' => (int) $row->codigo_sucursal,
             'puntoVenta' => (int) $row->punto_venta,
+            'alcance' => (string) ($row->alcance ?? 'sucursal'),
             'sucursalNombre' => $row->sucursal_nombre,
             'totalEfectivoSistema' => round((float) ($row->total_efectivo_sistema ?? 0), 2),
             'totalQrSistema' => round((float) ($row->total_qr_sistema ?? 0), 2),
