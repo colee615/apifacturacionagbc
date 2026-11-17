@@ -438,7 +438,7 @@ class CajaDiariaController extends Controller
                     if (
                         trim((string) ($qrPayment->transaction_id ?? '')) !== ''
                         || trim((string) ($qrPayment->image_data ?? '')) !== ''
-                        || in_array(strtolower(trim((string) ($qrPayment->payment_status ?? ''))), ['success', 'holding'], true)
+                        || in_array(strtolower(trim((string) ($qrPayment->payment_status ?? ''))), ['success', 'holding', QhantuyQrController::CHECKOUT_REQUESTED], true)
                     ) {
                         return response()->json([
                             'ok' => false,

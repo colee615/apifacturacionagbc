@@ -4,8 +4,10 @@ use App\Http\Controllers\FacturaVentaApiController;
 use App\Http\Controllers\FacturacionCartIntegrationController;
 use App\Http\Controllers\CajaDiariaController;
 use App\Http\Controllers\PaqueteFacturaController;
+use App\Http\Controllers\QhantuyQrCashierAssignmentController;
 use App\Http\Controllers\QhantuyQrController;
 use App\Http\Controllers\VentaController;
+use App\Http\Middleware\AuthenticateQrCashierAssignment;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -23,6 +25,9 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
     return $request->user();
 });
+
+Route::match(['GET', 'PUT', 'DELETE'], '/factura-venta/qr/cashier-assignment', QhantuyQrCashierAssignmentController::class)
+    ->middleware(AuthenticateQrCashierAssignment::class);
 
 Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/emitir', [FacturaVentaApiController::class, 'emitir']);

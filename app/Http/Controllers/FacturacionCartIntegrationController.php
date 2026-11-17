@@ -1678,6 +1678,18 @@ class FacturacionCartIntegrationController extends Controller
                 ? $this->nextBridgeCodigoOrden($canalEmision)
                 : $this->normalizeBridgeCodigoOrden($cart->codigo_orden ?? null, $canalEmision);
         }
+        if ($canalEmision === 'qr' && trim((string) $cart->codigo_orden) !== '') {
+            $previousQrOrder = $this->normalizeBridgeCodigoOrden($cart->codigo_orden, 'qr');
+            $previousPayment = DB::table('qhantuy_qr_payments')->where('internal_code', $previousQrOrder)->first();
+            if ($previousPayment) {
+                $sameCart = !isset($previousPayment->qhantuy_cart_id) || (int) $previousPayment->qhantuy_cart_id === (int) $cart->id;
+                $paymentClosed = in_array(strtolower((string) $previousPayment->payment_status), [
+                    'cancelled', 'canceled', 'rejected', 'failed', 'failure', 'expired', 'error',
+                ], true);
+                // Keep the existing order during reconciliation. A closed attempt gets its own history.
+                $codigoOrdenIntento = $sameCart && !$paymentClosed ? $previousQrOrder : $this->nextBridgeCodigoOrden('qr');
+            }
+        }
         Log::info('FacturacionCartIntegrationController emitir: codigo orden resuelto.', [
             'user_id' => $userId,
             'cart_id' => $cart->id ?? null,
@@ -1749,7 +1761,7 @@ class FacturacionCartIntegrationController extends Controller
             ]);
             $emitReq = Request::create('/api/factura-venta/qr/checkout', 'POST', $qrPayload);
             $emitReq->headers->set('Accept', 'application/json');
-            $emitRes = app(QhantuyQrController::class)->checkout($emitReq);
+            $emitRes = app(QhantuyQrController::class)->checkoutForCart($emitReq, $cart);
         } else {
             $facturaPayload = $emissionPayload;
             Log::debug('FacturacionCart emitir factura payload preparado', [
@@ -1804,7 +1816,7 @@ class FacturacionCartIntegrationController extends Controller
             $qrPaymentState = $this->mapQrPaymentStatusToPaymentState((string) ($body['payment_status'] ?? 'holding'));
             if (!$ok) {
                 $body['estado'] = 'ERROR';
-                if ((string) ($body['code'] ?? '') !== 'qr_amount_mismatch') {
+                if (!in_array((string) ($body['code'] ?? ''), ['qr_amount_mismatch', 'qr_checkout_unconfirmed', 'qr_order_conflict', 'qr_checkout_cancelled'], true)) {
                     $providerCode = trim((string) ($body['code'] ?? ''));
                     $body['provider_code'] = $providerCode !== '' ? $providerCode : null;
                     $body['code'] = 'qr_checkout_failed';
@@ -3134,6 +3146,20 @@ class FacturacionCartIntegrationController extends Controller
             $code = trim((string) $code);
             if (preg_match($pattern, $code, $m)) {
                 $next = max($next, ((int) $m[1]) + 1);
+            }
+        }
+
+        if ($canalEmision === 'qr') {
+            $payments = DB::table('qhantuy_qr_payments')
+                ->select('internal_code')
+                ->whereBetween('internal_code', [$prefix . str_repeat('0', $padLength), $prefix . str_repeat('9', $padLength)])
+                ->orderByDesc('internal_code')
+                ->cursor();
+            foreach ($payments as $payment) {
+                if (preg_match($pattern, (string) $payment->internal_code, $m)) {
+                    $next = max($next, ((int) $m[1]) + 1);
+                    break;
+                }
             }
         }
 
