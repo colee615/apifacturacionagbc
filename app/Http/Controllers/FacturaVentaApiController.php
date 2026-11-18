@@ -676,6 +676,159 @@ class FacturaVentaApiController extends Controller
         return 'oficial-' . now()->format('YmdHisv') . '-' . bin2hex(random_bytes(4));
     }
 
+    private function manualDeliverySaleSummary(int $ventaId): array
+    {
+        $venta = DB::table('ventas')->where('id', $ventaId)->first([
+            'id',
+            'codigoOrden',
+            'codigoSeguimiento',
+            'estado_sufe',
+            'origen_venta_tipo',
+            'origen_usuario_id',
+            'origen_usuario_nombre',
+            'codigoSucursal',
+            'puntoVenta',
+            'total',
+            'created_at',
+        ]);
+
+        if (!$venta) {
+            throw new \RuntimeException('No se encontró el registro de entrega manual.');
+        }
+
+        return [
+            'id' => (int) $venta->id,
+            'codigoOrden' => (string) ($venta->codigoOrden ?? ''),
+            'codigoSeguimiento' => (string) ($venta->codigoSeguimiento ?? ''),
+            'estado_sufe' => (string) ($venta->estado_sufe ?? ''),
+            'origen_venta_tipo' => (string) ($venta->origen_venta_tipo ?? ''),
+            'usuario' => [
+                'id' => (string) ($venta->origen_usuario_id ?? ''),
+                'nombre' => (string) ($venta->origen_usuario_nombre ?? ''),
+            ],
+            'sucursal' => [
+                'codigoSucursal' => (int) ($venta->codigoSucursal ?? 0),
+                'puntoVenta' => (int) ($venta->puntoVenta ?? 0),
+            ],
+            'total' => (float) ($venta->total ?? 0),
+            'fechaRegistro' => $venta->created_at,
+        ];
+    }
+
+    public function registrarEntregaManual(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'codigoPaquete' => ['required', 'string', 'max:35', 'regex:/^[A-Za-z0-9-]+$/'],
+            'origenUsuario.id' => ['required', 'string', 'max:100'],
+            'origenUsuario.nombre' => ['required', 'string', 'max:255'],
+            'origenUsuario.email' => ['nullable', 'string', 'max:255'],
+            'origenUsuario.alias' => ['nullable', 'string', 'max:80'],
+            'origenUsuario.carnet' => ['nullable', 'string', 'max:40'],
+            'origenSucursal.id' => ['required', 'string', 'max:100'],
+            'origenSucursal.codigo' => ['required', 'string', 'max:100'],
+            'origenSucursal.nombre' => ['nullable', 'string', 'max:255'],
+            'codigoSucursal' => ['required', 'integer', 'min:0'],
+            'puntoVenta' => ['required', 'integer', 'min:0'],
+            'municipio' => ['nullable', 'string', 'max:120'],
+            'departamento' => ['nullable', 'string', 'max:120'],
+            'telefono' => ['nullable', 'string', 'max:60'],
+            'pesoKg' => ['nullable', 'numeric', 'min:0', 'max:999999'],
+        ]);
+
+        if (!Schema::hasTable('facturacion_entregas_manuales')) {
+            return response()->json([
+                'message' => 'La API todavía no tiene aplicada la migración de entregas manuales.',
+            ], 503);
+        }
+
+        $code = strtoupper(trim((string) $validated['codigoPaquete']));
+        $validated = array_merge($validated, [
+            'codigoPaquete' => $code,
+            'origenVenta' => [
+                'id' => 'ENTREGA-MANUAL:' . $code,
+                'tipo' => 'ENTREGA_MANUAL',
+            ],
+            'documentoSector' => 1,
+            'razonSocial' => 'ENTREGA MANUAL',
+            'tipoDocumentoIdentidad' => 0,
+            'montoTotal' => 0,
+            'pesoTotal' => round((float) ($validated['pesoKg'] ?? 0), 3),
+            'metodoPago' => 0,
+            'contabilizaEnCaja' => false,
+            'estado_sufe' => 'REGISTRADA_OFICIAL',
+            'detalle' => [[
+                'actividadEconomica' => null,
+                'codigoSin' => null,
+                'codigo' => $code,
+                'descripcion' => 'ENTREGA MANUAL - ' . $code,
+                'unidadMedida' => 58,
+                'precioUnitario' => 0,
+                'cantidad' => 1,
+                'peso' => round((float) ($validated['pesoKg'] ?? 0), 3),
+            ]],
+        ]);
+
+        $result = DB::transaction(function () use ($validated, $code): array {
+            $now = Date::now();
+            DB::table('facturacion_entregas_manuales')->insertOrIgnore([
+                'codigo_paquete' => $code,
+                'venta_id' => null,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $manualDelivery = DB::table('facturacion_entregas_manuales')
+                ->where('codigo_paquete', $code)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$manualDelivery) {
+                throw new \RuntimeException('No se pudo reservar el registro de entrega manual.');
+            }
+
+            if ((int) ($manualDelivery->venta_id ?? 0) > 0) {
+                return [
+                    'venta' => $this->manualDeliverySaleSummary((int) $manualDelivery->venta_id),
+                    'ya_registrada' => true,
+                ];
+            }
+
+            $codigoOrden = $this->resolveCodigoOrden($validated);
+            $codigoSeguimiento = $this->createOfficialTrackingCode();
+            $venta = $this->createVenta(
+                $validated,
+                $codigoOrden,
+                $codigoSeguimiento,
+                'REGISTRADA_OFICIAL',
+                'Entrega manual sin factura'
+            );
+            $this->createDetalleVentas($venta, $validated);
+
+            DB::table('facturacion_entregas_manuales')
+                ->where('id', $manualDelivery->id)
+                ->update([
+                    'venta_id' => $venta['id'],
+                    'updated_at' => Date::now(),
+                ]);
+
+            return [
+                'venta' => $this->manualDeliverySaleSummary((int) $venta['id']),
+                'ya_registrada' => false,
+            ];
+        });
+
+        return response()->json([
+            'ok' => true,
+            'estado' => 'REGISTRADA_OFICIAL',
+            'message' => $result['ya_registrada']
+                ? 'La entrega manual ya estaba registrada; se reutilizó el mismo registro.'
+                : 'Entrega manual registrada en el Kardex sin factura ni importe.',
+            'codigoPaquete' => $code,
+            'ya_registrada' => $result['ya_registrada'],
+            'venta' => $result['venta'],
+        ], $result['ya_registrada'] ? 200 : 201);
+    }
+
     public function registrarOficial(Request $request): JsonResponse
     {
         $validated = $request->validate([

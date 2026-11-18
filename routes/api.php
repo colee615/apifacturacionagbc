@@ -32,6 +32,7 @@ Route::match(['GET', 'PUT', 'DELETE'], '/factura-venta/qr/cashier-assignment', Q
 Route::middleware('factura.auth')->prefix('factura-venta')->group(function () {
     Route::post('/emitir', [FacturaVentaApiController::class, 'emitir']);
     Route::post('/registrar-oficial', [FacturaVentaApiController::class, 'registrarOficial']);
+    Route::post('/registrar-entrega-manual', [FacturaVentaApiController::class, 'registrarEntregaManual']);
     Route::patch('/anular/{cuf}', [FacturaVentaApiController::class, 'anular']);
     Route::get('/consultar/{codigoSeguimiento}', [FacturaVentaApiController::class, 'consultar']);
     Route::get('/pdf/{codigoSeguimiento}', [FacturaVentaApiController::class, 'pdf']);
