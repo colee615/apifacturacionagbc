@@ -402,7 +402,7 @@ class QhantuyQrController extends Controller
             : null);
     }
 
-    private function credentialForCheckout(?object $cart): ?int
+    private function credentialForCheckout(?object $cart, bool $requireCashierAssignment = false): ?int
     {
         $cashier = trim((string) ($cart->origen_usuario_id ?? ''));
         $branch = trim((string) ($cart->origen_sucursal_codigo ?? ''));
@@ -413,6 +413,10 @@ class QhantuyQrController extends Controller
             if ($assigned !== null) {
                 return $assigned;
             }
+        }
+
+        if ($requireCashierAssignment) {
+            return null;
         }
 
         $appkey = $this->appkey();
@@ -536,9 +540,12 @@ class QhantuyQrController extends Controller
             'items.*.name' => ['required', 'string', 'max:255'],
             'items.*.quantity' => ['required', 'numeric', 'gt:0'],
             'items.*.price' => ['required', 'numeric', 'gt:0'],
+            'payment_method' => ['nullable', 'string', 'in:QRSIMPLE,T2P'],
             'payment_type' => ['nullable', 'string', 'in:EMBED,REDIRECT'],
             'image_method' => ['nullable', 'string', 'in:URL,BASE64'],
         ]);
+
+        $paymentMethod = strtoupper(trim((string) ($validated['payment_method'] ?? 'QRSIMPLE')));
 
         Log::debug('Qhantuy checkout request received', [
             'internal_code' => (string) ($validated['internal_code'] ?? ''),
@@ -555,6 +562,7 @@ class QhantuyQrController extends Controller
 
             return response()->json([
                 'ok' => false,
+                'payment_method' => $paymentMethod,
                 'message' => 'Configuracion Qhantuy incompleta en SAFE.',
             ], 500);
         }
@@ -566,9 +574,7 @@ class QhantuyQrController extends Controller
             'currency_code' => $this->currencyCode(),
             'internal_code' => trim((string) $validated['internal_code']),
             'callback_url' => $this->callbackUrl(),
-            'payment_method' => 'QRSIMPLE',
-            'payment_type' => trim((string) ($validated['payment_type'] ?? 'EMBED')),
-            'image_method' => trim((string) ($validated['image_method'] ?? $this->imageMethod())),
+            'payment_method' => $paymentMethod,
             'detail' => trim((string) $validated['detail']),
             'items' => collect($validated['items'])->map(function ($item) {
                 return [
@@ -578,6 +584,11 @@ class QhantuyQrController extends Controller
                 ];
             })->values()->all(),
         ];
+
+        if ($paymentMethod === 'QRSIMPLE') {
+            $payload['payment_type'] = trim((string) ($validated['payment_type'] ?? 'EMBED'));
+            $payload['image_method'] = trim((string) ($validated['image_method'] ?? $this->imageMethod()));
+        }
 
         $payloadAmount = round((float) collect($payload['items'])->sum(fn ($item) => $item['quantity'] * $item['price']), 2);
         $checkout = null;
@@ -598,15 +609,19 @@ class QhantuyQrController extends Controller
         try {
             $existing = DB::table('qhantuy_qr_payments')->where('internal_code', $payload['internal_code'])->first();
             if ($existing) {
-                return $this->existingCheckout($existing, $payloadAmount, $payload['currency_code'], $cart->id ?? null);
+                return $this->existingCheckout($existing, $payloadAmount, $payload['currency_code'], $cart->id ?? null, $paymentMethod);
             }
 
-            $credentialId = $this->credentialForCheckout($cart);
+            $credentialId = $this->credentialForCheckout($cart, $paymentMethod === 'T2P');
             if ($credentialId === null) {
                 return response()->json([
                     'ok' => false,
-                    'message' => 'La caja general de Qhantuy no está configurada en el API.',
-                ], 500);
+                    'code' => $paymentMethod === 'T2P' ? 't2p_cashier_assignment_missing' : 'qhantuy_cashbox_missing',
+                    'payment_method' => $paymentMethod,
+                    'message' => $paymentMethod === 'T2P'
+                        ? 'Esta cajera no tiene una caja Qhantuy POS asignada para cobrar con tarjeta sin contacto.'
+                        : 'La caja general de Qhantuy no está configurada en el API.',
+                ], $paymentMethod === 'T2P' ? 422 : 500);
             }
 
             $payload['appkey'] = $this->credentials->appkey($credentialId);
@@ -614,6 +629,7 @@ class QhantuyQrController extends Controller
                 'internal_code' => $payload['internal_code'],
                 'qhantuy_cart_id' => $cart->id ?? null,
                 'qhantuy_credential_id' => $credentialId,
+                'payment_method' => $paymentMethod,
                 'checkout_amount' => $payloadAmount,
                 'checkout_currency' => $payload['currency_code'],
                 'customer_email' => $payload['customer_email'],
@@ -627,8 +643,8 @@ class QhantuyQrController extends Controller
             $checkout = DB::table('qhantuy_qr_payments')->where('internal_code', $payload['internal_code'])->first();
             if (!$ownsCheckout || !$checkout) {
                 return $checkout
-                    ? $this->existingCheckout($checkout, $payloadAmount, $payload['currency_code'], $cart->id ?? null)
-                    : $this->checkoutAwaitingConfirmation();
+                    ? $this->existingCheckout($checkout, $payloadAmount, $payload['currency_code'], $cart->id ?? null, $paymentMethod)
+                    : $this->checkoutAwaitingConfirmation(409, $paymentMethod);
             }
 
             $response = $this->qhantuyClient()->post($this->checkoutUrl(), $payload);
@@ -656,6 +672,7 @@ class QhantuyQrController extends Controller
                 Log::warning('Qhantuy checkout rejected', ['status' => $response->status(), 'body' => $body, 'internal_code' => $payload['internal_code']]);
                 return response()->json([
                     'ok' => false,
+                    'payment_method' => $paymentMethod,
                     'message' => (string) data_get($body, 'message', 'Qhantuy rechazo la solicitud.'),
                     'status_code' => $response->status(),
                     'qhantuy' => is_array($body) ? $body : null,
@@ -690,17 +707,21 @@ class QhantuyQrController extends Controller
             // Qhantuy can return HTTP 200 when its bank provider failed. Such a
             // response is not a usable checkout unless it has a transaction ID and a QR image.
             $providerRejected = data_get($body, 'process') === false;
-            if ($providerRejected || (int) $transactionId <= 0 || $imageData === '') {
+            $requiresImage = $paymentMethod === 'QRSIMPLE';
+            if ($providerRejected || (int) $transactionId <= 0 || ($requiresImage && $imageData === '')) {
                 if ($providerRejected && (int) $transactionId <= 0) {
                     $this->releaseRejectedCheckout($checkout);
                 }
                 $providerMessage = trim((string) data_get($body, 'message', ''));
                 $message = $providerMessage !== ''
                     ? $providerMessage
-                    : 'Qhantuy no devolvió un identificador de transacción y una imagen QR.';
+                    : ($requiresImage
+                        ? 'Qhantuy no devolvió un identificador de transacción y una imagen QR.'
+                        : 'Qhantuy no devolvió un identificador para el cobro por tarjeta sin contacto.');
 
                 Log::warning('Qhantuy respondió sin un checkout QR utilizable', [
                     'internal_code' => $payload['internal_code'],
+                    'payment_method' => $paymentMethod,
                     'transaction_id' => $transactionId,
                     'has_image_data' => $imageData !== '',
                     'provider_process' => data_get($body, 'process'),
@@ -710,6 +731,7 @@ class QhantuyQrController extends Controller
                 return response()->json([
                     'ok' => false,
                     'code' => 'qr_checkout_failed',
+                    'payment_method' => $paymentMethod,
                     'message' => $message,
                     'provider_message' => $message,
                     'internal_code' => $payload['internal_code'],
@@ -725,6 +747,7 @@ class QhantuyQrController extends Controller
                 ->where('payment_status', self::CHECKOUT_REQUESTED)
                 ->update([
                     'transaction_id' => $transactionId,
+                    'payment_method' => $paymentMethod,
                     'image_data' => $amountMismatch || $currencyMismatch ? null : $imageData,
                     'payment_status' => $amountMismatch || $currencyMismatch ? 'amount_mismatch' : $paymentStatus,
                     'raw_checkout_response' => json_encode($body, JSON_UNESCAPED_UNICODE),
@@ -734,8 +757,8 @@ class QhantuyQrController extends Controller
             if ($updated !== 1) {
                 $current = DB::table('qhantuy_qr_payments')->where('id', $checkout->id)->first();
 
-                return $current ? $this->existingCheckout($current, $payloadAmount, $payload['currency_code'], $cart->id ?? null)
-                    : $this->checkoutAwaitingConfirmation();
+                return $current ? $this->existingCheckout($current, $payloadAmount, $payload['currency_code'], $cart->id ?? null, $paymentMethod)
+                    : $this->checkoutAwaitingConfirmation(409, $paymentMethod);
             }
 
             Log::debug('Qhantuy checkout persisted', [
@@ -775,7 +798,7 @@ class QhantuyQrController extends Controller
                         ->where('internal_code', $payload['internal_code'])
                         ->update([
                             'payment_status' => 'amount_mismatch',
-                            'last_message' => 'Monto QR distinto al total solicitado; cancelación no confirmada.',
+                            'last_message' => 'Monto de cobro distinto al total solicitado; cancelación no confirmada.',
                             'updated_at' => now(),
                         ]);
                 }
@@ -783,9 +806,10 @@ class QhantuyQrController extends Controller
                 return response()->json([
                     'ok' => false,
                     'code' => 'qr_amount_mismatch',
+                    'payment_method' => $paymentMethod,
                     'message' => $cancelled
-                        ? 'Qhantuy devolvió un QR con importe o moneda diferente. El QR fue cancelado. Intenta nuevamente.'
-                        : 'Qhantuy devolvió un QR con importe o moneda diferente y no confirmó su cancelación. Contacta a soporte antes de reintentar.',
+                        ? 'Qhantuy devolvió un cobro con importe o moneda diferente. La orden fue cancelada. Intenta nuevamente.'
+                        : 'Qhantuy devolvió un cobro con importe o moneda diferente y no confirmó su cancelación. Contacta a soporte antes de reintentar.',
                     'internal_code' => $payload['internal_code'],
                     'transaction_id' => $transactionId !== null ? (int) $transactionId : null,
                     'requested_amount' => $payloadAmount,
@@ -797,12 +821,15 @@ class QhantuyQrController extends Controller
 
             return response()->json([
                 'ok' => true,
-                'message' => (string) data_get($body, 'message', 'Orden QR generada.'),
+                'message' => (string) data_get($body, 'message', $paymentMethod === 'T2P'
+                    ? 'Solicitud de pago enviada a QPOS. Esperando confirmación de la tarjeta.'
+                    : 'Orden QR generada.'),
                 'internal_code' => $payload['internal_code'],
                 'transaction_id' => $transactionId !== null ? (int) $transactionId : null,
+                'payment_method' => $paymentMethod,
                 'checkout_amount' => $amount,
                 'checkout_currency' => $currency,
-                'image_data' => $imageData,
+                'image_data' => $imageData !== '' ? $imageData : null,
                 'qr_url' => trim((string) (
                     data_get($body, 'qr_url')
                     ?? data_get($body, 'items.0.qr_url')
@@ -830,11 +857,12 @@ class QhantuyQrController extends Controller
 
                 return response()->json([
                     'ok' => false,
-                    'message' => 'No se pudo conectar con Qhantuy para crear el checkout QR.',
+                    'payment_method' => $paymentMethod,
+                    'message' => 'No se pudo conectar con Qhantuy para crear el cobro.',
                 ], 504);
             }
 
-            return $this->checkoutAwaitingConfirmation(504);
+            return $this->checkoutAwaitingConfirmation(504, $paymentMethod);
         } catch (RequestException $e) {
             Log::error('Qhantuy checkout request exception', [
                 'internal_code' => $payload['internal_code'],
@@ -847,7 +875,8 @@ class QhantuyQrController extends Controller
 
             return response()->json([
                 'ok' => false,
-                'message' => 'Error remoto al crear checkout QR.',
+                'payment_method' => $paymentMethod,
+                'message' => 'Error remoto al crear el cobro en Qhantuy.',
             ], 502);
         } catch (\Throwable $e) {
             Log::error('Qhantuy checkout unexpected error', [
@@ -859,7 +888,8 @@ class QhantuyQrController extends Controller
             ]);
             return response()->json([
                 'ok' => false,
-                'message' => 'Error inesperado al crear checkout QR.',
+                'payment_method' => $paymentMethod,
+                'message' => 'Error inesperado al crear el cobro en Qhantuy.',
             ], 500);
         }
     }
@@ -875,22 +905,44 @@ class QhantuyQrController extends Controller
             ->whereNull('transaction_id')->where('payment_status', self::CHECKOUT_REQUESTED)->delete();
     }
 
-    private function checkoutAwaitingConfirmation(int $httpStatus = 409)
+    private function checkoutAwaitingConfirmation(int $httpStatus = 409, string $paymentMethod = 'QRSIMPLE')
     {
+        $label = strtoupper(trim($paymentMethod)) === 'T2P' ? 'el cobro con tarjeta' : 'el QR';
+
         return response()->json([
             'ok' => false,
             'code' => 'qr_checkout_unconfirmed',
-            'message' => 'Qhantuy aún no confirma la creación del QR. Reintenta desde esta misma venta para consultar la orden.',
+            'payment_method' => strtoupper(trim($paymentMethod)),
+            'message' => 'Qhantuy aún no confirma la creación de ' . $label . '. Consulta esta misma venta antes de reintentar.',
         ], $httpStatus);
     }
 
-    private function existingCheckout(object $payment, float $amount, string $currency, ?int $cartId)
+    private function existingCheckout(
+        object $payment,
+        float $amount,
+        string $currency,
+        ?int $cartId,
+        string $paymentMethod = 'QRSIMPLE'
+    )
     {
+        $storedMethod = strtoupper(trim((string) ($payment->payment_method ?? 'QRSIMPLE')));
+        $paymentLabel = $storedMethod === 'T2P' ? 'el cobro con tarjeta sin contacto' : 'el QR';
+        if ($storedMethod !== strtoupper(trim($paymentMethod))) {
+            return response()->json([
+                'ok' => false,
+                'code' => 'qr_payment_method_conflict',
+                'message' => 'Esta orden de pago ya fue creada con otro medio. Consulta su estado y no generes otra orden para la misma venta.',
+                'internal_code' => (string) ($payment->internal_code ?? ''),
+                'payment_method' => $storedMethod,
+            ], 409);
+        }
+
         if (isset($payment->qhantuy_cart_id) && (int) $payment->qhantuy_cart_id !== $cartId) {
             return response()->json([
                 'ok' => false,
                 'code' => 'qr_order_conflict',
-                'message' => 'La referencia QR ya pertenece a otra venta. Solicita revisión antes de continuar.',
+                'payment_method' => $storedMethod,
+                'message' => 'La referencia de cobro ya pertenece a otra venta. Solicita revisión antes de continuar.',
             ], 409);
         }
 
@@ -899,7 +951,8 @@ class QhantuyQrController extends Controller
             return response()->json([
                 'ok' => false,
                 'code' => 'qr_amount_mismatch',
-                'message' => 'Esta orden QR tiene un importe o una moneda diferente. Solicita revisión antes de continuar.',
+                'payment_method' => $storedMethod,
+                'message' => 'Esta orden de cobro tiene un importe o una moneda diferente. Solicita revisión antes de continuar.',
             ], 409);
         }
 
@@ -907,16 +960,20 @@ class QhantuyQrController extends Controller
             return response()->json([
                 'ok' => false,
                 'code' => 'qr_checkout_cancelled',
-                'message' => 'La orden QR anterior se cerró sin pago. Puedes volver a generar el QR desde esta venta.',
+                'message' => 'La orden anterior para ' . $paymentLabel . ' se cerró sin pago. Puedes volver a intentarlo desde esta venta.',
+                'payment_method' => $storedMethod,
             ], 409);
         }
 
         if ((int) $payment->transaction_id > 0) {
-            return response()->json($this->buildCachedCheckPaymentsResponse($payment) + ['internal_code' => $payment->internal_code]);
+            return response()->json($this->buildCachedCheckPaymentsResponse($payment) + [
+                'internal_code' => $payment->internal_code,
+                'payment_method' => $storedMethod,
+            ]);
         }
 
         if ($payment->payment_status !== self::CHECKOUT_REQUESTED || $this->checkPaymentsUrl() === '') {
-            return $this->checkoutAwaitingConfirmation();
+            return $this->checkoutAwaitingConfirmation(409, $storedMethod);
         }
 
         // A lost HTTP response does not mean the provider rejected the order.
@@ -932,7 +989,7 @@ class QhantuyQrController extends Controller
             data_get($item, 'internal_code') === $payment->internal_code && (int) data_get($item, 'id') > 0
         );
         if (!$response->successful() || $response->json('process') === false || $matches->count() !== 1) {
-            return $this->checkoutAwaitingConfirmation();
+            return $this->checkoutAwaitingConfirmation(409, $storedMethod);
         }
 
         $request = Request::create('/api/factura-venta/qr/check-payments', 'POST', [
@@ -948,8 +1005,8 @@ class QhantuyQrController extends Controller
         $confirmedPayment = $this->paymentByCode($payment->internal_code);
 
         return $confirmedPayment && (int) $confirmedPayment->transaction_id > 0
-            ? $this->existingCheckout($confirmedPayment, $amount, $currency, $cartId)
-            : $this->checkoutAwaitingConfirmation();
+            ? $this->existingCheckout($confirmedPayment, $amount, $currency, $cartId, $storedMethod)
+            : $this->checkoutAwaitingConfirmation(409, $storedMethod);
     }
 
     public function callback(Request $request)
@@ -1072,9 +1129,10 @@ class QhantuyQrController extends Controller
             'ok' => true,
             'internal_code' => $internalCode,
             'transaction_id' => $incomingTxn,
+            'payment_method' => strtoupper((string) ($row->payment_method ?? 'QRSIMPLE')),
             'payment_status' => $status,
             'message' => $status === 'success'
-                ? 'Pago QR confirmado. Preventa marcada como pagada.'
+                ? 'Pago confirmado. Preventa marcada como pagada.'
                 : 'Callback procesado. Preventa actualizada.',
         ]);
     }
@@ -1132,7 +1190,7 @@ class QhantuyQrController extends Controller
             return response()->json([
                 'ok' => false,
                 'code' => 'qr_amount_mismatch',
-                'message' => 'El QR tiene una diferencia de monto y está bloqueado para cobro y facturación. Requiere revisión manual.',
+                'message' => 'El cobro tiene una diferencia de monto y está bloqueado para pago y facturación. Requiere revisión manual.',
                 'transaction_id' => (int) ($row->transaction_id ?? 0),
                 'internal_code' => (string) ($row->internal_code ?? ''),
                 'checkout_amount' => round((float) ($row->checkout_amount ?? 0), 2),
@@ -1305,6 +1363,7 @@ class QhantuyQrController extends Controller
                     'message' => 'Qhantuy devolvió un importe distinto al de la venta. El pago no se conciliará automáticamente; requiere revisión.',
                     'transaction_id' => $transactionId,
                     'internal_code' => $target->internal_code ?? ($validated['internal_code'] ?? null),
+                    'payment_method' => strtoupper((string) ($target->payment_method ?? 'QRSIMPLE')),
                     'requested_amount' => $expectedAmount,
                     'checkout_amount' => $amountFromProvider,
                     'payment_status' => 'amount_mismatch',
@@ -1361,8 +1420,11 @@ class QhantuyQrController extends Controller
 
             return response()->json([
                 'ok' => true,
-                'message' => (string) data_get($body, 'message', 'Consulta QR realizada.'),
+                'message' => (string) data_get($body, 'message', strtoupper((string) ($target->payment_method ?? 'QRSIMPLE')) === 'T2P'
+                    ? 'Consulta de pago con tarjeta realizada.'
+                    : 'Consulta QR realizada.'),
                 'transaction_id' => $transactionId,
+                'payment_method' => strtoupper((string) ($target->payment_method ?? $row->payment_method ?? 'QRSIMPLE')),
                 'checkout_amount' => $amount,
                 'checkout_currency' => $currency,
                 'qr_url' => $qrUrl,
@@ -1754,7 +1816,10 @@ class QhantuyQrController extends Controller
 
         return [
             'ok' => true,
-            'message' => $message ?: ((string) ($row->last_message ?? '') ?: 'Estado QR recuperado desde cache reciente.'),
+            'message' => $message ?: ((string) ($row->last_message ?? '') ?: (strtoupper((string) ($row->payment_method ?? 'QRSIMPLE')) === 'T2P'
+                ? 'Estado de pago con tarjeta recuperado desde cache reciente.'
+                : 'Estado QR recuperado desde cache reciente.')),
+            'payment_method' => strtoupper((string) ($row->payment_method ?? 'QRSIMPLE')),
             'transaction_id' => (int) ($row->transaction_id ?? 0),
             'checkout_amount' => round((float) ($row->checkout_amount ?? 0), 2),
             'checkout_currency' => strtoupper((string) ($row->checkout_currency ?? $this->currencyCode())),

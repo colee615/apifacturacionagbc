@@ -631,7 +631,7 @@ class FacturacionCartIntegrationController extends Controller
                 ->where('id', (int) $id)
                 ->first([
                     'id', 'origen_usuario_id', 'estado', 'metodo_pago', 'estado_pago',
-                    'qr_transaction_id', 'created_at', 'updated_at',
+                    'qhantuy_payment_method', 'qr_transaction_id', 'created_at', 'updated_at',
                 ]);
             if (!$cart) {
                 return null;
@@ -653,6 +653,7 @@ class FacturacionCartIntegrationController extends Controller
                 'origen_usuario_id' => (string) $cart->origen_usuario_id,
                 'estado' => (string) $cart->estado,
                 'metodo_pago' => (string) $cart->metodo_pago,
+                'qhantuy_payment_method' => strtoupper((string) ($cart->qhantuy_payment_method ?? 'QRSIMPLE')),
                 'estado_pago' => (string) $cart->estado_pago,
                 'qr_transaction_id' => $cart->qr_transaction_id,
                 'created_at' => $cart->created_at,
@@ -1431,6 +1432,7 @@ class FacturacionCartIntegrationController extends Controller
             'razon_social' => 'nullable|string|max:255',
             'correo_facturacion' => 'nullable|email|max:50',
             'codigo_orden_mode' => 'nullable|in:same,new',
+            'qr_payment_method' => 'nullable|in:QRSIMPLE,T2P',
             'canal_operativo' => 'nullable|in:normal,contrato',
             'contabiliza_en_caja' => 'nullable|boolean',
             'es_cuenta_por_cobrar' => 'nullable|boolean',
@@ -1462,6 +1464,12 @@ class FacturacionCartIntegrationController extends Controller
                             $qr->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
                                 ->whereRaw("lower(coalesce(estado_pago, 'pendiente')) = 'pagado'")
                                 ->whereNotNull('qr_transaction_id')
+                                ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('NO_APLICA','ERROR','RECHAZADA','ANULADA')");
+                        })
+                        ->orWhere(function ($qr) {
+                            $qr->where('estado', 'pendiente_pago')
+                                ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
+                                ->whereRaw("lower(coalesce(estado_pago, '')) in ('cancelado','fallido','failed','expired','rejected')")
                                 ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('NO_APLICA','ERROR','RECHAZADA','ANULADA')");
                         });
                 });
@@ -1573,6 +1581,49 @@ class FacturacionCartIntegrationController extends Controller
         $preservePaidQrPayment = strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
             && strtolower(trim((string) ($cart->estado_pago ?? ''))) === 'pagado'
             && trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+        $storedQrPaymentMethod = strtoupper(trim((string) ($cart->qhantuy_payment_method ?? 'QRSIMPLE')));
+        if (!in_array($storedQrPaymentMethod, ['QRSIMPLE', 'T2P'], true)) {
+            $storedQrPaymentMethod = 'QRSIMPLE';
+        }
+        $currentQrOrderCode = trim((string) ($cart->codigo_orden ?? ''));
+        $currentQrOrderCode = $currentQrOrderCode !== ''
+            ? $this->normalizeBridgeCodigoOrden($currentQrOrderCode, 'qr')
+            : '';
+        $currentQrPayment = $currentQrOrderCode !== ''
+            ? DB::table('qhantuy_qr_payments')->where('internal_code', $currentQrOrderCode)->first()
+            : null;
+        $attemptPaymentMethod = strtoupper(trim((string) ($currentQrPayment->payment_method ?? '')));
+        if (in_array($attemptPaymentMethod, ['QRSIMPLE', 'T2P'], true)) {
+            $storedQrPaymentMethod = $attemptPaymentMethod;
+        }
+        $requestedQrPaymentMethod = strtoupper(trim((string) ($validated['qr_payment_method'] ?? $storedQrPaymentMethod)));
+        if (!in_array($requestedQrPaymentMethod, ['QRSIMPLE', 'T2P'], true)) {
+            $requestedQrPaymentMethod = $storedQrPaymentMethod;
+        }
+        $hasPreviousQrAttempt = $currentQrPayment !== null || trim((string) ($cart->qr_transaction_id ?? '')) !== '';
+        $previousQrAttemptStatus = strtolower(trim((string) (
+            $currentQrPayment->payment_status
+            ?? $cart->estado_pago
+            ?? 'holding'
+        )));
+        $previousQrAttemptClosed = in_array($previousQrAttemptStatus, [
+            'cancelled', 'canceled', 'cancelado', 'rejected', 'fallido', 'failed', 'failure', 'expired', 'error',
+        ], true);
+        if ($overrideCanal === 'qr'
+            && !$preservePaidQrPayment
+            && $hasPreviousQrAttempt
+            && !$previousQrAttemptClosed
+            && $requestedQrPaymentMethod !== $storedQrPaymentMethod) {
+            return response()->json([
+                'ok' => false,
+                'code' => 'qr_payment_method_conflict',
+                'payment_method' => $storedQrPaymentMethod,
+                'message' => 'Esta venta ya tiene un cobro pendiente con otro medio. Consulta o termina esa orden antes de iniciar una distinta.',
+            ], 409);
+        }
+        $resolvedQrPaymentMethod = $preservePaidQrPayment
+            ? $storedQrPaymentMethod
+            : ($overrideCanal === 'qr' ? $requestedQrPaymentMethod : $storedQrPaymentMethod);
         $resolvedMetodoPago = $preservePaidQrPayment
             ? 'qr'
             : ($overrideCanal === 'qr' ? 'qr' : 'efectivo');
@@ -1581,7 +1632,7 @@ class FacturacionCartIntegrationController extends Controller
             : ($overrideCanal === 'qr' ? 'pendiente' : 'pagado');
         $resolvedQrTransactionId = $preservePaidQrPayment
             ? ($cart->qr_transaction_id ?? null)
-            : ($overrideCanal === 'qr' ? ($cart->qr_transaction_id ?? null) : null);
+            : ($overrideCanal === 'qr' && !$previousQrAttemptClosed ? ($cart->qr_transaction_id ?? null) : null);
         $canalOperativo = in_array((string) ($validated['canal_operativo'] ?? ($cart->canal_operativo ?? 'normal')), ['normal', 'contrato'], true)
             ? (string) ($validated['canal_operativo'] ?? ($cart->canal_operativo ?? 'normal'))
             : 'normal';
@@ -1622,6 +1673,7 @@ class FacturacionCartIntegrationController extends Controller
             'modalidad_facturacion' => $overrideMode,
             'canal_emision' => $overrideCanal,
             'metodo_pago' => $resolvedMetodoPago,
+            'qhantuy_payment_method' => $resolvedQrPaymentMethod,
             'estado_pago' => $resolvedEstadoPago,
             'qr_transaction_id' => $resolvedQrTransactionId,
             'codigo_seguimiento_fiscal' => $overrideCanal === 'qr' ? ($cart->codigo_seguimiento_fiscal ?? null) : null,
@@ -1639,6 +1691,7 @@ class FacturacionCartIntegrationController extends Controller
             'empresa_sigla' => $validated['empresa_sigla'] ?? ($cart->empresa_sigla ?? null),
             'updated_at' => now(),
         ]);
+        $cart->qhantuy_payment_method = $resolvedQrPaymentMethod;
         $cart = DB::table('facturacion_carts')->where('id', $cart->id)->first();
 
         $items = DB::table('facturacion_cart_items')->where('cart_id', $cart->id)->orderBy('id')->get()->map(function ($i) {
@@ -1684,10 +1737,12 @@ class FacturacionCartIntegrationController extends Controller
             if ($previousPayment) {
                 $sameCart = !isset($previousPayment->qhantuy_cart_id) || (int) $previousPayment->qhantuy_cart_id === (int) $cart->id;
                 $paymentClosed = in_array(strtolower((string) $previousPayment->payment_status), [
-                    'cancelled', 'canceled', 'rejected', 'failed', 'failure', 'expired', 'error',
+                    'cancelled', 'canceled', 'cancelado', 'rejected', 'fallido', 'failed', 'failure', 'expired', 'error',
                 ], true);
                 // Keep the existing order during reconciliation. A closed attempt gets its own history.
                 $codigoOrdenIntento = $sameCart && !$paymentClosed ? $previousQrOrder : $this->nextBridgeCodigoOrden('qr');
+            } elseif ($previousQrAttemptClosed && trim((string) ($cart->qr_transaction_id ?? '')) !== '') {
+                $codigoOrdenIntento = $this->nextBridgeCodigoOrden('qr');
             }
         }
         Log::info('FacturacionCartIntegrationController emitir: codigo orden resuelto.', [
@@ -1705,6 +1760,7 @@ class FacturacionCartIntegrationController extends Controller
         // has been sent to the fiscal provider.
         $payloadCart = clone $cart;
         $payloadCart->codigo_orden = $codigoOrdenIntento;
+        $payloadCart->qhantuy_payment_method = $resolvedQrPaymentMethod;
         $emissionPayload = $canalEmision === 'qr'
             ? $this->qrCheckoutPayloadFromCart($payloadCart, $items)
             : $this->payloadFromCart($payloadCart, $items);
@@ -1816,7 +1872,7 @@ class FacturacionCartIntegrationController extends Controller
             $qrPaymentState = $this->mapQrPaymentStatusToPaymentState((string) ($body['payment_status'] ?? 'holding'));
             if (!$ok) {
                 $body['estado'] = 'ERROR';
-                if (!in_array((string) ($body['code'] ?? ''), ['qr_amount_mismatch', 'qr_checkout_unconfirmed', 'qr_order_conflict', 'qr_checkout_cancelled'], true)) {
+                if (!in_array((string) ($body['code'] ?? ''), ['qr_amount_mismatch', 'qr_checkout_unconfirmed', 'qr_order_conflict', 'qr_checkout_cancelled', 'qr_payment_method_conflict'], true)) {
                     $providerCode = trim((string) ($body['code'] ?? ''));
                     $body['provider_code'] = $providerCode !== '' ? $providerCode : null;
                     $body['code'] = 'qr_checkout_failed';
@@ -1921,6 +1977,7 @@ class FacturacionCartIntegrationController extends Controller
             'respuesta_emision' => json_encode($body, JSON_UNESCAPED_UNICODE),
             'estado' => $resolvedCartEstado,
             'metodo_pago' => $preservePaidQrPayment ? 'qr' : ($canalEmision === 'qr' ? 'qr' : 'efectivo'),
+            'qhantuy_payment_method' => $resolvedQrPaymentMethod,
             'estado_pago' => $resolvedEstadoPago,
             'emitido_en' => $resolvedEmitidoEn,
             'cerrado_en' => $resolvedCerradoEn,
@@ -2268,13 +2325,25 @@ class FacturacionCartIntegrationController extends Controller
         if ($shouldConsultQr) {
             $resolvedPaymentStatus = (string) ($body['payment_status'] ?? 'holding');
             $resolvedPaymentState = $this->mapQrPaymentStatusToPaymentState($resolvedPaymentStatus);
+            $resolvedQrPaymentMethod = strtoupper(trim((string) (
+                $body['payment_method']
+                ?? $cart->qhantuy_payment_method
+                ?? 'QRSIMPLE'
+            )));
+            if (!in_array($resolvedQrPaymentMethod, ['QRSIMPLE', 'T2P'], true)) {
+                $resolvedQrPaymentMethod = 'QRSIMPLE';
+            }
+            $body['payment_method'] = $resolvedQrPaymentMethod;
+            $paymentLabel = $resolvedQrPaymentMethod === 'T2P' ? 'tarjeta sin contacto' : 'QR';
             $body['estado'] = $this->mapQrPaymentStatusToEmissionState($resolvedPaymentStatus);
             $body['mensaje'] = match ($resolvedPaymentState) {
                 'pagado' => $autoEmitInvoice
-                    ? 'Pago QR confirmado. Se continuara automaticamente con la factura electronica.'
-                    : 'Pago QR confirmado. La venta quedo registrada solo como cobro QR.',
-                'cancelado' => 'El pago QR no se completo o fue cancelado.',
-                default => 'QR generado. La venta sigue pendiente de pago hasta que el cliente complete la transaccion.',
+                    ? 'Pago con ' . $paymentLabel . ' confirmado. Se continuará automáticamente con la factura electrónica.'
+                    : 'Pago con ' . $paymentLabel . ' confirmado. La venta quedó registrada como cobro.',
+                'cancelado' => 'El cobro con ' . $paymentLabel . ' no se completó o fue cancelado.',
+                default => $resolvedQrPaymentMethod === 'T2P'
+                    ? 'La solicitud de tarjeta sigue pendiente en QPOS.'
+                    : 'El QR sigue pendiente de pago.',
             };
         }
 
@@ -2401,9 +2470,13 @@ class FacturacionCartIntegrationController extends Controller
                         'ok' => true,
                         'feedback' => [
                             'type' => 'info',
-                            'title' => 'QR vigente',
-                            'message' => 'La consulta del QR no respondio correctamente, pero el ultimo QR pendiente sigue disponible.',
-                            'detail' => 'Se muestra el respaldo local para continuar con el cobro.',
+                            'title' => strtoupper((string) ($cart->qhantuy_payment_method ?? 'QRSIMPLE')) === 'T2P' ? 'Cobro NFC vigente' : 'QR vigente',
+                            'message' => strtoupper((string) ($cart->qhantuy_payment_method ?? 'QRSIMPLE')) === 'T2P'
+                                ? 'La consulta no respondió, pero la solicitud de tarjeta sigue registrada.'
+                                : 'La consulta del QR no respondió, pero el último QR pendiente sigue disponible.',
+                            'detail' => strtoupper((string) ($cart->qhantuy_payment_method ?? 'QRSIMPLE')) === 'T2P'
+                                ? 'Revisa QPOS y consulta nuevamente antes de volver a cobrar.'
+                                : 'Se muestra el respaldo local para continuar con el cobro.',
                             'action' => 'ver_qr',
                         ],
                         'qr_data' => $qrData,
@@ -2920,11 +2993,12 @@ class FacturacionCartIntegrationController extends Controller
             'currency_code' => (string) config('services.qhantuy_checkout.currency_code', 'BOB'),
             'internal_code' => $codigoOrden,
             'callback_url' => (string) config('services.qhantuy_checkout.callback_url', url('/api/qhantuy/callback')),
-            'payment_method' => 'QRSIMPLE',
-            'image_method' => (string) config('services.qhantuy_checkout.image_method', 'URL'),
+            'payment_method' => strtoupper(trim((string) ($cart->qhantuy_payment_method ?? 'QRSIMPLE'))),
             'detail' => 'Pago venta qr - ' . Str::limit($conceptCode, 80, ''),
             'items' => $itemsPayload,
-        ];
+        ] + (strtoupper(trim((string) ($cart->qhantuy_payment_method ?? 'QRSIMPLE'))) === 'QRSIMPLE'
+            ? ['image_method' => (string) config('services.qhantuy_checkout.image_method', 'URL')]
+            : []);
     }
 
     private function mapQrPaymentStatusToEmissionState(string $status): string
@@ -3002,6 +3076,15 @@ class FacturacionCartIntegrationController extends Controller
             'detail',
             'descripcion',
         ]));
+        $paymentMethod = strtoupper(trim($this->extractFirstPayloadValue($respuesta, [
+            'payment_method',
+            'qr_data.payment_method',
+            'qhantuy_payment_method',
+            'qr_data.qhantuy_payment_method',
+        ])));
+        if (!in_array($paymentMethod, ['QRSIMPLE', 'T2P'], true)) {
+            $paymentMethod = 'QRSIMPLE';
+        }
 
         $hasQrMarkers = $forceQr
             || $imageData !== ''
@@ -3018,10 +3101,13 @@ class FacturacionCartIntegrationController extends Controller
 
         return [
             'image_data' => $imageData,
+            'payment_method' => $paymentMethod,
             'payment_status' => $paymentStatus !== '' ? $paymentStatus : 'HOLDING',
             'transaction_id' => $transactionId,
             'internal_code' => $internalCode !== '' ? $internalCode : $defaultInternalCode,
-            'message' => $message !== '' ? $message : 'QR generado.',
+            'message' => $message !== '' ? $message : ($paymentMethod === 'T2P'
+                ? 'Solicitud enviada a QPOS. Espera la confirmación del pago con tarjeta.'
+                : 'QR generado.'),
         ];
     }
 
@@ -3062,12 +3148,17 @@ class FacturacionCartIntegrationController extends Controller
 
     private function buildQrViewerFeedback(array $respuesta, bool $shouldOpenQrViewer): array
     {
+        $isT2P = strtoupper(trim((string) data_get($respuesta, 'payment_method', data_get($respuesta, 'qr_data.payment_method', 'QRSIMPLE')))) === 'T2P';
+        $paymentLabel = $isT2P ? 'tarjeta sin contacto' : 'QR';
+
         if ($shouldOpenQrViewer) {
             return [
                 'type' => 'info',
-                'title' => 'QR actualizado',
-                'message' => 'Se consulto el estado actual del QR y sigue disponible para continuar con el cobro.',
-                'detail' => 'Si el cliente aun no pago, puedes volver a mostrar este mismo QR.',
+                'title' => $isT2P ? 'Cobro NFC actualizado' : 'QR actualizado',
+                'message' => 'Se consultó el estado actual del cobro y sigue disponible para continuar.',
+                'detail' => $isT2P
+                    ? 'Revisa la solicitud en QPOS y confirma el pago antes de entregar.'
+                    : 'Si el cliente aún no pagó, puedes volver a mostrar este mismo QR.',
                 'action' => 'ver_qr',
             ];
         }
@@ -3086,9 +3177,9 @@ class FacturacionCartIntegrationController extends Controller
         if (in_array($estadoPago, ['pagado', 'success', 'paid', 'completed', 'approved', 'confirmed'], true)) {
             return [
                 'type' => 'success',
-                'title' => 'Pago QR confirmado',
-                'message' => $mensaje !== '' ? $mensaje : 'El cobro QR ya fue confirmado.',
-                'detail' => 'La venta ya no requiere volver a mostrar el QR.',
+                'title' => 'Pago con ' . $paymentLabel . ' confirmado',
+                'message' => $mensaje !== '' ? $mensaje : 'El cobro ya fue confirmado.',
+                'detail' => 'La venta ya no requiere volver a mostrar la solicitud de cobro.',
                 'action' => 'ver_qr',
             ];
         }
@@ -3096,8 +3187,8 @@ class FacturacionCartIntegrationController extends Controller
         if (in_array($estadoPago, ['cancelado', 'cancelled', 'rejected', 'failed', 'expired'], true)) {
             return [
                 'type' => 'warning',
-                'title' => 'Pago QR no concretado',
-                'message' => $mensaje !== '' ? $mensaje : 'El QR fue cancelado o ya no esta vigente.',
+                'title' => 'Pago no concretado',
+                'message' => $mensaje !== '' ? $mensaje : 'El cobro fue cancelado o ya no está vigente.',
                 'detail' => 'Si el cliente desea reintentar, sera necesario generar un nuevo cobro.',
                 'action' => 'ver_qr',
             ];
@@ -3105,8 +3196,8 @@ class FacturacionCartIntegrationController extends Controller
 
         return [
             'type' => 'info',
-            'title' => 'Estado QR actualizado',
-            'message' => $mensaje !== '' ? $mensaje : 'Se actualizo el estado del QR.',
+            'title' => $isT2P ? 'Estado de tarjeta actualizado' : 'Estado QR actualizado',
+            'message' => $mensaje !== '' ? $mensaje : ($isT2P ? 'Se actualizó el estado del cobro con tarjeta.' : 'Se actualizó el estado del QR.'),
             'detail' => '',
             'action' => 'ver_qr',
         ];
@@ -3475,7 +3566,7 @@ class FacturacionCartIntegrationController extends Controller
             ]);
         }
 
-        return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $resolvedTipoDocumento, 'numero_documento' => $resolvedNumeroDocumento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $resolvedRazonSocial, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $respuestaEmision, 'respuesta_emision_desalineada' => $respuestaEmisionDesalineada, 'codigo_orden_respuesta' => $responseCodigoOrden !== '' ? $responseCodigoOrden : null, 'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : null, 'cuf' => $resolvedCuf !== '' ? $resolvedCuf : null, 'pdf_url' => $resolvedPdfUrl !== '' ? $resolvedPdfUrl : null, 'xml_url' => $resolvedXmlUrl !== '' ? $resolvedXmlUrl : null, 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'historial_qr' => $historialQr, 'items' => $items];
+        return ['id' => (int) $c->id, 'venta_id' => $linkedVentaId > 0 ? $linkedVentaId : null, 'origen_usuario_id' => (string) $c->origen_usuario_id, 'origen_usuario_nombre' => $c->origen_usuario_nombre, 'origen_usuario_email' => $c->origen_usuario_email, 'origen_usuario_alias' => $c->origen_usuario_alias ?? null, 'origen_usuario_carnet' => $c->origen_usuario_carnet ?? null, 'origen_sucursal_id' => $c->origen_sucursal_id, 'origen_sucursal_codigo' => $c->origen_sucursal_codigo, 'origen_sucursal_nombre' => $c->origen_sucursal_nombre, 'estado' => (string) $c->estado, 'modalidad_facturacion' => $c->modalidad_facturacion, 'canal_emision' => $c->canal_emision, 'canal_operativo' => $c->canal_operativo ?? 'normal', 'contabiliza_en_caja' => isset($c->contabiliza_en_caja) ? (bool) $c->contabiliza_en_caja : true, 'es_cuenta_por_cobrar' => isset($c->es_cuenta_por_cobrar) ? (bool) $c->es_cuenta_por_cobrar : false, 'empresa_id' => $c->empresa_id ?? null, 'empresa_codigo_cliente' => $c->empresa_codigo_cliente ?? null, 'empresa_nombre' => $c->empresa_nombre ?? null, 'empresa_sigla' => $c->empresa_sigla ?? null, 'metodo_pago' => $c->metodo_pago ?? 'efectivo', 'qhantuy_payment_method' => strtoupper((string) ($c->qhantuy_payment_method ?? 'QRSIMPLE')), 'estado_pago' => $c->estado_pago ?? 'pendiente', 'tipo_documento' => $resolvedTipoDocumento, 'numero_documento' => $resolvedNumeroDocumento, 'complemento_documento' => $c->complemento_documento, 'razon_social' => $resolvedRazonSocial, 'correo_facturacion' => $c->correo_facturacion ?? null, 'codigo_orden' => $this->normalizeBridgeCodigoOrden($c->codigo_orden, $canal), 'codigo_seguimiento' => $c->codigo_seguimiento, 'codigo_seguimiento_fiscal' => $c->codigo_seguimiento_fiscal ?? $c->codigo_seguimiento, 'qr_transaction_id' => $c->qr_transaction_id ?? null, 'estado_emision' => $c->estado_emision, 'mensaje_emision' => $c->mensaje_emision, 'respuesta_emision' => $respuestaEmision, 'respuesta_emision_desalineada' => $respuestaEmisionDesalineada, 'codigo_orden_respuesta' => $responseCodigoOrden !== '' ? $responseCodigoOrden : null, 'numero_factura' => $resolvedNumeroFactura !== '' ? $resolvedNumeroFactura : null, 'cuf' => $resolvedCuf !== '' ? $resolvedCuf : null, 'pdf_url' => $resolvedPdfUrl !== '' ? $resolvedPdfUrl : null, 'xml_url' => $resolvedXmlUrl !== '' ? $resolvedXmlUrl : null, 'cantidad_items' => (int) $c->cantidad_items, 'subtotal' => (float) $c->subtotal, 'total_extras' => (float) $c->total_extras, 'total' => (float) $c->total, 'abierto_en' => $c->abierto_en, 'cerrado_en' => $c->cerrado_en, 'emitido_en' => $c->emitido_en, 'created_at' => $c->created_at, 'updated_at' => $c->updated_at, 'status' => $status, 'historial_qr' => $historialQr, 'items' => $items];
     }
 
     private function facturacionCartStatusPayload(object $cart, ?object $linkedVenta = null): array
@@ -3714,7 +3805,7 @@ class FacturacionCartIntegrationController extends Controller
             DB::table('facturacion_carts')->where('id', $draft->id)->update(array_merge($updates, ['updated_at' => now()]));
             return (int) $draft->id;
         }
-        return (int) DB::table('facturacion_carts')->insertGetId(array_merge(['origen_usuario_id' => $userId, 'estado' => 'borrador', 'modalidad_facturacion' => 'con_datos', 'canal_emision' => 'factura_electronica', 'canal_operativo' => 'normal', 'contabiliza_en_caja' => true, 'es_cuenta_por_cobrar' => false, 'metodo_pago' => 'efectivo', 'estado_pago' => 'pendiente', 'cantidad_items' => 0, 'subtotal' => 0, 'total_extras' => 0, 'total' => 0, 'abierto_en' => now(), 'created_at' => now(), 'updated_at' => now()], $updates));
+        return (int) DB::table('facturacion_carts')->insertGetId(array_merge(['origen_usuario_id' => $userId, 'estado' => 'borrador', 'modalidad_facturacion' => 'con_datos', 'canal_emision' => 'factura_electronica', 'canal_operativo' => 'normal', 'contabiliza_en_caja' => true, 'es_cuenta_por_cobrar' => false, 'metodo_pago' => 'efectivo', 'qhantuy_payment_method' => 'QRSIMPLE', 'estado_pago' => 'pendiente', 'cantidad_items' => 0, 'subtotal' => 0, 'total_extras' => 0, 'total' => 0, 'abierto_en' => now(), 'created_at' => now(), 'updated_at' => now()], $updates));
     }
 
     private function ensureClienteOnlineAttemptDraft(string $userId, array $payload, array $updates): int
@@ -3756,6 +3847,7 @@ class FacturacionCartIntegrationController extends Controller
             'contabiliza_en_caja' => true,
             'es_cuenta_por_cobrar' => false,
             'metodo_pago' => 'efectivo',
+            'qhantuy_payment_method' => 'QRSIMPLE',
             'estado_pago' => 'pendiente',
             'cantidad_items' => 0,
             'subtotal' => 0,
@@ -4562,6 +4654,11 @@ class FacturacionCartIntegrationController extends Controller
             'ok' => true,
             'estado' => 'NO_APLICA',
             'estado_pago' => 'pendiente',
+            'payment_method' => strtoupper(trim((string) (
+                $cart->qhantuy_payment_method
+                ?? data_get($response, 'payment_method')
+                ?? 'QRSIMPLE'
+            ))),
             'payment_status' => (string) (
                 data_get($response, 'payment_status')
                 ?: data_get($response, 'items.0.payment_status')
@@ -4575,8 +4672,12 @@ class FacturacionCartIntegrationController extends Controller
                 trim((string) ($cart->codigo_orden ?? data_get($response, 'internal_code', ''))),
                 'qr'
             ),
-            'message' => 'Ya existe un QR pendiente para esta venta. Se reutiliza el codigo vigente.',
-            'mensaje' => 'Ya existe un QR pendiente para esta venta. Se reutiliza el codigo vigente.',
+            'message' => strtoupper(trim((string) ($cart->qhantuy_payment_method ?? data_get($response, 'payment_method', 'QRSIMPLE')))) === 'T2P'
+                ? 'Ya existe una solicitud de tarjeta pendiente para esta venta. Se reutiliza la orden vigente.'
+                : 'Ya existe un QR pendiente para esta venta. Se reutiliza el código vigente.',
+            'mensaje' => strtoupper(trim((string) ($cart->qhantuy_payment_method ?? data_get($response, 'payment_method', 'QRSIMPLE')))) === 'T2P'
+                ? 'Ya existe una solicitud de tarjeta pendiente para esta venta. Se reutiliza la orden vigente.'
+                : 'Ya existe un QR pendiente para esta venta. Se reutiliza el código vigente.',
         ]);
     }
 
