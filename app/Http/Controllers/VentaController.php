@@ -1474,16 +1474,21 @@ class VentaController extends Controller
             return [];
         }
 
+        $columns = [
+            'id',
+            'canal_emision',
+            'metodo_pago',
+            'estado_pago',
+            'estado_emision',
+            'qr_transaction_id',
+        ];
+        if (Schema::hasColumn('facturacion_carts', 'qhantuy_payment_method')) {
+            $columns[] = 'qhantuy_payment_method';
+        }
+
         return DB::table('facturacion_carts')
             ->whereIn('id', $cartIds)
-            ->get([
-                'id',
-                'canal_emision',
-                'metodo_pago',
-                'estado_pago',
-                'estado_emision',
-                'qr_transaction_id',
-            ])
+            ->get($columns)
             ->keyBy(fn ($row) => (int) $row->id)
             ->toArray();
     }
@@ -1926,6 +1931,7 @@ class VentaController extends Controller
                 'totalVendido' => $financial['resumen']['totalVendido'],
                 'totalImporteRegistrosMostrados' => round((float) $rows->sum(fn ($row) => (float) $row['importe']), 2),
                 'totalQrFacturado' => $financial['resumen']['totalQrFacturado'],
+                'totalTarjetaFacturada' => $financial['resumen']['totalTarjetaFacturada'],
                 'totalEfectivoFacturado' => $financial['resumen']['totalEfectivoFacturado'],
                 'regionales' => $rows->pluck('regionalRegistro')->filter()->unique()->count(),
             ],
@@ -2321,6 +2327,7 @@ class VentaController extends Controller
             if ($includeAnnulled) {
                 $payload['estado_sufe'] = strtoupper(trim((string) ($venta->estado_sufe ?? '')));
                 $payload['metodo_pago'] = strtolower(trim((string) ($venta->metodo_pago ?? $bridgeCart->metodo_pago ?? '')));
+                $payload['qhantuy_payment_method'] = strtoupper(trim((string) ($bridgeCart->qhantuy_payment_method ?? 'QRSIMPLE')));
                 $payload['canal_emision'] = strtolower(trim((string) ($venta->canal_emision ?? $bridgeCart->canal_emision ?? '')));
                 $payload['estado_pago'] = strtolower(trim((string) ($venta->estado_pago ?? $bridgeCart->estado_pago ?? '')));
                 $payload['estado_emision'] = strtoupper(trim((string) ($venta->estado_emision ?? $bridgeCart->estado_emision ?? '')));
@@ -2329,7 +2336,7 @@ class VentaController extends Controller
                 $payload['anulada'] = $this->isServiceReportAnnulled($payload);
                 $payload['estadoFiscal'] = $this->serviceReportFiscalStatus($payload);
                 $payload['estadoPago'] = $payload['estado_pago'] !== '' ? $payload['estado_pago'] : null;
-                $payload['medioPago'] = $this->isQrPaymentRow($payload) ? 'QR' : 'EFECTIVO';
+                $payload['medioPago'] = FinancialSale::classify($payload)['medioPago'];
                 $payload['incluidaEnTotales'] = ! $payload['anulada'];
             }
 
@@ -2379,7 +2386,7 @@ class VentaController extends Controller
                 $row['estadoPago'] = trim((string) ($row['estado_pago'] ?? '')) !== ''
                     ? strtolower(trim((string) $row['estado_pago']))
                     : null;
-                $row['medioPago'] = $this->isQrPaymentRow($row) ? 'QR' : 'EFECTIVO';
+                $row['medioPago'] = FinancialSale::classify($row)['medioPago'];
                 $row['incluidaEnTotales'] = ! $row['anulada'];
 
                 return $row;
@@ -2503,7 +2510,7 @@ class VentaController extends Controller
         foreach ($ventas as $venta) {
             $venta = is_array($venta) ? $venta : (array) $venta;
             $isAnnulled = (bool) ($venta['anulada'] ?? $this->isServiceReportAnnulled($venta));
-            $medioPago = (string) ($venta['medioPago'] ?? ($this->isQrPaymentRow($venta) ? 'QR' : 'EFECTIVO'));
+            $medioPago = (string) ($venta['medioPago'] ?? FinancialSale::classify($venta)['medioPago']);
             $detalleOriginal = (array) ($venta['detalle'] ?? []);
             $serviciosOriginales = collect($detalleOriginal)
                 ->reject(fn ($item) => strtolower(trim((string) data_get($item, 'tipoLinea', ''))) === 'conciliacion')
@@ -3223,7 +3230,14 @@ class VentaController extends Controller
             $metodoPago = strtolower(trim((string) ($bridgeCart->metodo_pago ?? 'efectivo')));
             $estadoPago = strtolower(trim((string) ($bridgeCart->estado_pago ?? 'pagado')));
             $estadoEmision = strtoupper(trim((string) ($bridgeCart->estado_emision ?? 'FACTURADA')));
-            $sectionKey = $this->resolvePdfSectionKey([
+            $isManualDelivery = strtoupper(trim((string) ($venta->origen_venta_tipo ?? ''))) === 'ENTREGA_MANUAL';
+            if ($isManualDelivery) {
+                $canalEmision = 'manual';
+                $metodoPago = '';
+                $estadoPago = '';
+                $estadoEmision = 'ENTREGADO';
+            }
+            $sectionKey = $isManualDelivery ? 'oficial' : $this->resolvePdfSectionKey([
                 'codigo_orden' => $venta->codigoOrden,
                 'metodoPago' => $venta->metodoPago,
                 'canal_emision' => $canalEmision,
@@ -3279,7 +3293,7 @@ class VentaController extends Controller
                 'estado_pago' => $estadoPago,
                 'estado_emision' => $estadoEmision,
                 'section_key' => $sectionKey,
-                'emision_label' => match ($sectionKey) {
+                'emision_label' => $isManualDelivery ? 'Entrega manual' : match ($sectionKey) {
                     'qr_facturado' => 'QR pagado + facturado',
                     'qr_pagado_pendiente_factura' => 'QR pagado',
                     'qr_cancelado' => 'QR cancelado',
@@ -3287,23 +3301,24 @@ class VentaController extends Controller
                     'oficial' => 'Envio oficial',
                     default => 'Factura electronica',
                 },
-                'cobro_label' => match ($sectionKey) {
+                'cobro_label' => $isManualDelivery ? 'SIN COBRO' : match ($sectionKey) {
                     'qr_facturado', 'qr_pagado_pendiente_factura' => 'QR / NO CAJA',
                     'qr_cancelado' => 'QR CANCELADO',
                     'qr_pendiente' => 'QR PENDIENTE',
                     'oficial' => 'CAJA / OFICIAL',
                     default => 'CAJA',
                 },
-                'cobro_detalle' => match ($sectionKey) {
+                'cobro_detalle' => $isManualDelivery ? 'Entrega manual sin factura, cobro ni importe.' : match ($sectionKey) {
                     'qr_facturado' => 'Cobro QR transformado a factura electronica. No suma a caja.',
                     'qr_pagado_pendiente_factura' => 'Cobro QR confirmado. No suma a caja mientras no sea efectivo.',
                     'qr_cancelado' => 'Intento QR no concretado.',
                     'qr_pendiente' => 'Pendiente de pago QR.',
                     default => 'Cobro registrado en caja.',
                 },
-                'contabiliza_en_caja' => ! in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true)
+                'contabiliza_en_caja' => ! $isManualDelivery
+                    && ! in_array($sectionKey, ['qr_facturado', 'qr_pagado_pendiente_factura', 'qr_pendiente', 'qr_cancelado'], true)
                     && $estadoEmision !== 'ANULADA',
-                'cobrada' => true,
+                'cobrada' => ! $isManualDelivery,
                 'numero_factura' => $numeroFactura !== '' ? $numeroFactura : '-',
                 'importe_parcial' => round((float) ($venta->total ?? 0), 2),
                 'importe_general' => round((float) ($venta->total ?? 0), 2),
@@ -4218,11 +4233,21 @@ class VentaController extends Controller
             'totalVendido' => 0.0,
             'totalQrFacturado' => 0.0,
             'totalQrPagadoPendienteFactura' => 0.0,
+            'totalTarjetaFacturada' => 0.0,
+            'totalTarjetaPorDetalle' => 0.0,
+            'totalTarjetaCancelado' => 0.0,
+            'totalTarjetaPendiente' => 0.0,
+            'totalTarjetaPagadoPendienteFactura' => 0.0,
+            'diferenciaCabeceraDetalleTarjeta' => 0.0,
             'totalEfectivoFacturado' => 0.0,
             'totalEcaFacturado' => 0.0,
             'totalContratosNoSumados' => 0.0,
             'facturadas' => 0,
             'qrFacturadas' => 0,
+            'tarjetaFacturadas' => 0,
+            'tarjetaCancelado' => 0,
+            'tarjetaPendiente' => 0,
+            'tarjetaPagadoPendienteFactura' => 0,
             'ecaFacturadas' => 0,
             'electronicasFacturadas' => 0,
             'contratosNoSumados' => 0,
@@ -5523,6 +5548,7 @@ class VentaController extends Controller
             'origenVentaTipo' => 'facturacion_cart',
             'canal_emision' => (string) ($cart->canal_emision ?? ''),
             'metodo_pago' => (string) ($cart->metodo_pago ?? ''),
+            'qhantuy_payment_method' => strtoupper((string) ($cart->qhantuy_payment_method ?? 'QRSIMPLE')),
             'estado_pago' => (string) ($cart->estado_pago ?? ''),
             'estado_emision' => (string) ($cart->estado_emision ?? ''),
             'mensaje_emision' => (string) ($cart->mensaje_emision ?? ''),
@@ -5734,13 +5760,17 @@ class VentaController extends Controller
             }
 
             $numeroFactura = trim((string) ($venta->numero_factura ?? ''));
-            $medioPago = $this->isQrPaymentRow([
+            $isManualDelivery = strtoupper(trim((string) ($venta->origen_venta_tipo ?? ''))) === 'ENTREGA_MANUAL';
+            $paymentData = [
                 'codigoOrden' => $venta->codigoOrden,
                 'metodoPago' => $venta->metodoPago,
+                'origenVentaTipo' => $venta->origen_venta_tipo,
                 'metodo_pago' => $bridgeCart->metodo_pago ?? '',
+                'qhantuy_payment_method' => $bridgeCart->qhantuy_payment_method ?? '',
                 'canal_emision' => $bridgeCart->canal_emision ?? '',
                 'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,
-            ]) ? 'QR' : 'EFECTIVO';
+            ];
+            $medioPago = FinancialSale::classify($paymentData)['medioPago'];
 
             return [
                 'id' => $venta->id,
@@ -5751,8 +5781,9 @@ class VentaController extends Controller
                 'origenVentaTipo' => $venta->origen_venta_tipo,
                 'numeroFactura' => $numeroFactura !== '' ? $numeroFactura : null,
                 'numero_factura' => $numeroFactura !== '' ? $numeroFactura : null,
-                'metodoPago' => (int) ($venta->metodoPago ?? 0),
+                'metodoPago' => $isManualDelivery ? null : (int) ($venta->metodoPago ?? 0),
                 'metodo_pago' => strtolower(trim((string) ($bridgeCart->metodo_pago ?? ''))),
+                'qhantuy_payment_method' => $isManualDelivery ? null : strtoupper(trim((string) ($bridgeCart->qhantuy_payment_method ?? 'QRSIMPLE'))),
                 'canal_emision' => strtolower(trim((string) ($bridgeCart->canal_emision ?? ''))),
                 'estado_pago' => strtolower(trim((string) ($bridgeCart->estado_pago ?? ''))),
                 'qr_transaction_id' => $bridgeCart->qr_transaction_id ?? null,

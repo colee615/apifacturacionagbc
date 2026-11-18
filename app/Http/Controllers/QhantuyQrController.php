@@ -546,7 +546,6 @@ class QhantuyQrController extends Controller
         ]);
 
         $paymentMethod = strtoupper(trim((string) ($validated['payment_method'] ?? 'QRSIMPLE')));
-
         Log::debug('Qhantuy checkout request received', [
             'internal_code' => (string) ($validated['internal_code'] ?? ''),
             'request_keys' => array_keys($validated),
@@ -595,16 +594,16 @@ class QhantuyQrController extends Controller
         $ownsCheckout = false;
 
         Log::debug('Qhantuy checkout payload prepared', [
-            'internal_code' => $payload['internal_code'],
-            'url' => $this->checkoutUrl(),
-            'request_meta' => [
-                'method' => $request->method(),
-                'path' => $request->path(),
-                'ip' => $request->ip(),
-                'user_agent' => substr((string) $request->userAgent(), 0, 240),
-            ],
-            'payload' => $this->maskQhantuyPayloadForLogs($payload),
-        ]);
+                'internal_code' => $payload['internal_code'],
+                'url' => $this->checkoutUrl(),
+                'request_meta' => [
+                    'method' => $request->method(),
+                    'path' => $request->path(),
+                    'ip' => $request->ip(),
+                    'user_agent' => substr((string) $request->userAgent(), 0, 240),
+                ],
+                'payload' => $this->maskQhantuyPayloadForLogs($payload),
+            ]);
 
         try {
             $existing = DB::table('qhantuy_qr_payments')->where('internal_code', $payload['internal_code'])->first();

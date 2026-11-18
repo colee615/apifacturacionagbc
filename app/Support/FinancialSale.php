@@ -5,7 +5,7 @@ namespace App\Support;
 /** Read-only classification of one fiscal attempt and its payment evidence. */
 final class FinancialSale
 {
-    public const VERSION = '2026-10-05.1';
+    public const VERSION = '2026-11-18.1';
     public const ACTIVE = ['PROCESADA', 'PROCESADO', 'FACTURADA', 'EMITIDO', 'ANULACION_SOLICITADA', 'ANULACION_OBSERVADA'];
     public const ANNULLED = ['ANULADA', 'ANULADO', 'DESCARTADA'];
 
@@ -41,6 +41,21 @@ final class FinancialSale
             || str_starts_with($order, 'VQC-') || str_starts_with($order, 'VQ-');
     }
 
+    public static function isT2pCard(array $sale): bool
+    {
+        $method = strtoupper(trim((string) (
+            $sale['qhantuy_payment_method']
+            ?? $sale['qhantuyPaymentMethod']
+            ?? $sale['payment_method']
+            ?? ''
+        )));
+        $medium = strtoupper(trim((string) ($sale['medioPago'] ?? $sale['medio_pago'] ?? '')));
+
+        return $method === 'T2P'
+            || strtolower(trim((string) ($sale['metodo_pago'] ?? ''))) === 'tarjeta'
+            || str_contains($medium, 'TARJETA');
+    }
+
     public static function category(array $sale): string
     {
         if (self::fiscalState($sale) === 'REGISTRADA_OFICIAL') return 'OFICIAL';
@@ -64,11 +79,14 @@ final class FinancialSale
         $annulled = in_array($state, self::ANNULLED, true);
         $active = in_array($state, self::ACTIVE, true);
         $qr = self::isQr($sale);
+        $card = self::isT2pCard($sale);
+        $manualDelivery = strtoupper(trim((string) ($sale['origenVentaTipo'] ?? $sale['origen_venta_tipo'] ?? ''))) === 'ENTREGA_MANUAL';
+        $medium = $manualDelivery ? 'SIN COBRO' : ($card ? 'TARJETA NFC' : ($qr ? 'QR' : 'EFECTIVO'));
         $payment = strtolower(trim((string) ($sale['estado_pago'] ?? $sale['estadoPago'] ?? '')));
         $canceled = in_array($payment, ['cancelado', 'anulado', 'fallido', 'reembolsado', 'revertido'], true);
         $paid = in_array($payment, ['pagado', 'confirmado'], true);
         // Legacy cash invoices have no separate payment entity. Never infer QR payment from a CUF.
-        $cashLegacy = !$qr && $payment === '' && $active;
+        $cashLegacy = !$manualDelivery && !$qr && !$card && $payment === '' && $active;
         $category = self::category($sale);
         $reason = $annulled ? 'FACTURA_ANULADA'
             : ($canceled ? 'PAGO_CANCELADO'
@@ -79,13 +97,14 @@ final class FinancialSale
         if ($amount < 0) $reason = 'IMPORTE_NEGATIVO';
         return [
             'version' => self::VERSION, 'estadoFiscal' => $state, 'estadoPago' => $payment ?: 'sin_evidencia',
-            'medioPago' => $qr ? 'QR' : 'EFECTIVO', 'categoria' => $category,
+            'medioPago' => $medium, 'categoria' => $category,
             'anulada' => $annulled, 'facturaVigente' => $active, 'pagoConfirmado' => $paid || $cashLegacy,
             'pagoCancelado' => $canceled, 'efectivoSinRegistroPago' => $cashLegacy,
             'incluidaEnTotalVendido' => $reason === null, 'motivoExclusion' => $reason,
             'importeCentavos' => $amount, 'totalVendido' => $reason === null ? $amount /100.0 : 0.0,
-            'totalQr' => $reason === null && $qr ? $amount /100.0 : 0.0,
-            'totalEfectivo' => $reason === null && !$qr ? $amount /100.0 : 0.0,
+            'totalQr' => $reason === null && $medium === 'QR' ? $amount /100.0 : 0.0,
+            'totalTarjeta' => $reason === null && $card ? $amount /100.0 : 0.0,
+            'totalEfectivo' => $reason === null && $medium === 'EFECTIVO' ? $amount /100.0 : 0.0,
         ];
     }
 

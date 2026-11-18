@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Concerns;
 
 use App\Models\Venta;
 use App\Models\Notificacione;
+use App\Support\FinancialSale;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Schema;
@@ -155,7 +156,7 @@ trait StreamsServiceReports
                     $payload['estadoPago'] = trim((string) ($payload['estado_pago'] ?? '')) !== ''
                         ? strtolower(trim((string) $payload['estado_pago']))
                         : null;
-                    $payload['medioPago'] = $this->isQrPaymentRow($payload) ? 'QR' : 'EFECTIVO';
+                    $payload['medioPago'] = FinancialSale::classify($payload)['medioPago'];
                     $payload['incluidaEnTotales'] = ! $payload['anulada'];
                 }
 
@@ -249,6 +250,7 @@ trait StreamsServiceReports
             {
                 $payload['estado_sufe'] = strtoupper(trim((string) ($venta->estado_sufe ?? '')));
                 $payload['metodo_pago'] = strtolower(trim((string) ($venta->metodo_pago ?? $bridgeCart->metodo_pago ?? '')));
+                $payload['qhantuy_payment_method'] = strtoupper(trim((string) ($bridgeCart->qhantuy_payment_method ?? 'QRSIMPLE')));
                 $payload['canal_emision'] = strtolower(trim((string) ($venta->canal_emision ?? $bridgeCart->canal_emision ?? '')));
                 $payload['estado_pago'] = strtolower(trim((string) ($venta->estado_pago ?? $bridgeCart->estado_pago ?? '')));
                 $payload['estado_emision'] = strtoupper(trim((string) ($venta->estado_emision ?? $bridgeCart->estado_emision ?? '')));
@@ -257,7 +259,7 @@ trait StreamsServiceReports
                 $payload['anulada'] = $this->isServiceReportAnnulled($payload);
                 $payload['estadoFiscal'] = $this->serviceReportFiscalStatus($payload);
                 $payload['estadoPago'] = $payload['estado_pago'] !== '' ? $payload['estado_pago'] : null;
-                $payload['medioPago'] = $this->isQrPaymentRow($payload) ? 'QR' : 'EFECTIVO';
+                $payload['medioPago'] = FinancialSale::classify($payload)['medioPago'];
                 $payload['incluidaEnTotales'] = ! $payload['anulada'];
             }
 
@@ -276,7 +278,7 @@ trait StreamsServiceReports
         $columns = [
             'id', 'created_at', 'emitido_en', 'respuesta_emision', 'codigo_orden',
             'codigo_seguimiento', 'codigo_seguimiento_fiscal', 'canal_emision', 'estado',
-            'estado_pago', 'estado_emision', 'metodo_pago', 'qr_transaction_id', 'tipo_documento',
+            'estado_pago', 'estado_emision', 'metodo_pago', 'qhantuy_payment_method', 'qr_transaction_id', 'tipo_documento',
             'numero_documento', 'razon_social', 'total', 'cantidad_items', 'origen_usuario_id',
             'origen_usuario_nombre', 'origen_usuario_email', 'origen_usuario_alias', 'origen_usuario_carnet',
             'origen_sucursal_id', 'origen_sucursal_codigo',

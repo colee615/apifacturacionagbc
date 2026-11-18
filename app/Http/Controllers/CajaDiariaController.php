@@ -1343,6 +1343,7 @@ class CajaDiariaController extends Controller
             'sucursalNombre' => ['nullable', 'string', 'max:180'],
             'totalEfectivoSistema' => ['nullable', 'numeric', 'min:0'],
             'totalQrSistema' => ['nullable', 'numeric', 'min:0'],
+            'totalTarjetaSistema' => ['nullable', 'numeric', 'min:0'],
             'totalGeneralSistema' => ['nullable', 'numeric', 'min:0'],
             'montoDepositado' => ['required', 'numeric', 'min:0.01'],
             'banco' => ['nullable', 'string', 'max:120'],
@@ -1520,6 +1521,7 @@ class CajaDiariaController extends Controller
             $totals = [
                 'totalEfectivoFacturado' => 0,
                 'totalQrFacturado' => 0,
+                'totalTarjetaFacturada' => 0,
                 'totalVendido' => 0,
             ];
 
@@ -1539,6 +1541,7 @@ class CajaDiariaController extends Controller
                 'sucursal_nombre' => $sucursalNombre ?: 'LA PAZ + EL ALTO',
                 'total_efectivo_sistema' => $totals['totalEfectivoFacturado'] / 100,
                 'total_qr_sistema' => $totals['totalQrFacturado'] / 100,
+                'total_tarjeta_sistema' => $totals['totalTarjetaFacturada'] / 100,
                 'total_general_sistema' => $totals['totalVendido'] / 100,
             ];
         }
@@ -1548,6 +1551,7 @@ class CajaDiariaController extends Controller
         return ['sucursal_nombre'=>$sucursalNombre,
             'total_efectivo_sistema'=>$report['resumen']['totalEfectivoFacturado'],
             'total_qr_sistema'=>$report['resumen']['totalQrFacturado'],
+            'total_tarjeta_sistema'=>$report['resumen']['totalTarjetaFacturada'],
             'total_general_sistema'=>$report['resumen']['totalVendido']];
     }
 
@@ -1612,6 +1616,10 @@ class CajaDiariaController extends Controller
                 'total_qr_sistema' => $snapshot['total_qr_sistema'] ?? null,
                 'total_general_sistema' => $snapshot['total_general_sistema'] ?? null,
             ], fn ($value) => $value !== null && $value !== '');
+            if (Schema::hasColumn('cierre_diario_sucursales', 'total_tarjeta_sistema')
+                && array_key_exists('total_tarjeta_sistema', $snapshot)) {
+                $updates['total_tarjeta_sistema'] = round((float) $snapshot['total_tarjeta_sistema'], 2);
+            }
 
             if ($updates !== []) {
                 $updates['updated_at'] = now();
@@ -1621,7 +1629,7 @@ class CajaDiariaController extends Controller
             return $this->refreshConciliacionRow((int) $existing->id);
         }
 
-        $id = DB::table('cierre_diario_sucursales')->insertGetId([
+        $insert = [
             'fecha_operacion' => $fecha,
             'codigo_sucursal' => $codigoSucursal,
             'punto_venta' => $puntoVenta,
@@ -1635,7 +1643,11 @@ class CajaDiariaController extends Controller
             'estado' => 'sin_comprobante',
             'created_at' => now(),
             'updated_at' => now(),
-        ]);
+        ];
+        if (Schema::hasColumn('cierre_diario_sucursales', 'total_tarjeta_sistema')) {
+            $insert['total_tarjeta_sistema'] = round((float) ($snapshot['total_tarjeta_sistema'] ?? 0), 2);
+        }
+        $id = DB::table('cierre_diario_sucursales')->insertGetId($insert);
 
         return $this->refreshConciliacionRow((int) $id);
     }
@@ -1700,6 +1712,7 @@ class CajaDiariaController extends Controller
             'sucursalNombre' => $row->sucursal_nombre,
             'totalEfectivoSistema' => round((float) ($row->total_efectivo_sistema ?? 0), 2),
             'totalQrSistema' => round((float) ($row->total_qr_sistema ?? 0), 2),
+            'totalTarjetaSistema' => round((float) ($row->total_tarjeta_sistema ?? 0), 2),
             'totalGeneralSistema' => round((float) ($row->total_general_sistema ?? 0), 2),
             'totalComprobantes' => round((float) ($row->total_comprobantes ?? 0), 2),
             'diferencia' => round((float) ($row->diferencia ?? 0), 2),

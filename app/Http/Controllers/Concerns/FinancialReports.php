@@ -18,7 +18,14 @@ trait FinancialReports
         }
         try {
             foreach ($this->mergedServiceReportVentaStream($filters, true) as $row) {
-                $row['financiero'] = FinancialSale::classify($row);
+                $financial = FinancialSale::classify($row);
+                $row['financiero'] = $financial;
+                $row['medioPago'] = $financial['medioPago'];
+                if ($financial['medioPago'] === 'TARJETA NFC') {
+                    // The persisted `qr` value identifies the Qhantuy checkout
+                    // channel. Reports must expose the actual payment instrument.
+                    $row['metodo_pago'] = 'tarjeta';
+                }
                 yield $row;
             }
         } finally {

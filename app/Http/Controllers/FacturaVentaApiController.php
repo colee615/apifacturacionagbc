@@ -737,7 +737,7 @@ class FacturaVentaApiController extends Controller
 
         if (!Schema::hasTable('facturacion_entregas_manuales')) {
             return response()->json([
-                'message' => 'La API todavía no tiene aplicada la migración de entregas manuales.',
+                'message' => 'La API todavía no tiene habilitado el registro de entrega manual.',
             ], 503);
         }
 
@@ -753,7 +753,7 @@ class FacturaVentaApiController extends Controller
             'tipoDocumentoIdentidad' => 0,
             'montoTotal' => 0,
             'pesoTotal' => round((float) ($validated['pesoKg'] ?? 0), 3),
-            'metodoPago' => 0,
+            'metodoPago' => null,
             'contabilizaEnCaja' => false,
             'estado_sufe' => 'REGISTRADA_OFICIAL',
             'detalle' => [[
@@ -790,6 +790,7 @@ class FacturaVentaApiController extends Controller
                 return [
                     'venta' => $this->manualDeliverySaleSummary((int) $manualDelivery->venta_id),
                     'ya_registrada' => true,
+                    'estado' => 'ENTREGADO',
                 ];
             }
 
@@ -814,15 +815,16 @@ class FacturaVentaApiController extends Controller
             return [
                 'venta' => $this->manualDeliverySaleSummary((int) $venta['id']),
                 'ya_registrada' => false,
+                'estado' => 'ENTREGADO',
             ];
         });
 
         return response()->json([
             'ok' => true,
-            'estado' => 'REGISTRADA_OFICIAL',
+            'estado' => $result['estado'],
             'message' => $result['ya_registrada']
                 ? 'La entrega manual ya estaba registrada; se reutilizó el mismo registro.'
-                : 'Entrega manual registrada en el Kardex sin factura ni importe.',
+                : 'Entrega registrada en el Kardex sin factura ni importe.',
             'codigoPaquete' => $code,
             'ya_registrada' => $result['ya_registrada'],
             'venta' => $result['venta'],

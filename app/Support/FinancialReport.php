@@ -6,14 +6,16 @@ final class FinancialReport
 {
     public static function emptyTotals(): array
     {
-        return array_fill_keys(['totalVendido', 'totalQrFacturado', 'totalEfectivoFacturado',
-            'totalQrPorDetalle', 'totalEfectivoPorDetalle',
+        return array_fill_keys(['totalVendido', 'totalQrFacturado', 'totalTarjetaFacturada', 'totalEfectivoFacturado',
+            'totalQrPorDetalle', 'totalTarjetaPorDetalle', 'totalEfectivoPorDetalle',
             'totalFacturasAnuladas', 'totalQrCancelado', 'totalQrPendiente',
-            'totalQrPagadoPendienteFactura', 'totalEcaFacturado', 'totalContratosNoSumados',
+            'totalQrPagadoPendienteFactura', 'totalTarjetaCancelado', 'totalTarjetaPendiente',
+            'totalTarjetaPagadoPendienteFactura', 'totalEcaFacturado', 'totalContratosNoSumados',
             'totalOficial', 'totalNoIncluido', 'totalRegistros', 'diferenciaCabeceraDetalle',
-            'diferenciaCabeceraDetalleQr', 'diferenciaCabeceraDetalleEfectivo'], 0.0)
-            + array_fill_keys(['cantidadRegistros', 'facturadas', 'qrFacturadas', 'electronicasFacturadas',
+            'diferenciaCabeceraDetalleQr', 'diferenciaCabeceraDetalleTarjeta', 'diferenciaCabeceraDetalleEfectivo'], 0.0)
+            + array_fill_keys(['cantidadRegistros', 'facturadas', 'qrFacturadas', 'tarjetaFacturadas', 'electronicasFacturadas',
                 'facturasAnuladas', 'qrCancelado', 'qrPendiente', 'qrPagadoPendienteFactura',
+                'tarjetaCancelado', 'tarjetaPendiente', 'tarjetaPagadoPendienteFactura',
                 'ecaFacturadas', 'contratosNoSumados', 'oficiales', 'observadas'], 0);
     }
 
@@ -55,12 +57,20 @@ final class FinancialReport
                     $delta['totalQrFacturado'] = $amount;
                     $delta['totalQrPorDetalle'] = $detailCents / 100.0;
                     $delta['diferenciaCabeceraDetalleQr'] = $detailDifference / 100.0;
+                } elseif ($f['medioPago'] === 'TARJETA NFC') {
+                    $delta['totalTarjetaFacturada'] = $amount;
+                    $delta['totalTarjetaPorDetalle'] = $detailCents / 100.0;
+                    $delta['diferenciaCabeceraDetalleTarjeta'] = $detailDifference / 100.0;
                 } else {
                     $delta['totalEfectivoFacturado'] = $amount;
                     $delta['totalEfectivoPorDetalle'] = $detailCents / 100.0;
                     $delta['diferenciaCabeceraDetalleEfectivo'] = $detailDifference / 100.0;
                 }
-                $delta[$f['medioPago']==='QR' ? 'qrFacturadas' : 'electronicasFacturadas'] = 1;
+                $delta[match ($f['medioPago']) {
+                    'QR' => 'qrFacturadas',
+                    'TARJETA NFC' => 'tarjetaFacturadas',
+                    default => 'electronicasFacturadas',
+                }] = 1;
             } else {
                 $delta['totalNoIncluido'] = $amount;
             }
@@ -75,12 +85,26 @@ final class FinancialReport
                 }
             }
             $paymentKey = $key.'|'.($sale['qr_transaction_id'] ?? $sale['cartId'] ?? $sale['origenVentaId'] ?? $sale['id'] ?? '');
-            if ($f['medioPago']==='QR') {
-                if ($f['pagoCancelado'] && !isset($canceledPayments[$paymentKey])) {
-                    $delta['totalQrCancelado']=$amount; $delta['qrCancelado']=1; $canceledPayments[$paymentKey]=true;
+            if (in_array($f['medioPago'], ['QR', 'TARJETA NFC'], true)) {
+                $cancelTotalField = $f['medioPago'] === 'TARJETA NFC' ? 'totalTarjetaCancelado' : 'totalQrCancelado';
+                $cancelCountField = $f['medioPago'] === 'TARJETA NFC' ? 'tarjetaCancelado' : 'qrCancelado';
+                $pendingTotalField = $f['medioPago'] === 'TARJETA NFC' ? 'totalTarjetaPendiente' : 'totalQrPendiente';
+                $pendingCountField = $f['medioPago'] === 'TARJETA NFC' ? 'tarjetaPendiente' : 'qrPendiente';
+                $unbilledTotalField = $f['medioPago'] === 'TARJETA NFC' ? 'totalTarjetaPagadoPendienteFactura' : 'totalQrPagadoPendienteFactura';
+                $unbilledCountField = $f['medioPago'] === 'TARJETA NFC' ? 'tarjetaPagadoPendienteFactura' : 'qrPagadoPendienteFactura';
+                if ($f['pagoCancelado'] && ($f['medioPago'] === 'TARJETA NFC' || !isset($canceledPayments[$paymentKey]))) {
+                    $delta[$cancelTotalField] = $amount;
+                    $delta[$cancelCountField] = 1;
+                    if ($f['medioPago'] === 'QR') $canceledPayments[$paymentKey] = true;
                 }
-                elseif (!$f['pagoCancelado'] && !$f['anulada'] && !$f['pagoConfirmado']) { $delta['totalQrPendiente']=$amount; $delta['qrPendiente']=1; }
-                elseif (!$f['pagoCancelado'] && !$f['anulada'] && !$f['facturaVigente']) { $delta['totalQrPagadoPendienteFactura']=$amount; $delta['qrPagadoPendienteFactura']=1; }
+                elseif (!$f['pagoCancelado'] && !$f['anulada'] && !$f['pagoConfirmado']) {
+                    $delta[$pendingTotalField] = $amount;
+                    $delta[$pendingCountField] = 1;
+                }
+                elseif (!$f['pagoCancelado'] && !$f['anulada'] && !$f['facturaVigente']) {
+                    $delta[$unbilledTotalField] = $amount;
+                    $delta[$unbilledCountField] = 1;
+                }
             }
             if (!$f['facturaVigente'] && !$f['anulada'] && $f['categoria']!=='OFICIAL') $delta['observadas']=1;
             $delta['diferenciaCabeceraDetalle']=$detailDifference/100.0;
@@ -129,9 +153,11 @@ final class FinancialReport
         $finalizePaymentDifferences = static function (array &$totals): void {
             $totals['diferenciaMediosPago'] = (FinancialSale::cents($totals['totalVendido'])
                 - FinancialSale::cents($totals['totalQrFacturado'])
+                - FinancialSale::cents($totals['totalTarjetaFacturada'])
                 - FinancialSale::cents($totals['totalEfectivoFacturado'])) / 100.0;
             $totals['diferenciaMediosPagoPorDetalle'] = (FinancialSale::cents($totals['totalVendido'])
                 - FinancialSale::cents($totals['totalQrPorDetalle'])
+                - FinancialSale::cents($totals['totalTarjetaPorDetalle'])
                 - FinancialSale::cents($totals['totalEfectivoPorDetalle'])) / 100.0;
         };
         $finalizePaymentDifferences($summary);
@@ -153,6 +179,6 @@ final class FinancialReport
             'pagosQr'=>['cantidadTransaccionesIdentificadas'=>count($paidQr),'importeVinculadoSinDuplicar'=>$paidQrCents/100.0,
                 'alcance'=>'Importes asociados en la base local; requiere contraste con extracto bancario. No representa devoluciones.'],
             'incidencias'=>$issues,'meta'=>['cantidadIncidencias'=>$issueCount,'incidenciasTruncadas'=>$issueCount>count($issues),'limiteIncidencias'=>$issueLimit,
-            'criterio'=>'Total vendido = efectivo facturado + QR facturado con pago confirmado. Las columnas PorDetalle y diferenciaCabeceraDetalle comparan las líneas con el total de factura. Anuladas y pagos cancelados no suman. ECA, contratos y oficiales se informan por separado.']];
+            'criterio'=>'Total vendido = efectivo facturado + QR facturado + tarjeta NFC facturada con pago confirmado. Las columnas PorDetalle y diferenciaCabeceraDetalle comparan las líneas con el total de factura. Anuladas y pagos cancelados no suman. ECA, contratos y oficiales se informan por separado.']];
     }
 }
