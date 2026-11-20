@@ -1132,11 +1132,11 @@ class VentaController extends Controller
         }
 
         if (! empty($filters['fechaInicio'])) {
-            $query->whereDate('created_at', '>=', $filters['fechaInicio']);
+            $query->where('created_at', '>=', Carbon::parse($filters['fechaInicio'])->startOfDay());
         }
 
         if (! empty($filters['fechaFin'])) {
-            $query->whereDate('created_at', '<=', $filters['fechaFin']);
+            $query->where('created_at', '<', Carbon::parse($filters['fechaFin'])->addDay()->startOfDay());
         }
 
         foreach (['origen_usuario_id', 'origen_sucursal_id', 'origen_venta_id', 'origen_venta_tipo'] as $field) {
@@ -4990,16 +4990,34 @@ class VentaController extends Controller
                     });
             });
 
-        $reportDateExpression = Schema::hasColumn('facturacion_carts', 'emitido_en')
-            ? 'coalesce(emitido_en, created_at)'
-            : 'created_at';
+        $hasStartDate = ! empty($filters['fechaInicio']);
+        $hasEndDate = ! empty($filters['fechaFin']);
+        if ($hasStartDate || $hasEndDate) {
+            $start = $hasStartDate ? Carbon::parse($filters['fechaInicio'])->startOfDay() : null;
+            $endExclusive = $hasEndDate ? Carbon::parse($filters['fechaFin'])->addDay()->startOfDay() : null;
+            $applyBounds = static function ($scope, string $column) use ($start, $endExclusive): void {
+                if ($start) {
+                    $scope->where($column, '>=', $start);
+                }
+                if ($endExclusive) {
+                    $scope->where($column, '<', $endExclusive);
+                }
+            };
 
-        if (! empty($filters['fechaInicio'])) {
-            $query->whereRaw("DATE({$reportDateExpression}) >= ?", [$filters['fechaInicio']]);
-        }
-
-        if (! empty($filters['fechaFin'])) {
-            $query->whereRaw("DATE({$reportDateExpression}) <= ?", [$filters['fechaFin']]);
+            if (Schema::hasColumn('facturacion_carts', 'emitido_en')) {
+                // Preserve COALESCE(emitido_en, created_at) semantics while
+                // keeping each timestamp predicate usable by a normal index.
+                $query->where(function ($dateScope) use ($applyBounds): void {
+                    $dateScope->where(function ($issued) use ($applyBounds): void {
+                        $applyBounds($issued, 'emitido_en');
+                    })->orWhere(function ($created) use ($applyBounds): void {
+                        $created->whereNull('emitido_en');
+                        $applyBounds($created, 'created_at');
+                    });
+                });
+            } else {
+                $applyBounds($query, 'created_at');
+            }
         }
 
         foreach (['origen_usuario_id', 'origen_sucursal_id'] as $field) {

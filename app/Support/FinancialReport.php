@@ -29,10 +29,11 @@ final class FinancialReport
         return self::build($sales, 0)['resumen'];
     }
 
-    public static function build(iterable $sales, int $issueLimit = 500): array
+    public static function build(iterable $sales, int $issueLimit = 500, bool $includeInvoiceDetails = false): array
     {
         $summary = self::emptyTotals();
-        $branches = $users = $days = $issues = $activeCufs = $activePayments = $paidQr = $canceledPayments = [];
+        $branches = $users = $days = $issues = $activeCufs = $activePayments = $seenPaidQr = $annulledPaidQr = $canceledPayments = [];
+        $invoiceDetails = [];
         $issueCount = 0;
         $paidQrCents = 0;
         foreach ($sales as $sale) {
@@ -48,6 +49,16 @@ final class FinancialReport
             $amount = $f['importeCentavos'] /100.0;
             $detailCents = FinancialSale::detailCents($sale);
             $detailDifference = $f['importeCentavos'] - $detailCents;
+            if ($includeInvoiceDetails && $f['incluidaEnTotalVendido']) {
+                $invoiceNumber = trim((string) ($sale['numeroFactura'] ?? $sale['numero_factura'] ?? ''));
+                $invoiceDetails[] = [
+                    'numeroFactura' => $invoiceNumber !== '' ? $invoiceNumber : null,
+                    'fecha' => $sale['fecha'] ?? null,
+                    'usuario' => trim((string) data_get($sale, 'usuario.nombre', '')) ?: 'Sin usuario',
+                    'sucursal' => $branch,
+                    'total' => $amount,
+                ];
+            }
             $delta['cantidadRegistros'] = 1;
             $delta['totalRegistros'] = $amount;
             if ($f['incluidaEnTotalVendido']) {
@@ -131,11 +142,15 @@ final class FinancialReport
                     $activePayments[$payment]=true;
                 }
             }
-            if ($payment!=='' && $f['medioPago']==='QR' && $f['pagoConfirmado'] && !isset($paidQr[$payment])) {
-                $paidQr[$payment]=['ventaId'=>$sale['id']??null,'cartId'=>$sale['cartId']??$sale['origenVentaId']??null,
-                    'fecha'=>$sale['fecha']??null,'numeroFactura'=>$sale['numeroFactura']??null,'codigoOrden'=>$sale['codigoOrden']??null,
-                    'sucursal'=>$branch,'total'=>$amount,'diferenciaDetalle'=>$detailDifference/100.0,'motivos'=>['QR_PAGADO_SOLO_FACTURAS_ANULADAS'],'financiero'=>$f];
+            if ($payment!=='' && $f['medioPago']==='QR' && $f['pagoConfirmado'] && !isset($seenPaidQr[$payment])) {
+                $seenPaidQr[$payment] = true;
                 $paidQrCents+=$f['importeCentavos'];
+                if ($f['anulada']) {
+                    $annulledPaidQr[$payment]=['ventaId'=>$sale['id']??null,'cartId'=>$sale['cartId']??$sale['origenVentaId']??null,
+                        'fecha'=>$sale['fecha']??null,'numeroFactura'=>$sale['numeroFactura']??null,'codigoOrden'=>$sale['codigoOrden']??null,
+                        'sucursal'=>$branch,'total'=>$amount,'diferenciaDetalle'=>$detailDifference/100.0,
+                        'motivos'=>['QR_PAGADO_SOLO_FACTURAS_ANULADAS'],'financiero'=>$f];
+                }
             }
             if ($reasons!==[]) {
                 $issueCount++;
@@ -144,8 +159,8 @@ final class FinancialReport
                     'sucursal'=>$branch,'total'=>$amount,'diferenciaDetalle'=>$detailDifference/100.0,'motivos'=>$reasons,'financiero'=>$f];
             }
         }
-        foreach ($paidQr as $payment => $row) {
-            if (!isset($activePayments[$payment]) && $row['financiero']['anulada']) {
+        foreach ($annulledPaidQr as $payment => $row) {
+            if (!isset($activePayments[$payment])) {
                 $issueCount++;
                 if (count($issues)<$issueLimit) $issues[]=$row;
             }
@@ -175,10 +190,16 @@ final class FinancialReport
         unset($bucket);
         $summary['cantidadVentas']=$summary['facturadas'];
         ksort($branches); ksort($days);
-        return ['version'=>FinancialSale::VERSION,'resumen'=>$summary,'sucursales'=>array_values($branches),'porUsuarios'=>array_values($users),'porFecha'=>array_values($days),
-            'pagosQr'=>['cantidadTransaccionesIdentificadas'=>count($paidQr),'importeVinculadoSinDuplicar'=>$paidQrCents/100.0,
+        $report = ['version'=>FinancialSale::VERSION,'resumen'=>$summary,'sucursales'=>array_values($branches),'porUsuarios'=>array_values($users),'porFecha'=>array_values($days),
+            'pagosQr'=>['cantidadTransaccionesIdentificadas'=>count($seenPaidQr),'importeVinculadoSinDuplicar'=>$paidQrCents/100.0,
                 'alcance'=>'Importes asociados en la base local; requiere contraste con extracto bancario. No representa devoluciones.'],
             'incidencias'=>$issues,'meta'=>['cantidadIncidencias'=>$issueCount,'incidenciasTruncadas'=>$issueCount>count($issues),'limiteIncidencias'=>$issueLimit,
             'criterio'=>'Total vendido = efectivo facturado + QR facturado + tarjeta NFC facturada con pago confirmado. Las columnas PorDetalle y diferenciaCabeceraDetalle comparan las líneas con el total de factura. Anuladas y pagos cancelados no suman. ECA, contratos y oficiales se informan por separado.']];
+        if ($includeInvoiceDetails) {
+            usort($invoiceDetails, fn ($left, $right) => strcmp((string) ($right['fecha'] ?? ''), (string) ($left['fecha'] ?? '')));
+            $report['facturas'] = $invoiceDetails;
+        }
+
+        return $report;
     }
 }

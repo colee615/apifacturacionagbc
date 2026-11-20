@@ -19,7 +19,7 @@ trait StreamsServiceReports
      * has no fiscal sale visible in the current filters; linked fiscal sales
      * are emitted individually so reissues and annulments remain auditable.
      */
-    private function mergedServiceReportVentaStream(array $filters, bool $includeAnnulled = false): \Generator
+    private function mergedServiceReportVentaStream(array $filters, bool $includeAnnulled = false, bool $financialOnly = false): \Generator
     {
         $batchSize = 3000;
         $cartQuery = Schema::hasTable('facturacion_carts')
@@ -67,7 +67,7 @@ trait StreamsServiceReports
                     ->values();
 
                 if ($unlinkedCartRows->isEmpty()) continue;
-                foreach ($this->mapServiceReportCartChunk($unlinkedCartRows, $includeAnnulled) as $payload) {
+                foreach ($this->mapServiceReportCartChunk($unlinkedCartRows, $includeAnnulled, $financialOnly) as $payload) {
                     yield $payload;
                 }
                 unset($cartRows);
@@ -98,28 +98,45 @@ trait StreamsServiceReports
             Schema::hasColumn('ventas', 'empresa_sigla') ? 'empresa_sigla' : null,
         ]));
 
+        $useDateCursor = ! empty($filters['fechaInicio']) || ! empty($filters['fechaFin']);
         $lastVentaId = 0;
+        $lastVentaCreatedAt = null;
         while (true) {
-            $ventaRows = (clone $ventasQuery)
-                ->reorder()
-                ->where('id', '>', $lastVentaId)
-                ->orderBy('id')
-                ->limit($batchSize)
-                ->get($ventaColumns);
+            $ventaQuery = (clone $ventasQuery)->reorder();
+            if ($useDateCursor && $lastVentaCreatedAt !== null) {
+                $ventaQuery->where(function ($cursor) use ($lastVentaCreatedAt, $lastVentaId): void {
+                    $cursor->where('created_at', '>', $lastVentaCreatedAt)
+                        ->orWhere(function ($sameTimestamp) use ($lastVentaCreatedAt, $lastVentaId): void {
+                            $sameTimestamp->where('created_at', '=', $lastVentaCreatedAt)
+                                ->where('id', '>', $lastVentaId);
+                        });
+                });
+            } else {
+                $ventaQuery->where('id', '>', $lastVentaId);
+            }
+            $ventaQuery->orderBy($useDateCursor ? 'created_at' : 'id');
+            if ($useDateCursor) {
+                $ventaQuery->orderBy('id');
+            }
+            $ventaRows = $ventaQuery->limit($batchSize)->get($ventaColumns);
 
             if ($ventaRows->isEmpty()) {
                 break;
             }
 
-            $lastVentaId = (int) $ventaRows->last()->id;
-            foreach ($this->mapServiceReportVentaChunk($ventaRows, $includeAnnulled) as $payload) {
+            $lastVenta = $ventaRows->last();
+            $lastVentaId = (int) $lastVenta->id;
+            $lastVentaCreatedAt = $useDateCursor && $lastVenta->created_at
+                ? $lastVenta->created_at->format('Y-m-d H:i:s.u')
+                : null;
+            foreach ($this->mapServiceReportVentaChunk($ventaRows, $includeAnnulled, $financialOnly) as $payload) {
                 yield $payload;
             }
             unset($ventaRows);
         }
     }
 
-    private function mapServiceReportCartChunk(Collection $cartRows, bool $includeAnnulled): Collection
+    private function mapServiceReportCartChunk(Collection $cartRows, bool $includeAnnulled, bool $financialOnly = false): Collection
     {
         $cartItemsMap = $this->serviceReportCartItemsMapFromRows($cartRows);
         $cartFiscalBackfillMap = $this->facturacionCartFiscalBackfillMap($cartRows);
@@ -172,26 +189,39 @@ trait StreamsServiceReports
             })
             ->values();
 
-        return $this->attachServiceReportRegional($payloads);
+        return $financialOnly ? $payloads : $this->attachServiceReportRegional($payloads);
     }
 
-    private function mapServiceReportVentaChunk(Collection $ventas, bool $includeAnnulled): Collection
+    private function mapServiceReportVentaChunk(Collection $ventas, bool $includeAnnulled, bool $financialOnly = false): Collection
     {
         $detalleMaps = $this->serviceReportDetalleMapsFromRows($ventas);
-        $itemsCountMaps = $this->itemsCountMapsFromRows($ventas);
-        $seguimientos = $ventas->pluck('codigoSeguimiento')->all();
-        [$notificationsMap, $numeroFacturaMap] = $this->serviceReportNotificationMaps($seguimientos);
-        $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventas);
+        $itemsCountMaps = $financialOnly ? ['detalle' => [], 'cart' => []] : $this->itemsCountMapsFromRows($ventas);
+        $seguimientos = $financialOnly
+            ? $ventas->filter(fn (Venta $venta) => trim((string) ($venta->numero_factura ?? '')) === '')->pluck('codigoSeguimiento')->all()
+            : $ventas->pluck('codigoSeguimiento')->all();
+        if ($financialOnly) {
+            [, $numeroFacturaMap] = $this->serviceReportNotificationMaps($seguimientos);
+            $notificationsMap = [];
+            $bridgeRowsNeedingInvoiceFallback = $ventas->filter(function (Venta $venta) use ($numeroFacturaMap): bool {
+                $tracking = trim((string) ($venta->codigoSeguimiento ?? ''));
+                return trim((string) ($venta->numero_factura ?? '')) === ''
+                    && ($tracking === '' || ! isset($numeroFacturaMap[$tracking]));
+            });
+            $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($bridgeRowsNeedingInvoiceFallback);
+        } else {
+            [$notificationsMap, $numeroFacturaMap] = $this->serviceReportNotificationMaps($seguimientos);
+            $numeroFacturaBridgeMap = $this->numeroFacturaMapFromBridgeCartRows($ventas);
+        }
         $bridgeCartMetaMap = $this->bridgeCartMetaMapFromVentasRows($ventas, true);
 
-        $payloads = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $includeAnnulled) {
+        $payloads = $ventas->map(function (Venta $venta) use ($detalleMaps, $itemsCountMaps, $notificationsMap, $numeroFacturaMap, $numeroFacturaBridgeMap, $bridgeCartMetaMap, $includeAnnulled, $financialOnly) {
             $ventaId = (int) $venta->id;
             $cartId = (int) ($venta->origen_venta_id ?? 0);
             $bridgeCart = in_array($venta->origen_venta_tipo, ['facturacion_cart', 'facturacion_cart_remote'], true)
                 ? ($bridgeCartMetaMap[$cartId] ?? null) : null;
             $codigoSeguimiento = trim((string) ($venta->codigoSeguimiento ?? ''));
             $notification = $codigoSeguimiento !== '' ? ($notificationsMap[$codigoSeguimiento] ?? null) : null;
-            $status = $this->protocolStatusFromVentaNotification($venta, $notification);
+            $status = $financialOnly ? null : $this->protocolStatusFromVentaNotification($venta, $notification);
             $numeroFactura = trim((string) (
                 $venta->numero_factura
                 ?: ($numeroFacturaMap[$codigoSeguimiento] ?? ($numeroFacturaBridgeMap[$cartId] ?? ''))
@@ -266,7 +296,7 @@ trait StreamsServiceReports
             return $payload;
         })->values();
 
-        return $this->attachServiceReportRegional($payloads);
+        return $financialOnly ? $payloads : $this->attachServiceReportRegional($payloads);
     }
 
     private function serviceReportCartColumns(): array
