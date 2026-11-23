@@ -37,6 +37,11 @@ class FacturacionCartIntegrationController extends Controller
 
     public function updateBilling(Request $request): JsonResponse
     {
+        return $this->withDraftRequestLock($request, fn () => $this->saveBilling($request));
+    }
+
+    private function saveBilling(Request $request): JsonResponse
+    {
         $v = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
             'cart_id' => 'nullable|integer|min:1',
@@ -98,7 +103,7 @@ class FacturacionCartIntegrationController extends Controller
             })
             ->exists();
         $billingLocked = $cartState !== 'borrador'
-            || in_array($emissionState, ['FACTURADA', 'PROCESADA', 'EMITIENDO', 'EMISION_INCIERTA'], true)
+            || in_array($emissionState, ['FACTURADA', 'PROCESADA', 'EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE'], true)
             || trim((string) ($draft->numero_factura ?? '')) !== ''
             || $hasLinkedFiscalInvoice;
 
@@ -205,7 +210,7 @@ class FacturacionCartIntegrationController extends Controller
                 ->where('id', (int) $draft->id)
                 ->where('origen_usuario_id', (string) $v['origen_usuario_id'])
                 ->where('estado', 'borrador')
-                ->whereRaw("upper(coalesce(estado_emision, '')) not in ('FACTURADA', 'PROCESADA', 'EMITIENDO', 'EMISION_INCIERTA')")
+                ->whereRaw("upper(coalesce(estado_emision, '')) not in ('FACTURADA', 'PROCESADA', 'EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE')")
                 ->where(function ($query) {
                     $query->whereNull('numero_factura')
                         ->orWhere('numero_factura', '');
@@ -240,6 +245,14 @@ class FacturacionCartIntegrationController extends Controller
     }
 
     public function upsertItem(FacturacionCartItemRequest $request): JsonResponse
+    {
+        return $this->withCartMutationLock(
+            (string) $request->validated('origen_usuario_id'),
+            fn () => $this->saveCartItem($request),
+        );
+    }
+
+    private function saveCartItem(FacturacionCartItemRequest $request): JsonResponse
     {
         $v = $request->validated();
 
@@ -1135,6 +1148,11 @@ class FacturacionCartIntegrationController extends Controller
 
     public function updateItem(Request $request, int $itemId): JsonResponse
     {
+        return $this->withDraftRequestLock($request, fn () => $this->saveItemUpdate($request, $itemId));
+    }
+
+    private function saveItemUpdate(Request $request, int $itemId): JsonResponse
+    {
         $v = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
             'codigo' => 'required|string|max:120',
@@ -1181,12 +1199,13 @@ class FacturacionCartIntegrationController extends Controller
             ->where('i.id', $itemId)
             ->where('c.origen_usuario_id', $v['origen_usuario_id'])
             ->where('c.estado', 'borrador')
-            ->select('i.*', 'c.id as cart_id_ref')
+            ->select('i.*', 'c.id as cart_id_ref', 'c.estado_emision as cart_emission_state')
             ->first();
         if (!$row) {
             return response()->json(['ok' => false, 'message' => 'Item no encontrado.'], 404);
         }
 
+        $this->assertDraftEmissionEditable($row->cart_emission_state);
         $r = $this->decode((string) ($row->resumen_origen ?? ''));
         $resolvedCodigo = trim((string) ($v['codigo'] ?? ($r['codigo'] ?? '')));
         if (strtolower(trim((string) ($row->origen_tipo ?? ''))) === strtolower('App\\Models\\SolicitudCliente')) {
@@ -1274,6 +1293,11 @@ class FacturacionCartIntegrationController extends Controller
 
     public function removeItem(Request $request, int $itemId): JsonResponse
     {
+        return $this->withDraftRequestLock($request, fn () => $this->removeDraftItem($request, $itemId));
+    }
+
+    private function removeDraftItem(Request $request, int $itemId): JsonResponse
+    {
         $validated = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
             'cantidad' => 'nullable|integer|min:1|max:999',
@@ -1283,11 +1307,12 @@ class FacturacionCartIntegrationController extends Controller
         $row = DB::table('facturacion_cart_items as i')
             ->join('facturacion_carts as c', 'c.id', '=', 'i.cart_id')
             ->where('i.id', $itemId)->where('c.origen_usuario_id', $userId)->where('c.estado', 'borrador')
-            ->select('i.*', 'c.id as cart_id_ref')->first();
+            ->select('i.*', 'c.id as cart_id_ref', 'c.estado_emision as cart_emission_state')->first();
         if (!$row) {
             return response()->json(['ok' => false, 'message' => 'Item no encontrado.'], 404);
         }
 
+        $this->assertDraftEmissionEditable($row->cart_emission_state);
         $cantidadActual = max(
             1,
             (int) ($row->cantidad ?? 1),
@@ -1315,10 +1340,16 @@ class FacturacionCartIntegrationController extends Controller
 
     public function clear(Request $request): JsonResponse
     {
+        return $this->withDraftRequestLock($request, fn () => $this->clearDraft($request));
+    }
+
+    private function clearDraft(Request $request): JsonResponse
+    {
         $userId = (string) $request->validate(['origen_usuario_id' => 'required|string|max:60'])['origen_usuario_id'];
         $draft = DB::table('facturacion_carts')->where('origen_usuario_id', $userId)->where('estado', 'borrador')->latest('id')->first();
         if (!$draft) return response()->json(['ok' => true, 'cart' => null]);
 
+        $this->assertDraftEmissionEditable($draft->estado_emision);
         DB::table('facturacion_cart_items')->where('cart_id', $draft->id)->delete();
         DB::table('facturacion_carts')->where('id', (int) $draft->id)->delete();
 
@@ -1391,6 +1422,11 @@ class FacturacionCartIntegrationController extends Controller
 
     public function payment(Request $request): JsonResponse
     {
+        return $this->withDraftRequestLock($request, fn () => $this->saveDraftPayment($request));
+    }
+
+    private function saveDraftPayment(Request $request): JsonResponse
+    {
         $v = $request->validate([
             'origen_usuario_id' => 'required|string|max:60',
             'metodo_pago' => 'required|in:efectivo,qr',
@@ -1407,6 +1443,7 @@ class FacturacionCartIntegrationController extends Controller
             return response()->json(['ok' => false, 'message' => 'No se encontro un borrador de facturacion activo.'], 422);
         }
 
+        $this->assertDraftEmissionEditable($cart->estado_emision);
         $metodoPago = (string) $v['metodo_pago'];
         $estadoPago = (string) ($v['estado_pago'] ?? ($metodoPago === 'efectivo' ? 'pagado' : 'pendiente'));
 
@@ -1494,6 +1531,12 @@ class FacturacionCartIntegrationController extends Controller
                 ->first(['id', 'codigo_orden', 'estado_emision']);
 
             if ($blockedCart) {
+                if (strtoupper(trim((string) $blockedCart->estado_emision)) === 'EMISION_INCIERTA') {
+                    $this->recoverUncertainFiscalEmission((int) $blockedCart->id);
+
+                    return $this->recoveredCartResponse((int) $blockedCart->id);
+                }
+
                 return response()->json([
                     'ok' => false,
                     'estado' => strtoupper(trim((string) $blockedCart->estado_emision)),
@@ -1531,12 +1574,9 @@ class FacturacionCartIntegrationController extends Controller
                 ], 409);
             }
             if ($blockedState === 'EMISION_INCIERTA') {
-                return response()->json([
-                    'ok' => false,
-                    'estado' => 'EMISION_INCIERTA',
-                    'message' => 'No se pudo confirmar si el servicio fiscal recibio la solicitud. Verifica el codigo de orden en SEFE antes de emitir otra vez.',
-                    'codigo_orden' => $blockedCart->codigo_orden ?? null,
-                ], 409);
+                $this->recoverUncertainFiscalEmission((int) $blockedCart->id);
+
+                return $this->recoveredCartResponse((int) $blockedCart->id);
             }
             if ($blockedState === 'PENDIENTE') {
                 return response()->json([
@@ -2039,6 +2079,12 @@ class FacturacionCartIntegrationController extends Controller
             'snapshot' => $cartSnapshot,
         ]);
 
+        if ($hasAmbiguousEmissionResult) {
+            $this->recoverUncertainFiscalEmission((int) $cart->id);
+
+            return $this->recoveredCartResponse((int) $cart->id);
+        }
+
         return response()->json(['ok' => $ok, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $emitStatusCode]);
         } finally {
             optional($lock)->release();
@@ -2177,7 +2223,10 @@ class FacturacionCartIntegrationController extends Controller
             ->where(function ($query) {
                 $query->whereNotNull('codigo_seguimiento_fiscal')
                     ->orWhereNotNull('qr_transaction_id')
-                    ->orWhereNotNull('codigo_seguimiento');
+                    ->orWhereNotNull('codigo_seguimiento')
+                    ->orWhere(function ($uncertain) {
+                        $uncertain->where('estado_emision', 'EMISION_INCIERTA')->whereNotNull('codigo_orden');
+                    });
             });
         if (!empty($v['cart_id'])) $q->where('id', (int) $v['cart_id']);
         $cart = $q->orderByDesc('emitido_en')->orderByDesc('id')->first();
@@ -2187,6 +2236,11 @@ class FacturacionCartIntegrationController extends Controller
         $metodoPago = strtolower(trim((string) ($cart->metodo_pago ?? '')));
         $estadoPagoActual = strtolower(trim((string) ($cart->estado_pago ?? 'pendiente')));
         $estadoEmisionActual = strtoupper(trim((string) ($cart->estado_emision ?? '')));
+        if ($canalEmision === 'factura_electronica' && $estadoEmisionActual === 'EMISION_INCIERTA') {
+            $this->recoverUncertainFiscalEmission((int) $cart->id);
+
+            return $this->recoveredCartResponse((int) $cart->id);
+        }
         $latestLinkedVenta = $this->latestLinkedVentaForCart((int) ($cart->id ?? 0));
         $latestLinkedVentaStatus = strtoupper(trim((string) ($latestLinkedVenta->estado_sufe ?? '')));
         $shouldUseNewCodigoOrden = in_array($latestLinkedVentaStatus, ['ANULADA', 'ANULADO'], true);
@@ -2322,6 +2376,17 @@ class FacturacionCartIntegrationController extends Controller
                 'body_numero_factura' => data_get($body, 'factura.nroFactura') ?? data_get($body, 'nroFactura'),
             ]);
         }
+        if ($shouldConsultQr && ($statusCode >= 400 || ($body['ok'] ?? null) !== true || empty($body['payment_status']))) {
+            return response()->json([
+                'ok' => false,
+                'code' => $body['code'] ?? 'qr_status_unavailable',
+                'message' => $body['message'] ?? 'No se pudo verificar el pago. Se conserva el último estado confirmado.',
+                'cart' => $this->cartById((int) $cart->id),
+                'status_code' => $statusCode >= 400 ? $statusCode : 502,
+            ], $statusCode >= 400 ? $statusCode : 502)->withHeaders(
+                $cRes->headers->has('Retry-After') ? ['Retry-After' => $cRes->headers->get('Retry-After')] : []
+            );
+        }
         if ($shouldConsultQr) {
             $resolvedPaymentStatus = (string) ($body['payment_status'] ?? 'holding');
             $resolvedPaymentState = $this->mapQrPaymentStatusToPaymentState($resolvedPaymentStatus);
@@ -2389,7 +2454,23 @@ class FacturacionCartIntegrationController extends Controller
             }
         }
 
-        DB::table('facturacion_carts')->where('id', $cart->id)->update($updates);
+        $cartUpdate = DB::table('facturacion_carts')->where('id', $cart->id);
+        if ($shouldConsultQr) {
+            $cartUpdate->where('codigo_orden', $cart->codigo_orden)
+                ->where('qr_transaction_id', $cart->qr_transaction_id)
+                ->where('canal_emision', $cart->canal_emision)
+                ->where(fn ($state) => $state->whereNull('estado_emision')
+                    ->orWhereNotIn('estado_emision', ['FACTURADA', 'EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE']))
+                ->when(in_array($updates['estado_pago'], ['pendiente', 'cancelado'], true),
+                    fn ($query) => $query->whereRaw("coalesce(estado_pago, '') <> 'pagado'"));
+        }
+        if ($cartUpdate->update($updates) !== 1 && $shouldConsultQr) {
+            return response()->json([
+                'ok' => true,
+                'cart' => $this->cartById((int) $cart->id),
+                'status_code' => 200,
+            ]);
+        }
         $this->syncLinkedVentaFiscalData($cart, $mergedResponse);
 
         $shouldAutoEmitInvoice = $shouldConsultQr
@@ -2419,6 +2500,103 @@ class FacturacionCartIntegrationController extends Controller
             'respuesta' => $body,
             'download_pdf' => $downloadPdf,
             'status_code' => $statusCode,
+        ]);
+    }
+
+    public function recoverUncertainFiscalEmission(int $cartId, ?array $invoice = null): bool
+    {
+        $order = DB::table('facturacion_carts')->where('id', $cartId)
+            ->where('estado_emision', 'EMISION_INCIERTA')->where('canal_emision', 'factura_electronica')
+            ->value('codigo_orden');
+        if (!$order) {
+            return false;
+        }
+
+        $lock = Cache::lock('factura-recuperacion:'.sha1($order), 30);
+        if (!$lock->get()) {
+            return false;
+        }
+
+        try {
+            $fiscal = app(FacturaVentaApiController::class);
+            if ($invoice === null) {
+                if (!Cache::add('factura-recuperacion-consulta:'.$cartId, true, 20)) {
+                    return false;
+                }
+                $invoice = $fiscal->fetchProcessedInvoice($order);
+            }
+
+            if ($invoice === null) {
+                return false;
+            }
+
+            $items = collect();
+            return $fiscal->linkRecoveredCartInvoice(
+                $cartId,
+                $order,
+                $invoice,
+                function ($cart) use (&$items) {
+                    $items = DB::table('facturacion_cart_items')->where('cart_id', $cart->id)->orderBy('id')->get()
+                        ->map(function ($item) {
+                            $item->resumen_origen = $this->decode((string) ($item->resumen_origen ?? ''));
+                            return $item;
+                        });
+
+                    return $this->payloadFromCart($cart, $items);
+                },
+                function (int $saleId) use ($cartId, &$items) {
+                    $this->persistTariffTraceabilityForSale($cartId, $saleId, $items);
+                },
+            );
+        } catch (\Throwable $error) {
+            Log::warning('factura.recuperacion.fallo', ['cart_id' => $cartId, 'orden' => $order, 'error_class' => get_class($error)]);
+
+            return false;
+        } finally {
+            $lock->release();
+        }
+    }
+
+    public function recoverFiscalNotification(string $tracking): void
+    {
+        try {
+            $invoice = app(FacturaVentaApiController::class)->fetchProcessedInvoice($tracking, false);
+            if ((string) ($invoice['codFactura'] ?? '') !== $tracking || empty($invoice['codigoOrden'])) {
+                return;
+            }
+
+            $cartId = DB::table('facturacion_carts')->where('estado_emision', 'EMISION_INCIERTA')
+                ->where('canal_emision', 'factura_electronica')->where('codigo_orden', $invoice['codigoOrden'])->value('id');
+            if ($cartId) {
+                $this->recoverUncertainFiscalEmission((int) $cartId, $invoice);
+            }
+        } catch (\Throwable $error) {
+            Log::warning('factura.recuperacion.notificacion_fallo', ['seguimiento' => $tracking, 'error_class' => get_class($error)]);
+        }
+    }
+
+    private function recoveredCartResponse(int $cartId): JsonResponse
+    {
+        $cart = $this->cartById($cartId);
+        if (($cart['estado_emision'] ?? null) === 'FACTURADA') {
+            return response()->json([
+                'ok' => true,
+                'cart' => $cart,
+                'respuesta' => $cart['respuesta_emision'] ?? [],
+                'download_pdf' => $this->buildDownloadPdfPayloadFromCartResponse($cart),
+                'status_code' => 200,
+            ]);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'cart' => $cart,
+            'respuesta' => [
+                'estado' => 'EMISION_INCIERTA',
+                'codigoOrden' => $cart['codigo_orden'] ?? null,
+                'mensaje' => 'La orden sigue en verificación con SEFE.',
+            ],
+            'status_code' => 202,
         ]);
     }
 
@@ -3802,6 +3980,7 @@ class FacturacionCartIntegrationController extends Controller
     {
         $draft = DB::table('facturacion_carts')->where('origen_usuario_id', $userId)->where('estado', 'borrador')->latest('id')->first();
         if ($draft) {
+            $this->assertDraftEmissionEditable($draft->estado_emision);
             DB::table('facturacion_carts')->where('id', $draft->id)->update(array_merge($updates, ['updated_at' => now()]));
             return (int) $draft->id;
         }
@@ -3818,7 +3997,7 @@ class FacturacionCartIntegrationController extends Controller
             ->where('i.origen_tipo', 'cliente_online')
             ->where('i.codigo', $code)
             ->orderByDesc('c.id')
-            ->first(['c.id', 'c.estado', 'i.resumen_origen']);
+            ->first(['c.id', 'c.estado', 'c.estado_emision', 'i.resumen_origen']);
 
         if ($existing) {
             $storedAttemptId = strtolower(trim((string) data_get(
@@ -3833,6 +4012,7 @@ class FacturacionCartIntegrationController extends Controller
                 abort(409, 'Este intento QR ya fue emitido. Consulta su estado en Mis solicitudes.');
             }
 
+            $this->assertDraftEmissionEditable($existing->estado_emision);
             return (int) $existing->id;
         }
 
@@ -4583,6 +4763,33 @@ class FacturacionCartIntegrationController extends Controller
     private function emitLockKey(string $userId): string
     {
         return 'facturacion-cart-emitir:' . trim($userId);
+    }
+
+    private function withDraftRequestLock(Request $request, callable $operation): JsonResponse
+    {
+        $userId = (string) $request->validate(['origen_usuario_id' => 'required|string|max:60'])['origen_usuario_id'];
+
+        return $this->withCartMutationLock($userId, $operation);
+    }
+
+    private function withCartMutationLock(string $userId, callable $operation): JsonResponse
+    {
+        $lock = Cache::lock($this->emitLockKey($userId), 30);
+        if (!$lock->get()) {
+            return response()->json(['ok' => false, 'message' => 'La caja está procesando otra operación. Consulta la orden antes de modificar el carrito.'], 409);
+        }
+
+        try {
+            return $operation();
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function assertDraftEmissionEditable(?string $state): void
+    {
+        abort_if(in_array($state, ['EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE'], true), 409,
+            'La orden está en verificación fiscal. Consulta su estado antes de modificar el carrito.');
     }
 
     private function activeLinkedFiscalVentaForCart(int $cartId): ?object

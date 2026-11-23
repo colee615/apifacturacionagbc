@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\RecoversFiscalCartInvoices;
 use App\Models\Notificacione;
 use App\Models\Venta;
 use App\Support\SufeSectorUnoValidator;
@@ -19,6 +20,8 @@ use Illuminate\Validation\ValidationException;
 
 class FacturaVentaApiController extends Controller
 {
+    use RecoversFiscalCartInvoices;
+
     private const DEBUG_RESPONSE_QUERY_VALUES = ['1', 'true', 'yes', 'on'];
 
     public function __construct(
@@ -147,7 +150,7 @@ class FacturaVentaApiController extends Controller
         return $sameBranch && $payloadTotal > 0 && $payloadTotal === $cartTotal && $hasOnlineShipment;
     }
 
-    private function addVentaToCaja(array $payload): void
+    private function addVentaToCaja(array $payload, ?string $fechaOperacion = null): void
     {
         $usuarioId = trim((string) data_get($payload, 'origenUsuario.id', ''));
         if ($usuarioId === '' || !DB::getSchemaBuilder()->hasTable('cajas_diarias')) {
@@ -164,7 +167,7 @@ class FacturaVentaApiController extends Controller
             return;
         }
 
-        $fecha = now()->toDateString();
+        $fecha = $fechaOperacion ?? now()->toDateString();
         $codigoSucursal = (int) ($payload['codigoSucursal'] ?? 0);
         $puntoVenta = (int) ($payload['puntoVenta'] ?? 0);
         $montoTotal = round((float) ($payload['montoTotal'] ?? 0), 2);
@@ -1847,6 +1850,16 @@ class FacturaVentaApiController extends Controller
                     ], 409);
                 }
 
+                if (DB::table('facturacion_carts')->where('id', (int) $origenVentaId)
+                    ->where('estado_emision', 'EMISION_INCIERTA')->exists()) {
+                    return response()->json([
+                        'ok' => false,
+                        'estado' => 'EMISION_INCIERTA',
+                        'estadoPuente' => 'EMISION_INCIERTA',
+                        'message' => 'La orden está en verificación fiscal. Consulta su estado.',
+                    ], 409);
+                }
+
                 $activeVenta = DB::table('ventas')
                     ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [$origenVentaId])
                     ->where('origen_venta_tipo', $origenVentaTipo)
@@ -1913,7 +1926,8 @@ class FacturaVentaApiController extends Controller
                 ]);
             }
 
-            $response = $this->ageticClient()->post(
+            // A timeout does not establish that SEFE failed to receive this order.
+            $response = $this->ageticClient()->retry(1)->post(
                 $this->ageticBaseUrl() . '/facturacion/emision/individual',
                 $requestPayload
             );
@@ -1921,7 +1935,7 @@ class FacturaVentaApiController extends Controller
             $payload = $response->json();
 
             if (
-                !$response->successful()
+                $response->clientError()
                 && $this->shouldRetryWithNitException($requestPayload, is_array($payload) ? $payload : null)
             ) {
                 $requestPayload['codigoExcepcion'] = 1;
@@ -1932,7 +1946,7 @@ class FacturaVentaApiController extends Controller
                     'tipoDocumentoIdentidad' => $requestPayload['tipoDocumentoIdentidad'] ?? null,
                 ]);
 
-                $response = $this->ageticClient()->post(
+                $response = $this->ageticClient()->retry(1)->post(
                     $this->ageticBaseUrl() . '/facturacion/emision/individual',
                     $requestPayload
                 );
@@ -2021,7 +2035,7 @@ class FacturaVentaApiController extends Controller
             $rejectedPayload = $this->validatedRejectedPayloadFromResponse($e->response);
 
             if ($rejectedPayload !== null) {
-                if ($this->shouldRetryWithNitException($requestPayload ?? [], $rejectedPayload)) {
+                if ($e->response?->clientError() && $this->shouldRetryWithNitException($requestPayload ?? [], $rejectedPayload)) {
                     $retryPayload = $requestPayload;
                     $retryPayload['codigoExcepcion'] = 1;
 
@@ -2031,7 +2045,7 @@ class FacturaVentaApiController extends Controller
                         'tipoDocumentoIdentidad' => $retryPayload['tipoDocumentoIdentidad'] ?? null,
                     ]);
 
-                    $retryResponse = $this->ageticClient()->post(
+                    $retryResponse = $this->ageticClient()->retry(1)->post(
                         $this->ageticBaseUrl() . '/facturacion/emision/individual',
                         $retryPayload
                     );

@@ -7,6 +7,7 @@ use App\Services\QhantuyQrCredentials;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -242,6 +243,11 @@ class QhantuyQrController extends Controller
             return;
         }
 
+        $activeTransaction = trim((string) ($cart->qr_transaction_id ?? ''));
+        if ($transactionId !== null && $activeTransaction !== '' && $activeTransaction !== (string) $transactionId) {
+            return;
+        }
+
         $status = $this->normalizeQrPaymentStatus($paymentStatus);
         $estadoPago = $this->qrPaymentStateFromStatus($status);
         $estadoEmisionActual = strtoupper(trim((string) ($cart->estado_emision ?? '')));
@@ -286,6 +292,11 @@ class QhantuyQrController extends Controller
         }
         DB::table('facturacion_carts')
             ->where('id', (int) $cart->id)
+            ->where('codigo_orden', $cart->codigo_orden)
+            ->where('qr_transaction_id', $cart->qr_transaction_id)
+            ->where(fn ($state) => $state->whereNull('estado_emision')
+                ->orWhereNotIn('estado_emision', ['FACTURADA', 'EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE']))
+            ->when($estadoPago === 'pendiente', fn ($query) => $query->whereRaw("coalesce(estado_pago, '') <> 'pagado'"))
             ->update($updates);
     }
 
@@ -1214,6 +1225,12 @@ class QhantuyQrController extends Controller
             return response()->json($this->buildCachedCheckPaymentsResponse($row));
         }
 
+        $rateLimitKey = 'qhantuy-consulta-espera:'.((int) ($row->qhantuy_credential_id ?? 0));
+        $retryAfter = (int) Cache::get($rateLimitKey) - now()->timestamp;
+        if ($retryAfter > 0) {
+            return $this->paymentLookupRateLimited($retryAfter);
+        }
+
         try {
             $appkey = $this->appkeyForPayment($row);
             if ($appkey === '') {
@@ -1232,6 +1249,9 @@ class QhantuyQrController extends Controller
                 'body_summary' => $this->summarizeQhantuyResponseBody($body),
             ]);
 
+            if ($response->status() === 429) {
+                return $this->paymentLookupRateLimited($this->rememberPaymentLookupDelay($rateLimitKey, $response->header('Retry-After')));
+            }
             if (!$response->successful()) {
                 return response()->json([
                     'ok' => false,
@@ -1249,6 +1269,11 @@ class QhantuyQrController extends Controller
             if ($requiresExactMatch && (!$row || !is_array($firstItem) || data_get($body, 'process') === false
                 || (int) data_get($source, 'id') !== $paymentIds[0]
                 || $providerCode !== $row->internal_code || $providerCurrency !== $row->checkout_currency)) {
+                Log::warning('Qhantuy consulta con referencia no verificada', [
+                    'internal_code' => $row->internal_code ?? $internalCode,
+                    'transaction_id' => $paymentIds[0],
+                    'provider_transaction_id' => (int) data_get($source, 'id'),
+                ]);
                 return $this->paymentReferenceMismatch();
             }
             if (!$row && $internalCode !== '' && ($providerCode === ''
@@ -1433,19 +1458,8 @@ class QhantuyQrController extends Controller
                 'qhantuy' => $body,
             ]);
         } catch (\Throwable $e) {
-            if (str_contains($e->getMessage(), '429') && $row) {
-                Log::warning('Qhantuy check-payments rate limited. Se devolvera estado cacheado.', [
-                    'transaction_id' => $row->transaction_id ?? null,
-                    'internal_code' => $row->internal_code ?? null,
-                ]);
-
-                return response()->json(
-                    $this->buildCachedCheckPaymentsResponse(
-                        $row,
-                        'Qhantuy limito temporalmente las consultas. Se muestra el ultimo estado disponible.'
-                    ),
-                    200
-                );
+            if ($e instanceof RequestException && $e->response?->status() === 429) {
+                return $this->paymentLookupRateLimited($this->rememberPaymentLookupDelay($rateLimitKey, $e->response->header('Retry-After')));
             }
 
             Log::error('Qhantuy check-payments unexpected error', ['exception_class' => get_class($e), 'payment_ids' => $paymentIds]);
@@ -1454,6 +1468,27 @@ class QhantuyQrController extends Controller
                 'message' => 'Error inesperado al consultar pago QR.',
             ], 500);
         }
+    }
+
+    private function rememberPaymentLookupDelay(string $key, ?string $header): int
+    {
+        $retryAt = $header ? strtotime($header) : false;
+        $seconds = ctype_digit((string) $header)
+            ? (int) $header
+            : ($retryAt === false ? 30 : $retryAt - now()->timestamp);
+        $seconds = max(1, $seconds);
+        Cache::put($key, now()->timestamp + $seconds, $seconds);
+
+        return $seconds;
+    }
+
+    private function paymentLookupRateLimited(int $seconds)
+    {
+        return response()->json([
+            'ok' => false,
+            'code' => 'qhantuy_rate_limited',
+            'message' => 'Qhantuy limitó temporalmente las consultas. Se conserva el último estado del pago.',
+        ], 429, ['Retry-After' => (string) $seconds]);
     }
 
     private function paymentReferenceMismatch()

@@ -381,6 +381,13 @@ class NotificacioneController extends Controller
      ]);
       $notificacion->save();
       $this->syncVentaFromNotification($codigoSeguimiento, $validated);
+      if ($validated['estado'] === 'EXITO' && data_get($validated, 'detalle.tipoEmision') === 'EMISION'
+         && !Venta::query()->where('codigoSeguimiento', $codigoSeguimiento)->exists()
+         && DB::table('facturacion_carts')->where('estado_emision', 'EMISION_INCIERTA')->exists()) {
+         dispatch(function () use ($codigoSeguimiento) {
+            app(FacturacionCartIntegrationController::class)->recoverFiscalNotification((string) $codigoSeguimiento);
+         })->afterResponse();
+      }
 
       return response()->json([
          'message' => 'Notificación recibida',

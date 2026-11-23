@@ -2,6 +2,7 @@
 
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use App\Models\Role;
@@ -21,6 +22,29 @@ use App\Models\Usuario;
 Artisan::command('inspire', function () {
    $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('facturas:recuperar-inciertas', function () {
+   $carts = DB::table('facturacion_carts')
+      ->where('estado_emision', 'EMISION_INCIERTA')
+      ->where('canal_emision', 'factura_electronica')
+      ->whereNotNull('codigo_orden')
+      ->select('id')
+      ->lazyById(50);
+
+   $controller = app(\App\Http\Controllers\FacturacionCartIntegrationController::class);
+   $attempted = $recovered = 0;
+   foreach ($carts as $cart) {
+      if (!Cache::add('factura-recuperacion-programada:'.$cart->id, true, 300)) {
+         continue;
+      }
+      $recovered += (int) $controller->recoverUncertainFiscalEmission((int) $cart->id);
+      if (++$attempted >= 10) {
+         break;
+      }
+   }
+
+   $this->info("Consultadas: {$attempted}. Recuperadas: {$recovered}.");
+})->purpose('Consulta órdenes inciertas en SEFE y vincula las facturas confirmadas');
 
 Artisan::command('app:purge-sales-data {--dry-run : Muestra el alcance sin borrar datos} {--force : Ejecuta sin confirmacion interactiva}', function () {
    $tables = [
