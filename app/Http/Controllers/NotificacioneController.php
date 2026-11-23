@@ -157,7 +157,26 @@ class NotificacioneController extends Controller
       }
    }
 
+   public function syncStoredNotification(string $codigoSeguimiento): bool
+   {
+      $notices = Notificacione::query()->where('codigo_seguimiento', $codigoSeguimiento)->orderBy('id')->get();
+      foreach ($notices as $notice) {
+         $this->syncVentaFromNotification($codigoSeguimiento, [
+            'estado' => $notice->estado,
+            'fecha' => $notice->fecha,
+            'detalle' => json_decode((string) $notice->detalle, true) ?: [],
+         ]);
+      }
+
+      return $notices->isNotEmpty();
+   }
+
    private function syncVentaFromNotification(string $codigoSeguimiento, array $validated): void
+   {
+      DB::transaction(fn () => $this->applyVentaNotification($codigoSeguimiento, $validated), 3);
+   }
+
+   private function applyVentaNotification(string $codigoSeguimiento, array $validated): void
    {
       $observacion = $validated['observacion'] ?? data_get($validated, 'detalle.observacion');
       $tipoEmision = (string) data_get($validated, 'detalle.tipoEmision', '');
@@ -190,16 +209,13 @@ class NotificacioneController extends Controller
          }
       }
 
-      Venta::query()
+      $saleQuery = Venta::query()
          ->where('codigoSeguimiento', $codigoSeguimiento)
-         ->update($updates);
-
-      $venta = Venta::query()
-         ->where('codigoSeguimiento', $codigoSeguimiento)
-         ->first([
+         ->select([
             'id',
             'origen_venta_id',
             'origen_venta_tipo',
+            'codigoOrden',
             'codigoSeguimiento',
             'estado_sufe',
             'cuf',
@@ -213,6 +229,7 @@ class NotificacioneController extends Controller
             'created_at',
             'estado_caja',
          ]);
+      $venta = $saleQuery->first();
 
       if (!$venta) {
          if ($tipoEmision === 'EMISION' && $estadoSufe === 'PROCESADA' && $numeroFactura === '') {
@@ -224,6 +241,27 @@ class NotificacioneController extends Controller
             ]);
          }
 
+         return;
+      }
+
+      if (in_array($venta->origen_venta_tipo, ['facturacion_cart', 'facturacion_cart_remote'], true)) {
+         DB::table('facturacion_carts')->where('id', (int) $venta->origen_venta_id)->lockForUpdate()->first(['id']);
+      }
+      $venta = $saleQuery->whereKey($venta->id)->lockForUpdate()->first();
+      if (!$venta) {
+         return;
+      }
+      $saleUpdate = Venta::query()->whereKey($venta->id)->where('estado_sufe', $venta->estado_sufe);
+      if (in_array($venta->estado_sufe, ['ANULADA', 'ANULADO'], true) && $estadoSufe !== 'ANULADA') {
+         return;
+      }
+      if ($tipoEmision !== 'ANULACION') {
+         if (($venta->estado_sufe === 'PROCESADA' && $estadoSufe !== 'PROCESADA')
+            || ($venta->estado_sufe === 'OBSERVADA' && in_array($estadoSufe, ['CREADA', 'RECEPCIONADA'], true))) {
+            return;
+         }
+      }
+      if ($saleUpdate->update($updates) !== 1) {
          return;
       }
 
@@ -283,9 +321,21 @@ class NotificacioneController extends Controller
          $cartUpdates['numero_factura'] = $numeroFactura;
       }
 
-      DB::table('facturacion_carts')->where('id', $cartId)->update($cartUpdates);
+      DB::table('facturacion_carts')->where('id', $cartId)
+         ->where('codigo_orden', $venta->codigoOrden)
+         ->where(function ($attempt) use ($codigoSeguimiento) {
+            $attempt->where('codigo_seguimiento_fiscal', $codigoSeguimiento)
+               ->orWhere(function ($legacy) use ($codigoSeguimiento) {
+                  $legacy->whereNull('codigo_seguimiento_fiscal')->where('codigo_seguimiento', $codigoSeguimiento);
+               });
+         })
+         ->update($cartUpdates);
 
       $this->reverseVentaFromCajaIfNeeded($venta, $estadoSufe);
+      if ($estadoSufe === 'PROCESADA' && $venta->estado_sufe !== 'PROCESADA') {
+         $venta->estado_sufe = $estadoSufe;
+         app(CajaDiariaController::class)->reconciliarEfectivoRecuperado($venta);
+      }
    }
 
    private function siatResultForDiagnostic(array $payload): array
@@ -381,9 +431,9 @@ class NotificacioneController extends Controller
      ]);
       $notificacion->save();
       $this->syncVentaFromNotification($codigoSeguimiento, $validated);
-      if ($validated['estado'] === 'EXITO' && data_get($validated, 'detalle.tipoEmision') === 'EMISION'
+      if (in_array($validated['estado'], ['EXITO', 'OBSERVADO'], true) && data_get($validated, 'detalle.tipoEmision') === 'EMISION'
          && !Venta::query()->where('codigoSeguimiento', $codigoSeguimiento)->exists()
-         && DB::table('facturacion_carts')->where('estado_emision', 'EMISION_INCIERTA')->exists()) {
+         && FacturacionCartIntegrationController::recoverableFiscalCarts()->exists()) {
          dispatch(function () use ($codigoSeguimiento) {
             app(FacturacionCartIntegrationController::class)->recoverFiscalNotification((string) $codigoSeguimiento);
          })->afterResponse();

@@ -352,6 +352,18 @@ class CajaDiariaController extends Controller
             return response()->json(['ok' => false, 'message' => 'No se encontro el borrador.'], 404);
         }
 
+        if ($cart->canal_emision === 'factura_electronica' && filled($cart->codigo_orden)
+            && in_array($cart->estado_emision, ['EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE'], true)) {
+            $recovered = app(FacturacionCartIntegrationController::class)->recoverUncertainFiscalEmission($cartId);
+
+            return response()->json([
+                'ok' => $recovered,
+                'message' => $recovered
+                    ? 'Se actualizó el estado de la orden con la respuesta de SEFE.'
+                    : 'La orden sigue en verificación con SEFE. Puedes atender otra venta desde un nuevo borrador.',
+            ], $recovered ? 200 : 409);
+        }
+
         $ownerId = trim((string) ($cart->origen_usuario_id ?? ''));
         if ($ownerId === '') {
             return response()->json(['ok' => false, 'message' => 'El borrador no tiene un cajero de origen verificable.'], 409);
@@ -1508,6 +1520,40 @@ class CajaDiariaController extends Controller
         return [$cents / 100, $rows->count()];
     }
 
+    public function reconciliarEfectivoRecuperado(object $venta): void
+    {
+        if ((int) $venta->metodoPago !== 1 || $venta->estado_sufe !== 'PROCESADA'
+            || blank($venta->origen_usuario_id) || blank($venta->created_at)) {
+            return;
+        }
+        $fecha = \Carbon\Carbon::parse($venta->created_at)->toDateString();
+        $caja = CajaDiaria::query()->where('usuario_id', $venta->origen_usuario_id)
+            ->whereDate('fecha_operacion', $fecha)->where('codigo_sucursal', $venta->codigoSucursal)
+            ->where('punto_venta', $venta->puntoVenta)->lockForUpdate()->first();
+        if (!$caja || $caja->estado !== 'CERRADA') {
+            return;
+        }
+
+        $ventas = $this->ventasDelDiaRows($caja->usuario_id, $fecha, (int) $caja->codigo_sucursal, (int) $caja->punto_venta);
+        if (!$ventas->contains(fn ($row) => (int) $row->id === (int) $venta->id)) {
+            return;
+        }
+        $total = $ventas->sum(fn ($row) => \App\Support\FinancialSale::cents($row->total)) / 100;
+        $esperado = round((float) $caja->monto_apertura + $total, 2);
+        $diferenciaEfectivo = round((float) $caja->monto_cierre_declarado - $esperado, 2);
+        $caja->update([
+            'monto_ventas' => $total,
+            'cantidad_ventas' => $ventas->count(),
+            'monto_cierre_esperado' => $esperado,
+            'diferencia_efectivo' => $diferenciaEfectivo,
+            'diferencia' => round($diferenciaEfectivo + (float) $caja->diferencia_fichas, 2),
+        ]);
+        $this->registrarArqueo($caja, $ventas);
+        \Illuminate\Support\Facades\Log::info('caja.arqueo.ajustado_por_factura_recuperada', [
+            'caja_id' => (int) $caja->id, 'venta_id' => (int) $venta->id, 'monto_esperado' => $esperado,
+        ]);
+    }
+
     private function buildConciliacionSnapshot(
         string $fecha,
         int $codigoSucursal,
@@ -1960,47 +2006,38 @@ class CajaDiariaController extends Controller
         ?float $valorUnitarioFicha = null
     ): CajaDiaria
     {
-        [$totalVentas, $cantidadVentas] = $this->ventasDelDia(
-            (string) $caja->usuario_id,
-            (string) $caja->fecha_operacion,
-            (int) $caja->codigo_sucursal,
-            (int) $caja->punto_venta
-        );
-        $montoEsperado = round((float) ($caja->monto_apertura ?? 0) + (float) $totalVentas, 2);
-        $cantidadEsperada = (int) (($caja->cantidad_fichas_apertura ?? 0) + ($caja->cantidad_fichas_ingresadas ?? 0) - ($caja->cantidad_fichas_consumidas ?? 0));
-        $montoFichasEsperado = round((float) (($caja->monto_fichas_apertura ?? 0) + ($caja->monto_fichas_ingresadas ?? 0) - ($caja->monto_fichas_consumidas ?? 0)), 2);
-        $cantidadDeclarada = $cantidadFichasDeclarada ?? $cantidadEsperada;
-        $montoFichasDeclarado = $montoFichasDeclarado ?? $montoFichasEsperado;
-        $diferenciaEfectivo = round($montoDeclarado - $montoEsperado, 2);
-        $diferenciaFichas = round($montoFichasDeclarado - $montoFichasEsperado, 2);
-        $diferenciaCantidadFichas = $cantidadDeclarada - $cantidadEsperada;
-        $diferenciaTotal = round($diferenciaEfectivo + $diferenciaFichas, 2);
-        $context = [
-            'usuario_id' => (string) $caja->usuario_id,
-            'usuario_nombre' => (string) ($caja->usuario_nombre ?? ''),
-            'usuario_email' => (string) ($caja->usuario_email ?? ''),
-            'codigo_sucursal' => (int) $caja->codigo_sucursal,
-            'punto_venta' => (int) $caja->punto_venta,
-        ];
-
-        DB::transaction(function () use (
-            $caja,
-            $montoDeclarado,
-            $totalVentas,
-            $cantidadVentas,
-            $montoEsperado,
-            $cantidadEsperada,
-            $montoFichasEsperado,
-            $cantidadDeclarada,
-            $montoFichasDeclarado,
-            $diferenciaEfectivo,
-            $diferenciaFichas,
-            $diferenciaCantidadFichas,
-            $diferenciaTotal,
-            $observacion,
-            $context,
-            $valorUnitarioFicha
+        return DB::transaction(function () use (
+            $caja, $montoDeclarado, $observacion, $cantidadFichasDeclarada, $montoFichasDeclarado, $valorUnitarioFicha
         ) {
+            $caja = CajaDiaria::query()->whereKey($caja->id)->lockForUpdate()->firstOrFail();
+            if ($caja->estado === 'CERRADA') {
+                return $caja;
+            }
+            $ventas = $this->ventasDelDiaRows(
+                (string) $caja->usuario_id,
+                $caja->fecha_operacion->toDateString(),
+                (int) $caja->codigo_sucursal,
+                (int) $caja->punto_venta
+            );
+            $totalVentas = $ventas->sum(fn ($row) => \App\Support\FinancialSale::cents($row->total)) / 100;
+            $cantidadVentas = $ventas->count();
+            $montoEsperado = round((float) ($caja->monto_apertura ?? 0) + (float) $totalVentas, 2);
+            $cantidadEsperada = (int) (($caja->cantidad_fichas_apertura ?? 0) + ($caja->cantidad_fichas_ingresadas ?? 0) - ($caja->cantidad_fichas_consumidas ?? 0));
+            $montoFichasEsperado = round((float) (($caja->monto_fichas_apertura ?? 0) + ($caja->monto_fichas_ingresadas ?? 0) - ($caja->monto_fichas_consumidas ?? 0)), 2);
+            $cantidadDeclarada = $cantidadFichasDeclarada ?? $cantidadEsperada;
+            $montoFichasDeclarado = $montoFichasDeclarado ?? $montoFichasEsperado;
+            $diferenciaEfectivo = round($montoDeclarado - $montoEsperado, 2);
+            $diferenciaFichas = round($montoFichasDeclarado - $montoFichasEsperado, 2);
+            $diferenciaCantidadFichas = $cantidadDeclarada - $cantidadEsperada;
+            $diferenciaTotal = round($diferenciaEfectivo + $diferenciaFichas, 2);
+            $context = [
+                'usuario_id' => (string) $caja->usuario_id,
+                'usuario_nombre' => (string) ($caja->usuario_nombre ?? ''),
+                'usuario_email' => (string) ($caja->usuario_email ?? ''),
+                'codigo_sucursal' => (int) $caja->codigo_sucursal,
+                'punto_venta' => (int) $caja->punto_venta,
+            ];
+
             $caja->update([
                 'estado' => 'CERRADA',
                 'monto_cierre_declarado' => round($montoDeclarado, 2),
@@ -2028,17 +2065,10 @@ class CajaDiariaController extends Controller
                 ['caja_diaria_id' => (int) $caja->id, 'fecha' => (string) $caja->fecha_operacion]
             );
 
-            $ventas = $this->ventasDelDiaRows(
-                (string) $caja->usuario_id,
-                (string) $caja->fecha_operacion,
-                (int) $caja->codigo_sucursal,
-                (int) $caja->punto_venta
-            );
+            $this->registrarArqueo($caja, $ventas);
 
-            $this->registrarArqueo($caja->fresh(), $ventas);
+            return $caja->fresh();
         });
-
-        return $caja->fresh();
     }
 
     private function resolveOpeningFichas(array $validated, array $stockActual): array

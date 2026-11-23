@@ -150,6 +150,23 @@ class FacturaVentaApiController extends Controller
         return $sameBranch && $payloadTotal > 0 && $payloadTotal === $cartTotal && $hasOnlineShipment;
     }
 
+    private function isVerifiedCardInvoice(array $payload): bool
+    {
+        if ((int) ($payload['metodoPago'] ?? 0) !== 5
+            || !in_array(data_get($payload, 'origenVenta.tipo'), ['facturacion_cart', 'facturacion_cart_remote'], true)) {
+            return false;
+        }
+        $cart = DB::table('facturacion_carts')->where('id', (int) data_get($payload, 'origenVenta.id'))
+            ->where('origen_usuario_id', data_get($payload, 'origenUsuario.id'))
+            ->where('codigo_orden', $payload['codigoOrden'] ?? null)
+            ->where('estado_pago', 'pagado')->where('metodo_pago', 'qr')
+            ->where('total', round((float) $payload['montoTotal'], 2))->first();
+
+        return $cart && (int) $cart->origen_sucursal_codigo === (int) $payload['codigoSucursal']
+            && (int) $cart->origen_sucursal_id === (int) $payload['puntoVenta']
+            && app(QhantuyQrController::class)->confirmedCardPaymentForCart($cart) !== null;
+    }
+
     private function addVentaToCaja(array $payload, ?string $fechaOperacion = null): void
     {
         $usuarioId = trim((string) data_get($payload, 'origenUsuario.id', ''));
@@ -1102,6 +1119,9 @@ class FacturaVentaApiController extends Controller
 
     private function resolveBridgeStatus(string $currentStatus, ?Notificacione $notificacion = null, ?array $consulta = null): string
     {
+        if (in_array($currentStatus, ['ANULADA', 'ANULADO'], true)) {
+            return 'ANULADA';
+        }
         if ($notificacion) {
             $detalle = json_decode((string) $notificacion->detalle, true) ?: [];
             $tipoEmision = (string) data_get($detalle, 'tipoEmision');
@@ -1112,6 +1132,10 @@ class FacturaVentaApiController extends Controller
                     'OBSERVADO' => 'ANULACION_OBSERVADA',
                     default => $currentStatus,
                 };
+            }
+
+            if ($currentStatus === 'PROCESADA' && $notificacion->estado !== 'EXITO') {
+                return $currentStatus;
             }
 
             return match ($notificacion->estado) {
@@ -1129,7 +1153,7 @@ class FacturaVentaApiController extends Controller
 
         return match ($estadoConsulta) {
             'PROCESADO' => 'PROCESADA',
-            'OBSERVADO' => 'OBSERVADA',
+            'OBSERVADO', 'RECHAZADO' => $currentStatus === 'PROCESADA' ? $currentStatus : 'OBSERVADA',
             'ANULADO' => 'ANULADA',
             'PENDIENTE' => $tipoEvento === 'CONTINGENCIA' ? 'CONTINGENCIA_CREADA' : $currentStatus,
             default => $currentStatus,
@@ -1347,6 +1371,12 @@ class FacturaVentaApiController extends Controller
 
         $bridgeStatus = $bridgeStatus ?: (string) ($venta->estado_sufe ?? '');
         $cart = DB::table('facturacion_carts')->where('id', $cartId)->first();
+        $cartTracking = ($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? null);
+        if (!$cart || $cart->codigo_orden !== $venta->codigoOrden
+            || (string) $cartTracking !== (string) $venta->codigoSeguimiento) {
+            $this->reverseVentaFromCajaIfNeeded($venta, $bridgeStatus);
+            return;
+        }
         $existingResponse = json_decode((string) ($cart->respuesta_emision ?? '{}'), true);
         if (!is_array($existingResponse)) {
             $existingResponse = [];
@@ -1386,6 +1416,10 @@ class FacturaVentaApiController extends Controller
 
         DB::table('facturacion_carts')
             ->where('id', $cartId)
+            ->where('codigo_orden', $cart->codigo_orden)
+            ->where('codigo_seguimiento_fiscal', $cart->codigo_seguimiento_fiscal)
+            ->where('codigo_seguimiento', $cart->codigo_seguimiento)
+            ->where('estado_emision', $cart->estado_emision)
             ->update($updates);
 
         $this->reverseVentaFromCajaIfNeeded($venta, $bridgeStatus);
@@ -1825,8 +1859,8 @@ class FacturaVentaApiController extends Controller
                 ]);
             }
             $this->assertFacturaVentaSector($validated);
-            if ($this->isPaidClienteOnlineQr($validated)) {
-                Log::info('FacturaVentaApi emitir: validacion de caja omitida para QR Cliente Online pagado.', [
+            if ($this->isPaidClienteOnlineQr($validated) || $this->isVerifiedCardInvoice($validated)) {
+                Log::info('FacturaVentaApi emitir: validacion de caja omitida para pago electrónico confirmado.', [
                     'origen_venta_id' => data_get($validated, 'origenVenta.id'),
                     'origen_usuario_id' => data_get($validated, 'origenUsuario.id'),
                     'codigo_sucursal' => $validated['codigoSucursal'] ?? null,
@@ -1850,8 +1884,10 @@ class FacturaVentaApiController extends Controller
                     ], 409);
                 }
 
-                if (DB::table('facturacion_carts')->where('id', (int) $origenVentaId)
-                    ->where('estado_emision', 'EMISION_INCIERTA')->exists()) {
+                $cart = DB::table('facturacion_carts')->where('id', (int) $origenVentaId)->first(['estado_emision', 'codigo_orden']);
+                $claimed = (int) $request->attributes->get('claimed_fiscal_cart') === (int) $origenVentaId;
+                if ($cart && (($claimed && ($cart->estado_emision !== 'EMITIENDO' || $cart->codigo_orden !== $codigoOrdenRecibido))
+                    || (!$claimed && in_array($cart->estado_emision, ['EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE'], true)))) {
                     return response()->json([
                         'ok' => false,
                         'estado' => 'EMISION_INCIERTA',
@@ -1958,7 +1994,14 @@ class FacturaVentaApiController extends Controller
             }
 
             if ($response->successful()) {
-                $reception = $this->resolveSuccessfulReception($payload ?? []);
+                try {
+                    $reception = $this->resolveSuccessfulReception((array) $payload);
+                } catch (ValidationException $error) {
+                    Log::warning('SEFE respondió sin un acuse verificable.', ['codigoOrden' => $codigoOrden, 'status' => $response->status()]);
+
+                    return response()->json(['ok' => false, 'codigoOrden' => $codigoOrden,
+                        'message' => 'SEFE recibió la solicitud, pero no devolvió un seguimiento verificable.'], 502);
+                }
                 $codigoSeguimiento = (string) data_get($reception['validated'], 'datos.codigoSeguimiento');
                 $venta = DB::transaction(function () use ($validated, $codigoOrden, $codigoSeguimiento) {
                     $venta = $this->createVenta($validated, $codigoOrden, $codigoSeguimiento);
@@ -2543,6 +2586,7 @@ class FacturaVentaApiController extends Controller
 
                         DB::table('ventas')
                             ->where('id', $venta->id)
+                            ->where('estado_sufe', $venta->estado_sufe)
                             ->update([
                                 'estado_sufe' => $resolvedStatus,
                                 'cuf' => data_get($validatedConsulta, 'cuf', $venta->cuf),
@@ -2554,7 +2598,7 @@ class FacturaVentaApiController extends Controller
                         $venta = $this->ventaByCodigoSeguimiento($resolvedCodigoSeguimiento)
                             ?: $this->ventaByConsultaIdentifier($codigoSeguimiento, $tipo)
                             ?: $venta;
-                        $this->syncFacturacionCartFromVenta($venta, $resolvedStatus);
+                        $this->syncFacturacionCartFromVenta($venta, $venta->estado_sufe);
                     }
 
                     $notificacion = $this->latestNotificationByCodigoSeguimiento(

@@ -15,7 +15,8 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        $schedule->command('facturas:recuperar-inciertas')->everyMinute()->withoutOverlapping(3);
+        $schedule->command('facturas:recuperar-inciertas')->everyMinute()->withoutOverlapping(10)->runInBackground();
+        $schedule->command('facturas:consolidar-tarjetas')->everyMinute()->withoutOverlapping(10)->runInBackground();
     }
 
     /**

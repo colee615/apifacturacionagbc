@@ -294,10 +294,73 @@ class QhantuyQrController extends Controller
             ->where('id', (int) $cart->id)
             ->where('codigo_orden', $cart->codigo_orden)
             ->where('qr_transaction_id', $cart->qr_transaction_id)
-            ->where(fn ($state) => $state->whereNull('estado_emision')
-                ->orWhereNotIn('estado_emision', ['FACTURADA', 'EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE']))
+            ->where(function ($state) use ($cart, $estadoPago) {
+                $state->whereNull('estado_emision')
+                    ->orWhereNotIn('estado_emision', ['FACTURADA', 'EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE']);
+                if (in_array($estadoPago, ['pagado', 'cancelado'], true)
+                    && $cart->canal_emision === 'qr' && $cart->qhantuy_payment_method === 'T2P') {
+                    $state->orWhere(fn ($stale) => $stale->where('estado_emision', 'EMITIENDO')
+                        ->where('updated_at', '<=', now()->subMinutes(FacturacionCartIntegrationController::STALE_EMISSION_MINUTES)));
+                }
+            })
             ->when($estadoPago === 'pendiente', fn ($query) => $query->whereRaw("coalesce(estado_pago, '') <> 'pagado'"))
             ->update($updates);
+    }
+
+    public function confirmedCardPaymentForCart(object $cart): ?object
+    {
+        if ($cart->qhantuy_payment_method !== 'T2P' || blank($cart->codigo_orden) || (int) $cart->qr_transaction_id <= 0) {
+            return null;
+        }
+
+        return $this->cardPaymentsForCart($cart)
+            ->where('transaction_id', (int) $cart->qr_transaction_id)
+            ->where('payment_status', 'success')->first();
+    }
+
+    private function cardPaymentsForCart(object $cart)
+    {
+        return DB::table('qhantuy_qr_payments')->where('internal_code', $cart->codigo_orden)
+            ->where('qhantuy_cart_id', $cart->id)->where('payment_method', 'T2P')
+            ->where('checkout_amount', round((float) $cart->total, 2))->where('checkout_currency', 'BOB');
+    }
+
+    public function verifyCardPaymentForCart(object $cart): bool
+    {
+        $payment = $this->cardPaymentsForCart($cart)->first();
+        if (!$payment || !in_array($payment->payment_status, [self::CHECKOUT_REQUESTED, 'holding', 'success'], true)) {
+            return false;
+        }
+        $transaction = (int) $payment->transaction_id;
+        if ((int) $cart->qr_transaction_id > 0 && (int) $cart->qr_transaction_id !== $transaction) {
+            return false;
+        }
+        if ($transaction === 0) {
+            $response = $this->existingCheckout($payment, (float) $cart->total, 'BOB', (int) $cart->id, 'T2P');
+            if (!$response->isSuccessful()) {
+                return false;
+            }
+            $payment = $this->cardPaymentsForCart($cart)->first();
+            $transaction = (int) ($payment->transaction_id ?? 0);
+        }
+        if ($transaction <= 0) {
+            return false;
+        }
+        if ($payment->payment_status !== 'success') {
+            $request = Request::create('/', 'POST', ['internal_code' => $payment->internal_code, 'payment_ids' => [$transaction]]);
+            if (!$this->consultPayment($request, syncCart: false)->isSuccessful()) {
+                return false;
+            }
+            $payment = $this->cardPaymentsForCart($cart)->where('transaction_id', $transaction)->first();
+        }
+        $status = $payment->payment_status ?? null;
+        if (!in_array($status, ['success', 'cancelled'], true)) {
+            return false;
+        }
+
+        $this->syncCartPaymentState($payment->internal_code, $status, $transaction, null, (int) $cart->id);
+
+        return $status === 'success';
     }
 
     private function cancelCartLocally(object $cart, string $message, ?object $row = null, string $reason = ''): array
@@ -701,11 +764,17 @@ class QhantuyQrController extends Controller
                 data_get($body, 'checkout_amount')
                 ?? data_get($body, 'items.0.checkout_amount')
             );
-            if ($paymentStatus === 'success' && $providerAmount === null) {
+            $providerOrder = trim((string) (data_get($body, 'internal_code') ?? data_get($body, 'items.0.internal_code')));
+            $providerCurrency = strtoupper(trim((string) (data_get($body, 'checkout_currency') ?? data_get($body, 'items.0.checkout_currency'))));
+            if ($paymentMethod === 'T2P' && $providerOrder !== '' && $providerOrder !== $payload['internal_code']) {
+                return $this->checkoutAwaitingConfirmation(409, $paymentMethod);
+            }
+            if ($paymentStatus === 'success' && ($providerAmount === null
+                || ($paymentMethod === 'T2P' && ($providerOrder === '' || $providerCurrency === '')))) {
                 $paymentStatus = 'holding';
             }
             $amount = $providerAmount !== null ? $providerAmount : $payloadAmount;
-            $currency = strtoupper(trim((string) (data_get($body, 'checkout_currency') ?? data_get($body, 'items.0.checkout_currency') ?? $payload['currency_code'])));
+            $currency = $providerCurrency ?: $payload['currency_code'];
             $imageData = trim((string) (
                 data_get($body, 'image_data')
                 ?? data_get($body, 'qr_url')
@@ -1127,12 +1196,21 @@ class QhantuyQrController extends Controller
                 'payment_ids' => [$incomingTxn],
             ]);
             $consult->headers->set('Accept', 'application/json');
-            if (!$this->consultPayment($consult, expectedStatus: $status)->isSuccessful()) {
+            $confirmation = $this->consultPayment($consult, expectedStatus: $status);
+            if (!$confirmation->isSuccessful()) {
                 return response()->json([
                     'ok' => false,
                     'message' => 'Qhantuy todavía no confirmó el estado de esta notificación.',
-                ], 503);
+                ], 503)->withHeaders($confirmation->headers->has('Retry-After')
+                    ? ['Retry-After' => $confirmation->headers->get('Retry-After')] : []);
             }
+        }
+
+        if ($status === 'success' && ($row->payment_method ?? null) === 'T2P' && !empty($row->qhantuy_cart_id)) {
+            $cartId = (int) $row->qhantuy_cart_id;
+            dispatch(function () use ($cartId) {
+                app(FacturacionCartIntegrationController::class)->settleCardCart($cartId);
+            })->afterResponse();
         }
 
         return response()->json([
@@ -1265,7 +1343,8 @@ class QhantuyQrController extends Controller
             $source = is_array($firstItem) ? $firstItem : (is_array($body) ? $body : []);
             $providerCode = trim((string) data_get($source, 'internal_code', ''));
             $providerCurrency = strtoupper(trim((string) data_get($source, 'checkout_currency', '')));
-            $requiresExactMatch = $expectedStatus !== null || !empty($row->qhantuy_credential_id);
+            $requiresExactMatch = $expectedStatus !== null || !empty($row->qhantuy_credential_id)
+                || ($row->payment_method ?? null) === 'T2P';
             if ($requiresExactMatch && (!$row || !is_array($firstItem) || data_get($body, 'process') === false
                 || (int) data_get($source, 'id') !== $paymentIds[0]
                 || $providerCode !== $row->internal_code || $providerCurrency !== $row->checkout_currency)) {
@@ -1374,6 +1453,9 @@ class QhantuyQrController extends Controller
 
                 DB::table('qhantuy_qr_payments')
                     ->where('id', $target->id)
+                    ->where('transaction_id', $target->transaction_id)
+                    ->where('payment_status', $target->payment_status)
+                    ->where('payment_status', '<>', 'success')
                     ->update([
                         'payment_status' => 'amount_mismatch',
                         'raw_check_response' => json_encode($body, JSON_UNESCAPED_UNICODE),

@@ -23,28 +23,42 @@ Artisan::command('inspire', function () {
    $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Artisan::command('facturas:recuperar-inciertas', function () {
-   $carts = DB::table('facturacion_carts')
-      ->where('estado_emision', 'EMISION_INCIERTA')
-      ->where('canal_emision', 'factura_electronica')
-      ->whereNotNull('codigo_orden')
-      ->select('id')
-      ->lazyById(50);
-
-   $controller = app(\App\Http\Controllers\FacturacionCartIntegrationController::class);
-   $attempted = $recovered = 0;
+// Continúa desde el último carrito revisado para atender también las órdenes nuevas.
+$reviewPendingCarts = static function ($query, string $key, callable $review): array {
+   $last = (int) Cache::get($key.':ultimo', 0);
+   $carts = (clone $query)->where('id', '>', $last)->orderBy('id')->limit(10)->get(['id']);
+   if ($carts->isEmpty() && $last > 0) {
+      Cache::forget($key.':ultimo');
+      $carts = $query->orderBy('id')->limit(10)->get(['id']);
+   }
+   $attempted = $resolved = 0;
    foreach ($carts as $cart) {
-      if (!Cache::add('factura-recuperacion-programada:'.$cart->id, true, 300)) {
+      Cache::put($key.':ultimo', (int) $cart->id, 3600);
+      if (!Cache::add($key.':'.$cart->id, true, 300)) {
          continue;
       }
-      $recovered += (int) $controller->recoverUncertainFiscalEmission((int) $cart->id);
-      if (++$attempted >= 10) {
-         break;
-      }
+      $attempted++;
+      $resolved += (int) $review((int) $cart->id);
    }
 
+   return [$attempted, $resolved];
+};
+
+Artisan::command('facturas:recuperar-inciertas', function () use ($reviewPendingCarts) {
+   $controller = app(\App\Http\Controllers\FacturacionCartIntegrationController::class);
+   [$attempted, $recovered] = $reviewPendingCarts(
+      $controller::recoverableFiscalCarts(), 'factura-recuperacion-programada', $controller->recoverUncertainFiscalEmission(...),
+   );
    $this->info("Consultadas: {$attempted}. Recuperadas: {$recovered}.");
 })->purpose('Consulta órdenes inciertas en SEFE y vincula las facturas confirmadas');
+
+Artisan::command('facturas:consolidar-tarjetas', function () use ($reviewPendingCarts) {
+   $controller = app(\App\Http\Controllers\FacturacionCartIntegrationController::class);
+   [$attempted, $settled] = $reviewPendingCarts(
+      $controller::unsettledCardCarts(), 'factura-tarjeta-programada', $controller->settleCardCart(...),
+   );
+   $this->info("Cobros revisados: {$attempted}. Cobros enviados a facturación: {$settled}.");
+})->purpose('Verifica cobros de tarjeta y factura los pagos confirmados');
 
 Artisan::command('app:purge-sales-data {--dry-run : Muestra el alcance sin borrar datos} {--force : Ejecuta sin confirmacion interactiva}', function () {
    $tables = [
@@ -183,126 +197,52 @@ Artisan::command('app:recover-paid-qr-cart
       return self::FAILURE;
    }
 
-   $paymentRow = null;
-   if ($internalCode !== '') {
-      $paymentRow = DB::table('qhantuy_qr_payments')->where('internal_code', $internalCode)->first();
-   }
-   if (!$paymentRow && $transactionId > 0) {
-      $paymentRow = DB::table('qhantuy_qr_payments')->where('transaction_id', $transactionId)->first();
-   }
-
-   $cartQuery = DB::table('facturacion_carts');
-   if ($cartId > 0) {
-      $cartQuery->where('id', $cartId);
-   } elseif ($internalCode !== '') {
-      $cartQuery->where('codigo_orden', $internalCode);
-   } elseif ($paymentRow) {
-      $cartQuery->where('codigo_orden', (string) ($paymentRow->internal_code ?? ''));
-   }
-   $cart = $cartQuery->orderByDesc('id')->first();
-
-   if (!$cart && $paymentRow) {
-      $cart = DB::table('facturacion_carts')
-         ->where('qr_transaction_id', (string) ($paymentRow->transaction_id ?? ''))
-         ->orderByDesc('id')
-         ->first();
-   }
-   if (!$cart && $transactionId > 0) {
-      $cart = DB::table('facturacion_carts')
-         ->where('qr_transaction_id', (string) $transactionId)
-         ->orderByDesc('id')
-         ->first();
-   }
-
-   if (!$cart) {
-      $this->error('No se encontro facturacion_cart para los criterios enviados.');
-      if ($paymentRow) {
-         $this->line('Existe registro QR, pero no cart vinculado:');
-         $this->line(json_encode([
-            'internal_code' => $paymentRow->internal_code ?? null,
-            'transaction_id' => $paymentRow->transaction_id ?? null,
-            'payment_status' => $paymentRow->payment_status ?? null,
-            'checkout_amount' => $paymentRow->checkout_amount ?? null,
-            'updated_at' => $paymentRow->updated_at ?? null,
-         ], JSON_UNESCAPED_UNICODE));
+   return DB::transaction(function () use ($cartId, $internalCode, $transactionId, $dryRun) {
+      $matches = DB::table('facturacion_carts as c')->join('qhantuy_qr_payments as p', 'p.internal_code', '=', 'c.codigo_orden')
+         ->where('c.metodo_pago', 'qr')->where('p.transaction_id', '>', 0)
+         ->where('p.checkout_currency', 'BOB')->whereColumn('p.checkout_amount', 'c.total')
+         ->where(function ($owner) {
+            $owner->whereColumn('p.qhantuy_cart_id', 'c.id')->orWhere(function ($legacy) {
+               $legacy->whereNull('p.qhantuy_cart_id')->whereRaw('c.qr_transaction_id = cast(p.transaction_id as varchar)');
+            });
+         })
+         ->when($cartId > 0, fn ($query) => $query->where('c.id', $cartId))
+         ->when($internalCode !== '', fn ($query) => $query->where('p.internal_code', $internalCode))
+         ->when($transactionId > 0, fn ($query) => $query->where('p.transaction_id', $transactionId))
+         ->limit(2)->get(['c.id', 'p.id as payment_id']);
+      if ($matches->count() !== 1) {
+         $this->error('Los filtros deben identificar un único carrito y su mismo cobro.');
+         return self::FAILURE;
       }
-      return self::FAILURE;
-   }
 
-   if (!$paymentRow) {
-      $paymentRow = DB::table('qhantuy_qr_payments')
-         ->where('internal_code', (string) ($cart->codigo_orden ?? ''))
-         ->orWhere('transaction_id', (int) ($cart->qr_transaction_id ?? 0))
-         ->orderByDesc('id')
-         ->first();
-   }
+      $match = $matches->first();
+      $cart = DB::table('facturacion_carts')->where('id', $match->id)->lockForUpdate()->first();
+      $payment = DB::table('qhantuy_qr_payments')->where('id', $match->payment_id)->lockForUpdate()->first();
+      if (!$cart || !$payment || $cart->codigo_orden !== $payment->internal_code
+         || $cart->metodo_pago !== 'qr' || $payment->payment_status !== 'success'
+         || ($payment->qhantuy_cart_id !== null && (int) $payment->qhantuy_cart_id !== (int) $cart->id)
+         || ($payment->qhantuy_cart_id === null && blank($cart->qr_transaction_id))
+         || (filled($cart->qr_transaction_id) && (int) $cart->qr_transaction_id !== (int) $payment->transaction_id)
+         || $payment->checkout_currency !== 'BOB' || (float) $cart->total <= 0
+         || round((float) $cart->total, 2) !== round((float) $payment->checkout_amount, 2)
+         || in_array($cart->estado_emision, ['EMITIENDO', 'EMISION_INCIERTA', 'PENDIENTE', 'FACTURADA'], true)) {
+         $this->error('El pago o el estado fiscal requiere verificación antes de modificar el carrito.');
+         return self::FAILURE;
+      }
 
-   $rawPaymentStatus = strtolower(trim((string) ($paymentRow->payment_status ?? '')));
-   $isPaid = in_array($rawPaymentStatus, ['paid', 'completed', 'approved', 'success', 'pagado'], true);
-   if (!$isPaid) {
-      $this->error('El QR localizado no figura como pagado. Estado actual: ' . ($rawPaymentStatus !== '' ? $rawPaymentStatus : 'sin estado'));
-      return self::FAILURE;
-   }
-
-   $linkedVenta = DB::table('ventas')
-      ->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [(string) $cart->id])
-      ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote'])
-      ->orderByDesc('id')
-      ->first();
-
-   $estadoEmisionActual = strtoupper(trim((string) ($cart->estado_emision ?? '')));
-   $nuevoEstadoEmision = in_array($estadoEmisionActual, ['', 'NO_APLICA'], true)
-      ? 'PENDIENTE'
-      : $estadoEmisionActual;
-   $mensajeBase = trim((string) ($cart->mensaje_emision ?? ''));
-   $mensajeRecuperacion = 'Pago QR recuperado manualmente. Venta reabierta para reintento de emision fiscal.';
-   $nuevoMensaje = $mensajeBase !== '' && str_contains($mensajeBase, $mensajeRecuperacion)
-      ? $mensajeBase
-      : trim($mensajeBase . ' ' . $mensajeRecuperacion);
-
-   $cartUpdates = [
-      'codigo_orden' => trim((string) ($cart->codigo_orden ?? ($paymentRow->internal_code ?? ''))) ?: null,
-      'qr_transaction_id' => (string) ($paymentRow->transaction_id ?? $cart->qr_transaction_id ?? ''),
-      'metodo_pago' => 'qr',
-      'estado_pago' => 'pagado',
-      'estado' => 'emitido',
-      'estado_emision' => $nuevoEstadoEmision,
-      'mensaje_emision' => $nuevoMensaje,
-      'emitido_en' => $cart->emitido_en ?? now(),
-      'cerrado_en' => $cart->cerrado_en ?? now(),
-      'updated_at' => now(),
-   ];
-
-   $this->info('Cart encontrado:');
-   $this->line(json_encode([
-      'cart_id' => $cart->id,
-      'codigo_orden' => $cart->codigo_orden ?? null,
-      'qr_transaction_id' => $cart->qr_transaction_id ?? null,
-      'estado' => $cart->estado ?? null,
-      'estado_pago' => $cart->estado_pago ?? null,
-      'estado_emision' => $cart->estado_emision ?? null,
-      'venta_id' => $linkedVenta->id ?? null,
-   ], JSON_UNESCAPED_UNICODE));
-
-   if ($dryRun) {
-      $this->warn('Dry run: no se aplicaron cambios.');
-      $this->line(json_encode($cartUpdates, JSON_UNESCAPED_UNICODE));
-      return self::SUCCESS;
-   }
-
-   DB::table('facturacion_carts')->where('id', (int) $cart->id)->update($cartUpdates);
-
-   if ($linkedVenta) {
-      DB::table('ventas')
-         ->where('id', (int) $linkedVenta->id)
-         ->update([
-            'codigoOrden' => $cartUpdates['codigo_orden'],
+      if (!$dryRun) {
+         DB::table('facturacion_carts')->where('id', $cart->id)->update([
+            'qr_transaction_id' => (string) $payment->transaction_id,
+            'estado_pago' => 'pagado',
+            'estado' => 'emitido',
+            'mensaje_emision' => 'Pago confirmado vinculado a la misma orden.',
+            'emitido_en' => $cart->emitido_en ?? now(),
+            'cerrado_en' => $cart->cerrado_en ?? now(),
             'updated_at' => now(),
          ]);
-   }
+      }
 
-   $this->info('Venta QR recuperada. Ya queda visible como pagada y pendiente de factura.');
-   $this->line('Siguiente paso sugerido: reintentar la emision fiscal con los mismos datos del cart.');
-
-   return self::SUCCESS;
+      $this->info($dryRun ? 'Coincidencia verificada. Simulación.' : 'Pago vinculado a su orden original.');
+      return self::SUCCESS;
+   });
 })->purpose('Recupera una venta QR pagada para dejarla pendiente de factura sin perder el pago');

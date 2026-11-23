@@ -16,7 +16,7 @@ trait RecoversFiscalCartInvoices
             $response = $this->ageticClient()->connectTimeout(3)->timeout(5)->retry(1)
                 ->get($this->ageticBaseUrl().'/consulta/'.rawurlencode($identifier), $byOrder ? ['tipo' => 'CO'] : []);
 
-            if (!$response->successful() || $response->json('estado') !== 'PROCESADO') {
+            if (!$response->successful() || !in_array($response->json('estado'), ['PROCESADO', 'OBSERVADO', 'RECHAZADO'], true)) {
                 return null;
             }
 
@@ -52,7 +52,7 @@ trait RecoversFiscalCartInvoices
 
         return DB::transaction(function () use ($cartId, $order, $invoice, $tracking, $number, $cuf, $header, $issuedAt, $buildPayload, $persistTraceability) {
             $cart = DB::table('facturacion_carts')->where('id', $cartId)->lockForUpdate()->first();
-            if (!$cart || $cart->codigo_orden !== $order || $cart->estado_emision !== 'EMISION_INCIERTA'
+            if (!$cart || $cart->codigo_orden !== $order || !in_array($cart->estado_emision, ['EMISION_INCIERTA', 'PENDIENTE'], true)
                 || $cart->canal_emision !== 'factura_electronica' || $cart->estado_pago !== 'pagado'
                 || $issuedAt->lt(Carbon::parse($cart->created_at)) || $issuedAt->gt(now()->addMinutes(5))) {
                 return false;
@@ -120,9 +120,49 @@ trait RecoversFiscalCartInvoices
                 'respuesta_emision' => json_encode(['estadoPuente' => 'PROCESADA', 'recuperada_por_consulta' => true]),
                 'updated_at' => now(),
             ]);
-            $this->syncFacturacionCartFromVenta(DB::table('ventas')->where('id', $saleId)->first(), 'PROCESADA');
+            $venta = DB::table('ventas')->where('id', $saleId)->first();
+            $this->syncFacturacionCartFromVenta($venta, 'PROCESADA');
+            app(\App\Http\Controllers\CajaDiariaController::class)->reconciliarEfectivoRecuperado($venta);
             $persistTraceability($saleId);
             Log::info('factura.recuperacion.vinculada', ['cart_id' => $cartId, 'venta_id' => $saleId, 'orden' => $order]);
+
+            return true;
+        }, 3);
+    }
+
+    public function linkRejectedCartOrder(int $cartId, string $order, array $invoice): bool
+    {
+        $tracking = trim((string) ($invoice['codFactura'] ?? ''));
+        if (($invoice['codigoOrden'] ?? null) !== $order || $tracking === ''
+            || !in_array($invoice['estado'] ?? '', ['OBSERVADO', 'RECHAZADO'], true)
+            || filled($invoice['cuf'] ?? null) || filled($invoice['nroFactura'] ?? null)) {
+            return false;
+        }
+
+        return DB::transaction(function () use ($cartId, $order, $tracking) {
+            $cart = DB::table('facturacion_carts')->where('id', $cartId)->lockForUpdate()->first();
+            if (!$cart || $cart->codigo_orden !== $order || $cart->canal_emision !== 'factura_electronica'
+                || !in_array($cart->estado_emision, ['EMISION_INCIERTA', 'PENDIENTE'], true)
+                || filled($cart->numero_factura ?? null)
+                || (filled($cart->codigo_seguimiento_fiscal) && $cart->codigo_seguimiento_fiscal !== $tracking)) {
+                return false;
+            }
+            $sale = DB::table('ventas')->where('codigoOrden', $order)->lockForUpdate()->first();
+            if ($sale && (!in_array($sale->estado_sufe, ['RECEPCIONADA', 'PENDIENTE', 'OBSERVADA'], true)
+                || (int) $sale->origen_venta_id !== $cartId || (string) $sale->codigoSeguimiento !== $tracking
+                || filled($sale->numero_factura) || filled($sale->cuf))) {
+                return false;
+            }
+            // Si ya se registró el ingreso de caja, el flujo regular de observaciones
+            // conserva el asiento y sus datos para la conciliación.
+            if ($sale) {
+                DB::table('ventas')->where('id', $sale->id)->update(['estado_sufe' => 'OBSERVADA', 'updated_at' => now()]);
+            }
+            DB::table('facturacion_carts')->where('id', $cartId)->update([
+                'estado_emision' => 'RECHAZADA',
+                'mensaje_emision' => 'SEFE confirmó el rechazo de esta orden.',
+                'updated_at' => now(),
+            ]);
 
             return true;
         });
