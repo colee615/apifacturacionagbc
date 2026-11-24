@@ -1472,6 +1472,7 @@ class FacturacionCartIntegrationController extends Controller
             'razon_social' => 'nullable|string|max:255',
             'correo_facturacion' => 'nullable|email|max:50',
             'codigo_orden_mode' => 'nullable|in:same,new',
+            'reintentar_si_no_encontrada' => 'nullable|boolean',
             'qr_payment_method' => 'nullable|in:QRSIMPLE,T2P',
             'canal_operativo' => 'nullable|in:normal,contrato',
             'contabiliza_en_caja' => 'nullable|boolean',
@@ -1483,6 +1484,7 @@ class FacturacionCartIntegrationController extends Controller
         ]);
         $userId = (string) $validated['origen_usuario_id'];
         $cartId = isset($validated['cart_id']) ? (int) $validated['cart_id'] : 0;
+        $retryUncertainFiscalOrder = filter_var($validated['reintentar_si_no_encontrada'] ?? false, FILTER_VALIDATE_BOOL);
         $lock = Cache::lock($this->emitLockKey($userId), 300);
         if (!$lock->get()) {
             return response()->json([
@@ -1492,13 +1494,129 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         try {
+        if ($retryUncertainFiscalOrder) {
+            if ($cartId <= 0) {
+                return response()->json(['ok' => false, 'message' => 'El reintento requiere el carrito original.'], 422);
+            }
+
+            $retryCart = DB::table('facturacion_carts')
+                ->where('id', $cartId)
+                ->where('origen_usuario_id', $userId)
+                ->where('canal_emision', 'factura_electronica')
+                ->whereRaw("upper(coalesce(estado_emision, '')) = 'EMISION_INCIERTA'")
+                ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
+                ->whereRaw("lower(coalesce(estado_pago, '')) = 'pagado'")
+                ->whereNotNull('qr_transaction_id')
+                ->whereNotNull('codigo_orden')
+                ->where('codigo_orden', '<>', '')
+                ->first();
+
+            if (!$retryCart) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'El reintento solo está disponible para una venta QR pagada que sigue en emisión incierta.',
+                ], 409);
+            }
+
+            $paymentMethod = strtoupper(trim((string) ($retryCart->qhantuy_payment_method ?? 'QRSIMPLE')));
+            if (!in_array($paymentMethod, ['QRSIMPLE', 'T2P'], true)) {
+                return response()->json(['ok' => false, 'message' => 'No se pudo verificar el medio de pago registrado.'], 409);
+            }
+
+            $paymentQuery = DB::table('qhantuy_qr_payments')
+                ->where('internal_code', $retryCart->codigo_orden)
+                ->where('transaction_id', (int) $retryCart->qr_transaction_id)
+                ->where('payment_status', 'success')
+                ->where('payment_method', $paymentMethod)
+                ->where('checkout_amount', round((float) $retryCart->total, 2))
+                ->where('checkout_currency', 'BOB');
+            if ($paymentMethod === 'T2P') {
+                $paymentQuery->where('qhantuy_cart_id', $cartId);
+            } else {
+                $paymentQuery->where(function ($query) use ($cartId) {
+                    $query->whereNull('qhantuy_cart_id')->orWhere('qhantuy_cart_id', $cartId);
+                });
+            }
+            if (!$paymentQuery->exists()) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'El pago no tiene una confirmación coincidente con esta orden, monto y transacción. No se reintentó la factura.',
+                ], 409);
+            }
+
+            $order = trim((string) $retryCart->codigo_orden);
+            $hasPriorSale = DB::table('ventas')->where(function ($query) use ($order, $cartId) {
+                $query->where('codigoOrden', $order)
+                    ->orWhere(function ($origin) use ($cartId) {
+                        $origin->whereRaw('cast(origen_venta_id as varchar) = cast(? as varchar)', [$cartId])
+                            ->whereIn('origen_venta_tipo', ['facturacion_cart', 'facturacion_cart_remote']);
+                    });
+            })->exists();
+            if ($hasPriorSale) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'Esta orden ya tiene un registro de factura local. Se requiere conciliarlo antes de emitir otra.',
+                ], 409);
+            }
+
+            $lookup = app(FacturaVentaApiController::class)->lookupFiscalInvoiceByOrder($order);
+            if (($lookup['result'] ?? '') === 'found') {
+                if ($this->recoverUncertainFiscalEmission($cartId, $lookup['invoice'])) {
+                    return $this->recoveredCartResponse($cartId);
+                }
+
+                return response()->json([
+                    'ok' => true,
+                    'cart' => $this->cartById($cartId),
+                    'respuesta' => [
+                        'estado' => 'EMISION_INCIERTA',
+                        'codigoOrden' => $order,
+                        'mensaje' => 'SEFE encontró esta orden, pero SAFE no pudo vincularla automáticamente. No se envió otra factura.',
+                    ],
+                    'status_code' => 202,
+                ], 202);
+            }
+            if (($lookup['result'] ?? '') === 'pending') {
+                return response()->json([
+                    'ok' => true,
+                    'cart' => $this->cartById($cartId),
+                    'respuesta' => [
+                        'estado' => 'EMISION_INCIERTA',
+                        'codigoOrden' => $order,
+                        'mensaje' => 'SEFE todavía muestra la orden en proceso. No se reenvió la factura; consulta nuevamente en unos instantes.',
+                    ],
+                    'status_code' => 202,
+                ], 202);
+            }
+            if (($lookup['result'] ?? '') !== 'not_found') {
+                return response()->json([
+                    'ok' => false,
+                    'cart' => $this->cartById($cartId),
+                    'message' => 'No se pudo confirmar en SEFE que la orden no exista. No se reenvió la factura; inténtalo más tarde.',
+                    'status_code' => 503,
+                ], 503);
+            }
+        }
+
         $cartQuery = DB::table('facturacion_carts')
-            ->where('origen_usuario_id', $userId)
-            ->whereRaw("upper(coalesce(estado_emision, '')) not in ('EMITIENDO','EMISION_INCIERTA','PENDIENTE')");
+            ->where('origen_usuario_id', $userId);
+        if ($retryUncertainFiscalOrder) {
+            $cartQuery->where('id', $cartId)
+                ->where('canal_emision', 'factura_electronica')
+                ->whereRaw("upper(coalesce(estado_emision, '')) = 'EMISION_INCIERTA'")
+                ->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
+                ->whereRaw("lower(coalesce(estado_pago, '')) = 'pagado'")
+                ->whereNotNull('qr_transaction_id');
+        } else {
+            $cartQuery->whereRaw("upper(coalesce(estado_emision, '')) not in ('EMITIENDO','EMISION_INCIERTA','PENDIENTE')");
+        }
 
         if ($cartId > 0) {
-            $cartQuery->where('id', $cartId)
-                ->where(function ($query) {
+            $cartQuery->where('id', $cartId);
+            if ($retryUncertainFiscalOrder) {
+                $cartQuery->whereNotNull('codigo_orden')->where('codigo_orden', '<>', '');
+            } else {
+                $cartQuery->where(function ($query) {
                     $query->where('estado', 'borrador')
                         ->orWhere(function ($qr) {
                             $qr->whereRaw("lower(coalesce(metodo_pago, '')) = 'qr'")
@@ -1513,6 +1631,7 @@ class FacturacionCartIntegrationController extends Controller
                                 ->whereRaw("upper(coalesce(estado_emision, 'NO_APLICA')) in ('NO_APLICA','ERROR','RECHAZADA','ANULADA')");
                         });
                 });
+            }
         } else {
             $cartQuery->where(function ($query) {
                 $query->where('estado', 'borrador')
@@ -2094,6 +2213,97 @@ class FacturacionCartIntegrationController extends Controller
         }
 
         return response()->json(['ok' => $ok, 'cart' => $this->cartById((int) $cart->id), 'respuesta' => $body, 'status_code' => $emitStatusCode]);
+        } catch (\Throwable $error) {
+            $claimedCartId = isset($claimed, $cart->id) && (int) $claimed === 1 ? (int) $cart->id : 0;
+            $claimedOrder = trim((string) ($codigoOrdenIntento ?? ''));
+            $claimedChannel = strtolower(trim((string) ($canalEmision ?? '')));
+
+            if ($claimedCartId === 0 && $error instanceof \Illuminate\Validation\ValidationException) {
+                throw $error;
+            }
+
+            if ($claimedCartId > 0 && $claimedOrder !== '') {
+                $isFiscalEmission = $claimedChannel !== 'qr';
+                $recoveryState = $isFiscalEmission ? 'EMISION_INCIERTA' : 'NO_APLICA';
+                $recoveryMessage = $isFiscalEmission
+                    ? 'No se pudo confirmar la respuesta de SEFE. SAFE verificará esta misma orden; no se emitirá otra factura automáticamente.'
+                    : 'No se pudo confirmar la respuesta del cobro. SAFE conservará esta orden para verificar el pago.';
+
+                try {
+                    DB::table('facturacion_carts')->where('id', $claimedCartId)
+                        ->where('codigo_orden', $claimedOrder)
+                        ->where('estado_emision', 'EMITIENDO')
+                        ->update([
+                            'estado_emision' => $recoveryState,
+                            'mensaje_emision' => $recoveryMessage,
+                            'respuesta_emision' => json_encode([
+                                'estado' => $recoveryState,
+                                'codigoOrden' => $claimedOrder,
+                                'error_class' => get_class($error),
+                                'mensaje' => $recoveryMessage,
+                            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                            'updated_at' => now(),
+                        ]);
+                } catch (\Throwable) {
+                    // The original failure must not be hidden by diagnostics or logging.
+                }
+
+                try {
+                    Log::error('FacturacionCart emitir unexpected exception after claim', [
+                        'cart_id' => $claimedCartId,
+                        'codigo_orden' => $claimedOrder,
+                        'canal_emision' => $claimedChannel,
+                        'error_class' => get_class($error),
+                    ]);
+                } catch (\Throwable) {
+                    // Preserve the state transition even if the configured log writer is unavailable.
+                }
+
+                if ($isFiscalEmission) {
+                    try {
+                        $this->recoverUncertainFiscalEmission($claimedCartId);
+                        return $this->recoveredCartResponse($claimedCartId);
+                    } catch (\Throwable) {
+                        // Keep EMISION_INCIERTA for the scheduled reconciler; never issue again here.
+                    }
+
+                    return response()->json([
+                        'ok' => true,
+                        'cart' => $this->cartById($claimedCartId),
+                        'respuesta' => [
+                            'estado' => 'EMISION_INCIERTA',
+                            'codigoOrden' => $claimedOrder,
+                            'mensaje' => $recoveryMessage,
+                        ],
+                        'status_code' => 202,
+                    ], 202);
+                }
+
+                return response()->json([
+                    'ok' => false,
+                    'cart' => $this->cartById($claimedCartId),
+                    'respuesta' => [
+                        'estado' => 'NO_APLICA',
+                        'codigoOrden' => $claimedOrder,
+                        'mensaje' => $recoveryMessage,
+                    ],
+                    'status_code' => 502,
+                ], 502);
+            }
+
+            try {
+                Log::error('FacturacionCart emitir failed before claim completed', [
+                    'cart_id' => isset($cart->id) ? (int) $cart->id : null,
+                    'error_class' => get_class($error),
+                ]);
+            } catch (\Throwable) {
+                // Logging is best effort; return a controlled response either way.
+            }
+
+            return response()->json([
+                'ok' => false,
+                'message' => 'No se pudo iniciar la emisión. La venta sigue guardada; consulta su estado antes de reintentar.',
+            ], 500);
         } finally {
             optional($lock)->release();
         }
@@ -2222,10 +2432,12 @@ class FacturacionCartIntegrationController extends Controller
             'origen_usuario_id' => 'required|string|max:60',
             'cart_id' => 'nullable|integer|min:1',
             'auto_emit_invoice' => 'nullable|boolean',
+            'reintentar_si_no_encontrada' => 'nullable|boolean',
         ]);
         $autoEmitInvoice = array_key_exists('auto_emit_invoice', $v)
             ? filter_var($v['auto_emit_invoice'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) !== false
             : true;
+        $retryUncertainFiscalOrder = filter_var($v['reintentar_si_no_encontrada'] ?? false, FILTER_VALIDATE_BOOL);
         $q = DB::table('facturacion_carts')
             ->where('origen_usuario_id', $v['origen_usuario_id'])
             ->where(function ($query) {
@@ -2247,6 +2459,26 @@ class FacturacionCartIntegrationController extends Controller
         if ($canalEmision === 'factura_electronica'
             && (in_array($estadoEmisionActual, ['EMISION_INCIERTA', 'EMITIENDO'], true)
                 || ($estadoEmisionActual === 'PENDIENTE' && blank($cart->codigo_seguimiento_fiscal)))) {
+            if ($retryUncertainFiscalOrder) {
+                if (!$autoEmitInvoice || $estadoEmisionActual !== 'EMISION_INCIERTA') {
+                    return response()->json([
+                        'ok' => false,
+                        'message' => 'El reintento solo se permite para una orden en emisión incierta.',
+                    ], 409);
+                }
+
+                $emitRequest = Request::create('/api/factura-venta/cart/emitir', 'POST', [
+                    'origen_usuario_id' => (string) $v['origen_usuario_id'],
+                    'cart_id' => (int) $cart->id,
+                    'canal_emision' => 'factura_electronica',
+                    'codigo_orden_mode' => 'same',
+                    'reintentar_si_no_encontrada' => true,
+                ]);
+                $emitRequest->headers->set('Accept', 'application/json');
+
+                return $this->emitir($emitRequest);
+            }
+
             $this->recoverUncertainFiscalEmission((int) $cart->id);
 
             return $this->recoveredCartResponse((int) $cart->id);
@@ -2568,7 +2800,11 @@ class FacturacionCartIntegrationController extends Controller
 
             return in_array($state, ['FACTURADA', 'PENDIENTE', 'EMISION_INCIERTA'], true);
         } catch (\Throwable $error) {
-            Log::warning('factura.tarjeta.consolidacion_fallo', ['cart_id' => $cartId, 'error_class' => get_class($error)]);
+            try {
+                Log::warning('factura.tarjeta.consolidacion_fallo', ['cart_id' => $cartId, 'error_class' => get_class($error)]);
+            } catch (\Throwable) {
+                // A failed logger must not break the Qhantuy callback response.
+            }
 
             return false;
         } finally {
@@ -2629,7 +2865,11 @@ class FacturacionCartIntegrationController extends Controller
                 },
             );
         } catch (\Throwable $error) {
-            Log::warning('factura.recuperacion.fallo', ['cart_id' => $cartId, 'orden' => $order, 'error_class' => get_class($error)]);
+            try {
+                Log::warning('factura.recuperacion.fallo', ['cart_id' => $cartId, 'orden' => $order, 'error_class' => get_class($error)]);
+            } catch (\Throwable) {
+                // Preserve the uncertain state even if the log writer is unavailable.
+            }
 
             return false;
         } finally {
@@ -3873,6 +4113,11 @@ class FacturacionCartIntegrationController extends Controller
             return $this->makeFacturacionCartStatusPayload($estadoEmision, [
                 'can_emit' => false,
                 'can_consult' => $canConsult,
+                'can_retry_uncertain_invoice' => $estadoEmision === 'EMISION_INCIERTA'
+                    && $canal === 'factura_electronica'
+                    && strtolower(trim((string) ($cart->metodo_pago ?? ''))) === 'qr'
+                    && $estadoPago === 'pagado'
+                    && (int) ($cart->qr_transaction_id ?? 0) > 0,
                 'cuf' => $cuf !== '' ? $cuf : null,
             ]);
         }

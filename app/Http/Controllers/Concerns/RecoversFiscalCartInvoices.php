@@ -10,6 +10,40 @@ use Illuminate\Validation\ValidationException;
 
 trait RecoversFiscalCartInvoices
 {
+    public function lookupFiscalInvoiceByOrder(string $order): array
+    {
+        try {
+            $response = $this->ageticClient()->connectTimeout(3)->timeout(5)->retry(1)
+                ->get($this->ageticBaseUrl().'/consulta/'.rawurlencode($order), ['tipo' => 'CO']);
+        } catch (\Throwable) {
+            return ['result' => 'unknown'];
+        }
+
+        $body = (array) $response->json();
+        if (!$response->successful()) {
+            $message = trim((string) ($body['message'] ?? $body['mensaje'] ?? ''));
+            if ($response->status() === 400 && mb_strtolower($message) === 'recurso no encontrado') {
+                return ['result' => 'not_found'];
+            }
+
+            return ['result' => 'unknown'];
+        }
+
+        $state = strtoupper(trim((string) ($body['estado'] ?? '')));
+        if (in_array($state, ['PROCESADO', 'OBSERVADO', 'RECHAZADO'], true)) {
+            try {
+                return [
+                    'result' => 'found',
+                    'invoice' => $this->sufeValidator->validateConsultaFacturaResponse($body),
+                ];
+            } catch (ValidationException) {
+                return ['result' => 'unknown'];
+            }
+        }
+
+        return ['result' => 'pending'];
+    }
+
     public function fetchProcessedInvoice(string $identifier, bool $byOrder = true): ?array
     {
         try {

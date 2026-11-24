@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Http\Controllers\FacturacionCartIntegrationController;
+use App\Http\Controllers\FacturaVentaApiController;
 use App\Http\Controllers\NotificacioneController;
 use App\Http\Controllers\QhantuyQrController;
 use App\Services\QhantuyQrCredentials;
@@ -152,6 +153,131 @@ class FacturacionTimeoutRecoveryTest extends TestCase
         $this->assertDatabaseHas('cajas_diarias', ['cantidad_ventas' => 1, 'monto_ventas' => 21]);
     }
 
+    public function test_unhandled_failure_after_emission_claim_is_persisted_as_uncertain(): void
+    {
+        $cartId = $this->createCart(['estado' => 'borrador', 'estado_emision' => 'NO_APLICA']);
+        $fiscal = \Mockery::mock(FacturaVentaApiController::class)->makePartial();
+        $fiscal->shouldReceive('emitir')->once()->andThrow(new \RuntimeException('simulated logger failure'));
+        $fiscal->shouldReceive('fetchProcessedInvoice')->once()->with(self::ORDER)->andReturn(null);
+        $this->app->instance(FacturaVentaApiController::class, $fiscal);
+
+        $response = app(FacturacionCartIntegrationController::class)->emitir($this->cartRequest($cartId));
+
+        $this->assertSame('EMISION_INCIERTA', $response->getData(true)['cart']['estado_emision']);
+        $this->assertSame(self::ORDER, $response->getData(true)['cart']['codigo_orden']);
+        $this->assertDatabaseHas('facturacion_carts', [
+            'id' => $cartId,
+            'codigo_orden' => self::ORDER,
+            'estado_emision' => 'EMISION_INCIERTA',
+        ]);
+        $this->assertDatabaseCount('ventas', 0);
+    }
+
+    public function test_manual_retry_links_an_invoice_found_in_sefe_without_posting_again(): void
+    {
+        $cartId = $this->createPaidCardCart();
+        DB::table('cajas_diarias')->insert(['usuario_id' => 'operador-test', 'fecha_operacion' => now()->toDateString()]);
+        $invoice = $this->confirmedInvoice();
+        $invoice['detalleFactura']['cabecera']['codigoMetodoPago'] = 5;
+        Http::fake(['https://sefe.test/consulta/*' => Http::response($invoice)]);
+
+        $response = app(FacturacionCartIntegrationController::class)->consultar($this->cartRequest($cartId, [
+            'auto_emit_invoice' => 1,
+            'reintentar_si_no_encontrada' => 1,
+        ]));
+
+        $this->assertSame('FACTURADA', $response->getData(true)['cart']['estado_emision']);
+        $this->assertSame('6907', (string) $response->getData(true)['cart']['numero_factura']);
+        $this->assertDatabaseCount('ventas', 1);
+        $this->assertDatabaseHas('facturacion_carts', [
+            'id' => $cartId,
+            'codigo_orden' => self::ORDER,
+            'estado_pago' => 'pagado',
+            'qr_transaction_id' => '4988554',
+        ]);
+        Http::assertSentCount(1);
+        Http::assertSent(fn (OutgoingRequest $request) => $request->method() === 'GET'
+            && $request->url() === 'https://sefe.test/consulta/'.self::ORDER.'?tipo=CO');
+        Http::assertNotSent(fn (OutgoingRequest $request) => $request->method() === 'POST');
+    }
+
+    public function test_manual_retry_posts_the_original_order_only_after_sefe_confirms_not_found(): void
+    {
+        $cartId = $this->createPaidCardCart();
+        Http::fake(function (OutgoingRequest $request) {
+            if ($request->method() === 'GET') {
+                $this->assertSame('https://sefe.test/consulta/'.self::ORDER.'?tipo=CO', $request->url());
+                return Http::response(['mensaje' => 'Recurso no encontrado'], 400);
+            }
+
+            $this->assertSame('https://sefe.test/facturacion/emision/individual', $request->url());
+            $this->assertSame(self::ORDER, $request['codigoOrden']);
+            $this->assertSame(21.0, (float) $request['montoTotal']);
+            $this->assertSame(5, (int) $request['metodoPago']);
+
+            return Http::response([
+                'finalizado' => true,
+                'mensaje' => 'Registro recepcionado con exito!',
+                'datos' => ['codigoSeguimiento' => '94446819924732'],
+            ], 202);
+        });
+
+        $response = app(FacturacionCartIntegrationController::class)->consultar($this->cartRequest($cartId, [
+            'auto_emit_invoice' => 1,
+            'reintentar_si_no_encontrada' => 1,
+        ]));
+
+        $this->assertSame('PENDIENTE', $response->getData(true)['cart']['estado_emision']);
+        $this->assertDatabaseHas('facturacion_carts', [
+            'id' => $cartId,
+            'codigo_orden' => self::ORDER,
+            'estado_pago' => 'pagado',
+            'qr_transaction_id' => '4988554',
+        ]);
+        $this->assertDatabaseHas('qhantuy_qr_payments', [
+            'internal_code' => self::ORDER,
+            'transaction_id' => 4988554,
+            'payment_status' => 'success',
+        ]);
+        Http::assertSentCount(2);
+        Http::assertNotSent(fn (OutgoingRequest $request) => str_contains($request->url(), 'qhantuy.test'));
+    }
+
+    public function test_manual_retry_does_not_post_when_sefe_does_not_confirm_absence(): void
+    {
+        $cartId = $this->createPaidCardCart();
+        Http::fake(['https://sefe.test/consulta/*' => Http::response(['estado' => 'PENDIENTE'], 202)]);
+
+        $response = app(FacturacionCartIntegrationController::class)->consultar($this->cartRequest($cartId, [
+            'auto_emit_invoice' => 1,
+            'reintentar_si_no_encontrada' => 1,
+        ]));
+
+        $this->assertSame(202, $response->getStatusCode());
+        $this->assertSame('EMISION_INCIERTA', $response->getData(true)['cart']['estado_emision']);
+        $this->assertDatabaseCount('ventas', 0);
+        Http::assertSentCount(1);
+        Http::assertNotSent(fn (OutgoingRequest $request) => $request->method() === 'POST');
+    }
+
+    public function test_manual_retry_does_not_post_when_sefe_lookup_times_out(): void
+    {
+        $cartId = $this->createPaidCardCart();
+        Http::fake(function (OutgoingRequest $request) {
+            throw new ConnectionException('simulated SEFE lookup timeout');
+        });
+
+        $response = app(FacturacionCartIntegrationController::class)->consultar($this->cartRequest($cartId, [
+            'auto_emit_invoice' => 1,
+            'reintentar_si_no_encontrada' => 1,
+        ]));
+
+        $this->assertSame(503, $response->getStatusCode());
+        $this->assertSame('EMISION_INCIERTA', $response->getData(true)['cart']['estado_emision']);
+        $this->assertDatabaseCount('ventas', 0);
+        Http::assertNotSent(fn (OutgoingRequest $request) => $request->method() === 'POST');
+    }
+
     private function createCart(array $attributes = []): int
     {
         $cartId = DB::table('facturacion_carts')->insertGetId($attributes + [
@@ -177,6 +303,31 @@ class FacturacionTimeoutRecoveryTest extends TestCase
                 'descripcion_servicio' => 'SERVICIO EMS', 'unidad_medida' => 58,
             ]),
         ]);
+        return $cartId;
+    }
+
+    private function createPaidCardCart(): int
+    {
+        $cartId = $this->createCart([
+            'estado' => 'emitido',
+            'canal_emision' => 'factura_electronica',
+            'metodo_pago' => 'qr',
+            'qhantuy_payment_method' => 'T2P',
+            'estado_pago' => 'pagado',
+            'qr_transaction_id' => '4988554',
+            'estado_emision' => 'EMISION_INCIERTA',
+            'total' => 21,
+        ]);
+        DB::table('qhantuy_qr_payments')->insert([
+            'internal_code' => self::ORDER,
+            'transaction_id' => 4988554,
+            'checkout_amount' => 21,
+            'checkout_currency' => 'BOB',
+            'payment_status' => 'success',
+            'payment_method' => 'T2P',
+            'qhantuy_cart_id' => $cartId,
+        ]);
+
         return $cartId;
     }
 
