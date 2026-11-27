@@ -38,6 +38,46 @@ trait FinancialReports
         return FinancialReport::build($this->financialReportRows($filters), $issueLimit, $includeInvoiceDetails);
     }
 
+    public function reporteFacturas(Request $request)
+    {
+        $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));
+        $facturas = [];
+
+        foreach ($this->financialReportRows($filters) as $row) {
+            $sucursal = (array) ($row['sucursal'] ?? []);
+            $financiero = (array) ($row['financiero'] ?? []);
+
+            $facturas[] = [
+                'codigoSucursal' => (int) ($sucursal['codigoSucursal'] ?? $row['codigoSucursal'] ?? 0),
+                'puntoVenta' => (int) ($sucursal['puntoVenta'] ?? $row['puntoVenta'] ?? 0),
+                'regional' => trim((string) (
+                    $sucursal['departamento']
+                    ?? $sucursal['nombre']
+                    ?? $row['departamento']
+                    ?? 'Sin regional'
+                )),
+                'numeroFactura' => trim((string) ($row['numeroFactura'] ?? $row['numero_factura'] ?? '')) ?: '-',
+                'importe' => round((float) ($row['total'] ?? 0), 2),
+                'cajera' => trim((string) data_get($row, 'usuario.nombre', '')) ?: 'Sin usuario',
+                'medioPago' => trim((string) ($financiero['medioPago'] ?? $row['medioPago'] ?? 'SIN DATO')),
+                'estadoFactura' => strtoupper(trim((string) (
+                    $financiero['estadoFiscal']
+                    ?? $row['estado_emision']
+                    ?? $row['estado_sufe']
+                    ?? 'SIN ESTADO'
+                ))),
+                'categoria' => $financiero['categoria'] ?? 'NORMAL',
+                'origenVentaTipo' => $row['origenVentaTipo'] ?? $row['origen_venta_tipo'] ?? '',
+            ];
+        }
+
+        return response()->json([
+            'filters' => $filters,
+            'cantidad' => count($facturas),
+            'facturas' => $facturas,
+        ]);
+    }
+
     public function auditoriaFinanciera(Request $request)
     {
         $filters = $this->resolveIdentityFilters($request, $this->validateVentaReportFilters($request));

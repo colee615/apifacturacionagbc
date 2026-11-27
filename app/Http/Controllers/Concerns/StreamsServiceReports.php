@@ -138,7 +138,9 @@ trait StreamsServiceReports
 
     private function mapServiceReportCartChunk(Collection $cartRows, bool $includeAnnulled, bool $financialOnly = false): Collection
     {
-        $cartItemsMap = $this->serviceReportCartItemsMapFromRows($cartRows);
+        // Financial summaries (for example the invoice export) do not use
+        // item descriptions. Avoid loading every cart item for that path.
+        $cartItemsMap = $financialOnly ? [] : $this->serviceReportCartItemsMapFromRows($cartRows);
         $cartFiscalBackfillMap = $this->facturacionCartFiscalBackfillMap($cartRows);
         $seguimientos = $cartRows
             ->map(fn ($cart) => (string) (($cart->codigo_seguimiento_fiscal ?? null) ?: ($cart->codigo_seguimiento ?? '')))
@@ -194,7 +196,12 @@ trait StreamsServiceReports
 
     private function mapServiceReportVentaChunk(Collection $ventas, bool $includeAnnulled, bool $financialOnly = false): Collection
     {
-        $detalleMaps = $this->serviceReportDetalleMapsFromRows($ventas);
+        // Financial summaries only need invoice, amount, cashier and payment
+        // state. Loading detalle_ventas/cart items here adds queries and memory
+        // without changing any field used by the financial report.
+        $detalleMaps = $financialOnly
+            ? ['detalle' => [], 'cart' => []]
+            : $this->serviceReportDetalleMapsFromRows($ventas);
         $itemsCountMaps = $financialOnly ? ['detalle' => [], 'cart' => []] : $this->itemsCountMapsFromRows($ventas);
         $seguimientos = $financialOnly
             ? $ventas->filter(fn (Venta $venta) => trim((string) ($venta->numero_factura ?? '')) === '')->pluck('codigoSeguimiento')->all()
